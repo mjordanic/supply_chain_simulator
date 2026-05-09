@@ -17,10 +17,13 @@ back instances with ``policy=None`` and the caller re-attaches policies.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from collections import namedtuple
 from dataclasses import dataclass, fields
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
 
 if TYPE_CHECKING:
@@ -543,3 +546,47 @@ def make_stores(
         StoreInstance(template=template, init_seed=init_seed, policy=policy)
         for template, init_seed, policy in triples
     ]
+
+
+def load_scenario_from_path(path: str | Path) -> "Scenario":
+    """Import ``path`` as a Python module and return its ``scenario`` symbol.
+
+    The returned ``Scenario`` has live ``Policy`` instances on each
+    ``StoreInstance`` (as authored in the script).  Use this instead of
+    ``Scenario.from_json`` when you need policies attached — e.g. in
+    notebooks or the CLI — because ``from_json`` is for historical-run
+    inspection and always returns ``policy=None``.
+
+    Raises:
+        FileNotFoundError: if ``path`` does not exist.
+        ImportError: if the module spec cannot be built.
+        AttributeError: if the loaded module has no ``scenario`` attribute.
+        TypeError: if ``module.scenario`` is not a ``Scenario`` instance.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"load_scenario_from_path: scenario file not found: {path}"
+        )
+
+    spec = importlib.util.spec_from_file_location(f"_scenario_{path.stem}", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(
+            f"load_scenario_from_path: could not build module spec for {path}"
+        )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+
+    if not hasattr(module, "scenario"):
+        raise AttributeError(
+            f"load_scenario_from_path: {path} does not expose a top-level"
+            " `scenario` attribute"
+        )
+    obj = module.scenario
+    if not isinstance(obj, Scenario):
+        raise TypeError(
+            f"load_scenario_from_path: {path}.scenario is"
+            f" {type(obj).__name__}, expected Scenario"
+        )
+    return obj

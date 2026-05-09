@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +26,7 @@ from src.sim.scenario import (
     StoreTemplate,
     Ware,
     load_catalog,
+    load_scenario_from_path,
     make_stores,
 )
 
@@ -542,3 +544,42 @@ def test_scenario_round_trip_preserves_per_ware_init_stock_share() -> None:
     restored = Scenario.from_json(scenario.to_json())
     assert restored.catalog[0].init_stock_share == 2.0
     assert restored.catalog[1].init_stock_share is None
+
+
+# ---------------------------------------------------------------- load_scenario_from_path
+
+
+_HOMOGENEOUS = (
+    Path(__file__).parent.parent.parent / "scenarios" / "example_homogeneous.py"
+)
+
+
+def test_load_scenario_from_path_returns_scenario_with_catalog_and_stores() -> None:
+    sc = load_scenario_from_path(_HOMOGENEOUS)
+    assert isinstance(sc, Scenario)
+    assert len(sc.catalog) > 0
+    assert len(sc.stores) > 0
+
+
+def test_load_scenario_from_path_preserves_live_policies() -> None:
+    sc = load_scenario_from_path(_HOMOGENEOUS)
+    assert any(s.policy is not None for s in sc.stores)
+
+
+def test_load_scenario_from_path_accepts_string_path() -> None:
+    sc = load_scenario_from_path(str(_HOMOGENEOUS))
+    assert isinstance(sc, Scenario)
+
+
+def test_load_scenario_from_path_missing_file_raises_file_not_found() -> None:
+    with pytest.raises(FileNotFoundError):
+        load_scenario_from_path("/nonexistent/path/scenario.py")
+
+
+def test_load_scenario_from_path_missing_attribute_raises_attribute_error(
+    tmp_path: Path,
+) -> None:
+    bad = tmp_path / "bad_scenario.py"
+    bad.write_text("x = 1\n")
+    with pytest.raises(AttributeError, match="scenario"):
+        load_scenario_from_path(bad)
