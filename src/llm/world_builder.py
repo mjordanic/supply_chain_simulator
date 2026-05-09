@@ -164,6 +164,48 @@ class World:
             text = p.read_text(encoding="utf-8") if is_file else source
         return cls.from_dict(json.loads(text))
 
+    def catalog_df(self) -> Any:
+        import pandas as pd
+        rows = []
+        for w in self.catalog:
+            rows.append({
+                "product_id": w.product_id,
+                "name": w.name,
+                "category": w.category,
+                "base_price": w.base_price,
+                "unit_cost": w.unit_cost,
+                "margin": w.base_price - w.unit_cost,
+                "seasonality": w.seasonality,
+                "freshness_alpha": w.freshness_alpha,
+                "freshness_decay": w.freshness_decay,
+                "init_stage": w.init_stage,
+                "stage_change_probs": w.stage_change_probs,
+                "init_stock_share": w.init_stock_share,
+                "related_products": list(w.related_products),
+            })
+        return pd.DataFrame(rows)
+
+    def store_templates_df(self) -> Any:
+        import pandas as pd
+        from dataclasses import fields
+        rows = []
+        for tmpl in self.store_templates.values():
+            rows.append({f.name: getattr(tmpl, f.name) for f in fields(tmpl)})
+        return pd.DataFrame(rows)
+
+    def market_df(self) -> Any:
+        import pandas as pd
+        from dataclasses import fields
+        row = {f.name: getattr(self.market, f.name) for f in fields(self.market)}
+        return pd.DataFrame([row])
+
+    def meta_df(self) -> Any:
+        import pandas as pd
+        _META_COLUMNS = ["archetype", "n_items", "model", "builder_version", "built_at"]
+        if self.meta is None:
+            return pd.DataFrame(columns=_META_COLUMNS)
+        return pd.DataFrame([{k: self.meta.get(k) for k in _META_COLUMNS}])
+
 
 def allocate_skeletons(n: int, taxonomy: Taxonomy) -> list[str]:
     """Distribute ``n`` catalog slots across taxonomy categories.
