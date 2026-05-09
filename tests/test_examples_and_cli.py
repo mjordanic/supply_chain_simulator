@@ -45,6 +45,11 @@ def paired_module():
     return importlib.import_module("scenarios.example_paired_comparison")
 
 
+@pytest.fixture(scope="module")
+def offline_module():
+    return importlib.import_module("scenarios.example_llm_world_offline")
+
+
 def test_homogeneous_exposes_scenario_symbol(homogeneous_module):
     assert isinstance(homogeneous_module.scenario, Scenario)
 
@@ -223,3 +228,26 @@ def test_main_default_output_folder(tmp_path, monkeypatch):
     expected = tmp_path / "data" / "example_homogeneous"
     assert expected.exists()
     assert (expected / "config" / "scenario.json").exists()
+
+
+# --------------------------------------------------------- offline LLM example
+
+
+def test_offline_exposes_scenario_symbol(offline_module):
+    """example_llm_world_offline exposes a top-level Scenario after from_world refactor."""
+    assert isinstance(offline_module.scenario, Scenario)
+
+
+def test_main_runs_offline_llm_example(tmp_path):
+    """main.py runs the offline (no-API-key) LLM scenario and writes artifacts."""
+    output = tmp_path / "offline_out"
+    proc = _run_cli(
+        "scenarios/example_llm_world_offline.py",
+        "--output",
+        str(output),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (output / "config" / "scenario.json").exists()
+    assert (output / "data" / "run_log.json").exists()
+    assert (output / "data" / "products.parquet").exists()
+    assert (output / "data" / "stores.parquet").exists()

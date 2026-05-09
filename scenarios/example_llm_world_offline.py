@@ -251,9 +251,8 @@ _policy = BaselinePolicy(
 )
 
 
-scenario = Scenario(
-    catalog=_world.catalog,
-    market=_world.market,
+scenario = Scenario.from_world(
+    _world,
     disruption=DisruptionParams(
         event_prob=0.05,
         types=["natural_disaster", "economic_crisis"],

@@ -25,7 +25,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.llm.openai_client import OpenAIClient
-from src.llm.world_builder import WorldBuilder
+from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant
 from src.sim.policy import BaselinePolicy
@@ -45,7 +45,10 @@ _N_STORES = 3
 
 _client = OpenAIClient()
 _builder = WorldBuilder(archetype=_ARCHETYPE, client=_client)
-_world = _builder.build(n_items=_N_ITEMS)
+_world = load_or_build_world(
+    "fashion_retail_12",
+    lambda: _builder.build(n_items=_N_ITEMS),
+)
 
 
 _template = next(iter(_world.store_templates.values()))
@@ -68,9 +71,8 @@ _policy = BaselinePolicy(
 )
 
 
-scenario = Scenario(
-    catalog=_world.catalog,
-    market=_world.market,
+scenario = Scenario.from_world(
+    _world,
     disruption=DisruptionParams(
         event_prob=0.05,
         types=["natural_disaster", "economic_crisis"],
