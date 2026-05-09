@@ -25,5 +25,6 @@ retailers.pkl
 .cursor/debug-*.log
 
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 
 .env
