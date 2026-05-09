@@ -29,8 +29,11 @@ next prompt (see ``llm.prompts._with_retry``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
+import json
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Mapping
 
 from pydantic import BaseModel, ValidationError
 
@@ -56,9 +59,13 @@ from src.sim.scenario import (
     MarketParams,
     StoreTemplate,
     Ware,
+    _ware_from_dict,
+    _ware_to_dict,
     load_catalog,
 )
 
+
+BUILDER_VERSION = "1"
 
 _DEFAULT_MAX_RETRIES = 3
 
@@ -113,6 +120,48 @@ class World:
     catalog: list[Ware]
     market: MarketParams
     store_templates: dict[str, StoreTemplate]
+    meta: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "catalog": [_ware_to_dict(w) for w in self.catalog],
+            "market": self.market.to_dict(),
+            "store_templates": {k: v.to_dict() for k, v in self.store_templates.items()},
+            "meta": self.meta,
+        }
+
+    def to_json(self, path: str | Path | None = None) -> str:
+        s = json.dumps(self.to_dict())
+        if path is not None:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(s, encoding="utf-8")
+        return s
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "World":
+        return cls(
+            catalog=[_ware_from_dict(w) for w in d["catalog"]],
+            market=MarketParams.from_dict(d["market"]),
+            store_templates={
+                k: StoreTemplate.from_dict(v)
+                for k, v in d["store_templates"].items()
+            },
+            meta=d.get("meta"),
+        )
+
+    @classmethod
+    def from_json(cls, source: str | Path) -> "World":
+        if isinstance(source, Path):
+            text = source.read_text(encoding="utf-8")
+        else:
+            p = Path(source)
+            try:
+                is_file = p.exists()
+            except OSError:
+                is_file = False
+            text = p.read_text(encoding="utf-8") if is_file else source
+        return cls.from_dict(json.loads(text))
 
 
 def allocate_skeletons(n: int, taxonomy: Taxonomy) -> list[str]:
@@ -419,7 +468,14 @@ class WorldBuilder:
         market = self.build_market_domain_params()
         catalog = self.sample_catalog(n_items)
         templates = self.build_store_templates()
-        return World(catalog=catalog, market=market, store_templates=templates)
+        meta: dict[str, Any] = {
+            "archetype": self.archetype,
+            "n_items": n_items,
+            "model": getattr(self.client, "model_id", None),
+            "builder_version": BUILDER_VERSION,
+            "built_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return World(catalog=catalog, market=market, store_templates=templates, meta=meta)
 
     def _regions_from_market(self) -> list[str]:
         """Best-effort regions list for the store-templates prompt.
@@ -477,4 +533,4 @@ class WorldBuilder:
         ) from last_exc
 
 
-__all__ = ["World", "WorldBuilder", "allocate_skeletons"]
+__all__ = ["BUILDER_VERSION", "World", "WorldBuilder", "allocate_skeletons"]
