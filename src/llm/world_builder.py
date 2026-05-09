@@ -30,6 +30,7 @@ next prompt (see ``llm.prompts._with_retry``).
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -533,4 +534,53 @@ class WorldBuilder:
         ) from last_exc
 
 
-__all__ = ["BUILDER_VERSION", "World", "WorldBuilder", "allocate_skeletons"]
+class LLMBuildAbortedError(Exception):
+    """Raised when a `load_or_build_world` call is aborted by the user or the environment."""
+
+
+def load_or_build_world(
+    name: str,
+    build_fn: Callable[[], "World"],
+    *,
+    base_dir: str | Path = "data/worlds",
+    force_rebuild: bool = False,
+    auto_confirm: bool = False,
+) -> "World":
+    """Return a cached World or build one with user consent.
+
+    Looks for ``<base_dir>/<name>/world.json``. Returns it immediately on a
+    cache hit (unless ``force_rebuild=True``). On a cache miss (or rebuild),
+    prints a two-line warning to stderr and, unless ``auto_confirm=True``,
+    prompts the user before invoking ``build_fn``.
+    """
+    path = Path(base_dir) / name / "world.json"
+    if path.exists() and not force_rebuild:
+        return World.from_json(path)
+
+    print(f"World cache not found or rebuild forced: {path}", file=sys.stderr)
+    print("Building requires 5+ OpenAI calls.", file=sys.stderr)
+
+    if not auto_confirm:
+        try:
+            response = input("  Press Enter to proceed, anything else to abort: ")
+        except (KeyboardInterrupt, EOFError) as exc:
+            raise LLMBuildAbortedError(
+                f"Build aborted due to {type(exc).__name__}; "
+                "use auto_confirm=True for non-interactive runs."
+            ) from exc
+        if response.strip():
+            raise LLMBuildAbortedError(f"Build aborted by user: {response!r}")
+
+    world = build_fn()
+    world.to_json(path)
+    return world
+
+
+__all__ = [
+    "BUILDER_VERSION",
+    "LLMBuildAbortedError",
+    "World",
+    "WorldBuilder",
+    "allocate_skeletons",
+    "load_or_build_world",
+]
