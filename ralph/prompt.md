@@ -54,6 +54,34 @@ If the task is complete, move the issue file to `.scratch/simulator-redesign/iss
 
 If the task is not complete, add a note to the issue file with what was done.
 
+# REPORT
+
+After everything else (commit, issue file move, etc.), emit a single fenced ` ```report ` block as the very last thing in your final message. This is how `ralph/afk.sh` records progress across iterations so a credit-out / killed session can resume cleanly. Do NOT skip this block — even on `no-tasks` or `failed` iterations.
+
+Format (YAML-ish, one field per line):
+
+```report
+issue_id: <id worked on, or "none">
+status: committed | blocked | failed | no-progress | no-tasks
+commit_sha: <full SHA, or "none">
+branch: <current branch>
+files_changed:
+  - <path>
+notes: <one short sentence — what you did, or why nothing happened>
+follow_ups:
+  - <item or omit list if none>
+```
+
+Status values:
+
+- `committed` — task complete, commit landed, issue file moved to `done/`.
+- `blocked` — partial work; issue updated to `needs-info` with explanation. Commit may or may not exist.
+- `failed` — attempt collapsed (tests not green, etc.); nothing committed; issue left as `ready-for-agent`.
+- `no-progress` — iteration produced nothing actionable for any other reason. Explain in `notes`.
+- `no-tasks` — no `ready-for-agent` issues remain. Also output `<promise>NO MORE TASKS</promise>` so the loop exits.
+
+The block must be plain text inside the fenced ` ```report ` ... ` ``` ` markers — no nested code fences, no extra prose between the markers. Keep `notes` to one line.
+
 # FINAL RULES
 
 ONLY WORK ON A SINGLE TASK.
