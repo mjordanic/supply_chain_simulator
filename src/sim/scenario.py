@@ -21,7 +21,10 @@ import json
 from collections import namedtuple
 from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import Any, Iterable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
+
+if TYPE_CHECKING:
+    from src.llm.world_builder import World
 
 from src.sim.distributions import (
     Distribution,
@@ -393,6 +396,120 @@ class Scenario:
             n_steps=d["n_steps"],
             start_date=datetime.fromisoformat(d["start_date"]),
             world_seed=d["world_seed"],
+        )
+
+    def catalog_df(self) -> Any:
+        import pandas as pd
+
+        rows = [
+            {
+                "product_id": w.product_id,
+                "name": w.name,
+                "category": w.category,
+                "base_price": w.base_price,
+                "unit_cost": w.unit_cost,
+                "margin": w.base_price - w.unit_cost,
+                "seasonality": w.seasonality,
+                "freshness_alpha": w.freshness_alpha,
+                "freshness_decay": w.freshness_decay,
+                "init_stage": w.init_stage,
+                "stage_change_probs": w.stage_change_probs,
+                "init_stock_share": w.init_stock_share,
+                "related_products": list(w.related_products),
+            }
+            for w in self.catalog
+        ]
+        return pd.DataFrame(rows)
+
+    def stores_df(self) -> Any:
+        import pandas as pd
+
+        rows = [
+            {
+                "store_id": i,
+                "template_id": instance.template.id,
+                "region": instance.template.region,
+                "init_seed": instance.init_seed,
+                "policy_class": (
+                    type(instance.policy).__name__
+                    if instance.policy is not None
+                    else None
+                ),
+            }
+            for i, instance in enumerate(self.stores)
+        ]
+        return pd.DataFrame(rows)
+
+    def market_df(self) -> Any:
+        import pandas as pd
+        from dataclasses import fields as dc_fields
+
+        return pd.DataFrame(
+            [{f.name: getattr(self.market, f.name) for f in dc_fields(self.market)}]
+        )
+
+    def disruption_df(self) -> Any:
+        import pandas as pd
+        from dataclasses import fields as dc_fields
+
+        return pd.DataFrame(
+            [
+                {
+                    f.name: getattr(self.disruption, f.name)
+                    for f in dc_fields(self.disruption)
+                }
+            ]
+        )
+
+    def lifecycle_df(self) -> Any:
+        import pandas as pd
+        from dataclasses import fields as dc_fields
+
+        return pd.DataFrame(
+            [
+                {
+                    f.name: getattr(self.item_lifecycle, f.name)
+                    for f in dc_fields(self.item_lifecycle)
+                }
+            ]
+        )
+
+    def summary_df(self) -> Any:
+        import pandas as pd
+
+        return pd.DataFrame(
+            [
+                {
+                    "n_steps": self.n_steps,
+                    "start_date": self.start_date,
+                    "world_seed": self.world_seed,
+                    "n_stores": len(self.stores),
+                    "n_products": len(self.catalog),
+                }
+            ]
+        )
+
+    @classmethod
+    def from_world(
+        cls,
+        world: "World",
+        *,
+        disruption: "DisruptionParams",
+        item_lifecycle: "ItemLifecycleParams",
+        stores: "list[StoreInstance]",
+        n_steps: int,
+        start_date: datetime,
+        world_seed: int,
+    ) -> "Scenario":
+        return cls(
+            catalog=world.catalog,
+            market=world.market,
+            disruption=disruption,
+            item_lifecycle=item_lifecycle,
+            stores=stores,
+            n_steps=n_steps,
+            start_date=start_date,
+            world_seed=world_seed,
         )
 
     @classmethod
