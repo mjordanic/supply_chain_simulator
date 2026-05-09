@@ -84,52 +84,43 @@ class DataExporter:
         folder = os.path.join(output_folder, "data")
         os.makedirs(folder, exist_ok=True)
         product_log = self.run_log.get("global", {}).get("products", {})
-        rows = [
-            {
-                "product_id": w.product_id,
-                "name": w.name,
-                "category": w.category,
-                "base_price": w.base_price,
-                "unit_cost": w.unit_cost,
-                "seasonality": w.seasonality,
-                "freshness_alpha": product_log.get(w.product_id, {}).get(
-                    "freshness_alpha"
-                ),
-                "freshness_decay": product_log.get(w.product_id, {}).get(
-                    "freshness_decay"
-                ),
-                "init_stock_share": product_log.get(w.product_id, {}).get(
-                    "init_stock_share"
-                ),
-            }
-            for w in self.scenario.catalog
+        base = self.scenario.catalog_df()
+        products_df = base.assign(
+            freshness_alpha=base["product_id"].map(
+                lambda pid: product_log.get(pid, {}).get("freshness_alpha")
+            ),
+            freshness_decay=base["product_id"].map(
+                lambda pid: product_log.get(pid, {}).get("freshness_decay")
+            ),
+            init_stock_share=base["product_id"].map(
+                lambda pid: product_log.get(pid, {}).get("init_stock_share")
+            ),
+        )[
+            [
+                "product_id",
+                "name",
+                "category",
+                "base_price",
+                "unit_cost",
+                "seasonality",
+                "freshness_alpha",
+                "freshness_decay",
+                "init_stock_share",
+            ]
         ]
         path = os.path.join(folder, "products.parquet")
-        pd.DataFrame(rows).to_parquet(path)
+        products_df.to_parquet(path)
         return path
 
     def save_stores_parquet(self, output_folder: str) -> str:
         """Write the static store table as ``stores.parquet``."""
         folder = os.path.join(output_folder, "data")
         os.makedirs(folder, exist_ok=True)
-        rows = []
-        for i, instance in enumerate(self.scenario.stores):
-            template = instance.template
-            rows.append(
-                {
-                    "store_id": i,
-                    "template_id": template.id,
-                    "region": template.region,
-                    "init_seed": instance.init_seed,
-                    "policy_type": (
-                        type(instance.policy).__name__
-                        if instance.policy is not None
-                        else None
-                    ),
-                }
-            )
+        stores_df = self.scenario.stores_df().rename(
+            columns={"policy_class": "policy_type"}
+        )
         path = os.path.join(folder, "stores.parquet")
-        pd.DataFrame(rows).to_parquet(path)
+        stores_df.to_parquet(path)
         return path
 
     def save_timeseries_parquet(self, output_folder: str) -> str:
