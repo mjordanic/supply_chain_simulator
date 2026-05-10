@@ -51,11 +51,15 @@ Iterate until the user approves the breakdown.
 
 ### 5. Publish the issues to the issue tracker
 
-For each approved slice, publish a new issue to the issue tracker. Use the issue body template below. These issues are considered ready for AFK agents, so publish them with the correct triage label unless instructed otherwise.
+For each approved slice, publish a new issue to the issue tracker. Use the issue body template below.
+
+Every issue **must** include the `Status:` line at the top. Default AFK slices to `Status: ready-for-agent` and HITL slices to `Status: ready-for-human`. Use the role strings from `docs/agents/triage-labels.md` verbatim.
 
 Publish issues in dependency order (blockers first) so you can reference real issue identifiers in the "Blocked by" field.
 
 <issue-template>
+Status: ready-for-agent
+
 ## Parent
 
 A reference to the parent issue on the issue tracker (if the source was an existing issue, otherwise omit this section).

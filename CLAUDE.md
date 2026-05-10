@@ -2,6 +2,10 @@
 
 Use `uv` for all Python tooling — `uv run`, `uv add`, `uv sync`. Never `pip`, `python -m`, or `poetry`.
 
+## Git commits
+
+Do not sign commits with `Co-Authored-By: Claude …` (or any other co-author trailer attributing the commit to Claude/Anthropic). Leave the commit message unsigned. Applies to the main thread and any subagent or skill that creates commits.
+
 ## Agent skills
 
 ### Issue tracker

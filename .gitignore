@@ -27,4 +27,6 @@ retailers.pkl
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 
+.scratch/
+
 .env
