@@ -99,37 +99,72 @@ _template = replace(
     init_balance=_FLAGSHIP_BALANCE,
     init_active_count=_INIT_ACTIVE_COUNT,
     init_freshness="baseline",
+    # The LLM-authored template carries ``order_fee=$175`` per non-zero
+    # order. At a 1000-SKU / 5-store scale that fixed fee dominates the
+    # economics — even a well-tuned policy can pay $9-12k/step in fees
+    # alone. Uncomment the line below to override it to a more realistic
+    # per-shipment fee and the run becomes meaningfully profitable; the
+    # policy kwargs below (long order_cd, high min_qty) are the
+    # *policy-only* mitigation for the unrealistic default.
+    order_fee=25.0,
 )
 
 
-# Policy: ~20 kwargs tuned for the larger catalog (longer cooldowns,
-# tighter reorder factor, wider promo windows).
-_policy = BaselinePolicy(
-    policy_seed=1000,
-    min_qty=5,
-    init_qty_factor=0.25,
-    review_interval=10,
-    target_active_count=_TARGET_ACTIVE,
-    promo_threshold=0.45,
-    promo_discount=0.7,
-    min_promo_len=4,
-    max_promo_len=8,
-    promo_cd_len=8,
-    slow_sales_limit=4,
-    history_window=10,
-    max_history=20,
-    reorder_factor=0.3,
-    qty_factor=0.6,
-    order_cd_len=7,
-    order_cd_jitter=0.3,
-    stock_lo_ratio=0.2,
-    stock_hi_ratio=0.6,
-    price_up_factor=1.08,
-    price_down_factor=0.92,
-    trend_threshold=0.05,
-    cross_price_adj=0.05,
-    inactive_price_factor=0.5,
-)
+# Policy factory: ~20 kwargs tuned for the larger catalog. A *fresh*
+# instance per store is critical — ``BaselinePolicy`` keeps per-product
+# ``sales_log`` / ``stock_log`` / ``order_cd`` state on ``self``, and
+# sharing one instance across stores intermixes those streams (so e.g.
+# a sale in store 0 hides "slow mover" status of the same SKU in store 4,
+# and store 0 placing an order silently blocks stores 1-4 via the
+# cooldown dict). The fix is to build one ``BaselinePolicy`` per store.
+def _build_policy(seed: int) -> BaselinePolicy:
+    return BaselinePolicy(
+        policy_seed=seed,
+        # Skip trivial orders — the LLM-authored template carries a fixed
+        # ``order_fee=$175`` per non-zero order, which dominates the
+        # economics at this scale (5 stores × ~80 active SKUs × frequent
+        # reorders => the fixed fee eats every dollar of margin). A high
+        # ``min_qty`` plus the long ``order_cd_len`` below amortises that
+        # fee across a meaningful batch.
+        min_qty=30,
+        init_qty_factor=0.4,
+        review_interval=15,
+        target_active_count=_TARGET_ACTIVE,
+        # ``promo_threshold`` and ``stock_*_ratio`` are now interpreted
+        # against the *per-SKU slice* of capacity (``capacity / n_active``),
+        # not the whole store, so the 0.45 / 0.2 / 0.6 defaults are
+        # meaningful for a 1000-SKU catalog. The old absolute-capacity
+        # reading made the markdown branch unreachable for any single SKU.
+        promo_threshold=0.45,
+        promo_discount=0.7,
+        min_promo_len=4,
+        max_promo_len=8,
+        promo_cd_len=8,
+        slow_sales_limit=4,
+        history_window=10,
+        max_history=20,
+        reorder_factor=0.3,
+        # Order in big batches: target per-SKU inventory ≈ 2× the fair
+        # slice. Combined with the long order cooldown below, this turns
+        # many small reorders (each paying the $175 fixed fee) into a
+        # handful of larger ones, so the fee amortises across more units.
+        qty_factor=2.0,
+        order_cd_len=120,
+        order_cd_jitter=0.3,
+        stock_lo_ratio=0.2,
+        stock_hi_ratio=0.6,
+        # Gentler ratchet (1.04 / 0.93) — the old 1.08 / 0.92 compounded
+        # on the *current* price every tick, so a long string of positive
+        # trend draws could push prices to >10x the base before the
+        # markdown branch caught up. With the per-SKU slice fix, the
+        # markdown branch fires reliably, but the upward push is also
+        # easier to land in, so we soften it.
+        price_up_factor=1.04,
+        price_down_factor=0.93,
+        trend_threshold=0.05,
+        cross_price_adj=0.05,
+        inactive_price_factor=0.5,
+    )
 
 
 # Stage list kept as a module constant so the comprehension below stays readable.
@@ -164,7 +199,7 @@ scenario = Scenario.from_world(
         },
     ),
     stores=make_stores(
-        [(_template, 1 + i, _policy) for i in range(_N_STORES)]
+        [(_template, 1 + i, _build_policy(seed=1000 + i)) for i in range(_N_STORES)]
     ),
     n_steps=_N_STEPS,
     start_date=datetime(2024, 1, 1),

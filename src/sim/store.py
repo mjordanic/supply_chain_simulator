@@ -141,6 +141,10 @@ class Store:
         self.needs_init_order: set[str] = set()
         # Current selling price per product (set initially to base_price).
         self.prices: dict[str, float] = {}
+        # MSRP / authored base price per product. Frozen at registration so
+        # the policy can compute price decisions against a stable reference
+        # instead of compounding multiplicatively on ``self.prices``.
+        self.base_prices: dict[str, float] = {}
         # Unit cost per product (used by holding/order cost math and as
         # the per-product price floor in the policy).
         self.costs: dict[str, float] = {}
@@ -172,6 +176,7 @@ class Store:
         self.delivery_lags[product_id] = self.delivery_lag
         self.holding_rates[product_id] = self.holding_rate
         self.prices[product_id] = base_price
+        self.base_prices[product_id] = base_price
         self.costs[product_id] = unit_cost
 
     def settle(
@@ -324,6 +329,7 @@ class Store:
             "outstanding_orders": dict(self.pending),
             "initial_order_needed": set(self.needs_init_order),
             "product_prices": dict(self.prices),
+            "base_prices": dict(self.base_prices),
             "unit_costs": dict(self.costs),
             "related_products": related,
             "balance": self.balance,

@@ -208,6 +208,26 @@ class ItemRegistry:
                 seasonality=w.seasonality,
             )
 
+        # Resolve ``related_products`` from authored display names to
+        # product_ids. The contract on ``Item.related_products`` is
+        # ``(other_pid, weight)`` but LLM-built catalogs commonly emit
+        # the *display name* of the related item, which then silently
+        # fails the ``rel_id in active_items`` / ``rel_id in inventory``
+        # gates downstream (active_items / inventory are keyed by id).
+        # Resolving here means every consumer (policy cross-price,
+        # market cross-demand) gets ids without each duplicating the
+        # lookup. Unknown names are dropped — better than the previous
+        # behaviour of always missing.
+        name_to_id = {item.name: pid for pid, item in self.items.items()}
+        for item in self.items.values():
+            resolved: list[tuple[str, float]] = []
+            for ref, corr in item.related_products:
+                if ref in self.items:
+                    resolved.append((ref, corr))
+                elif ref in name_to_id:
+                    resolved.append((name_to_id[ref], corr))
+            item.related_products = resolved
+
     def tick(self) -> None:
         """Advance every item one cyclic step via ``LifecycleClock``.
 

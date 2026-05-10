@@ -77,7 +77,11 @@ class BaselinePolicy(Policy):
     - ``active_products`` (Iterable[pid]): products in the active assortment.
     - ``initial_order_needed`` (Iterable[pid]): newly activated products
       that have not yet received their first replenishment.
-    - ``product_prices`` (dict[pid, float]): current base prices per pid.
+    - ``product_prices`` (dict[pid, float]): current realised prices per pid.
+    - ``base_prices`` (dict[pid, float]): immutable MSRP reference prices
+      per pid. The policy adjusts off this fixed reference rather than
+      its own previous-tick decision, so the markdown / markup factors
+      do not compound multiplicatively.
     - ``unit_costs`` (dict[pid, float]): unit costs per pid (price floor).
     - ``related_products`` (dict[pid, list[(pid, float)]]): cross-product
       correlation graph used by the cross-price adjustment.
@@ -191,19 +195,23 @@ class BaselinePolicy(Policy):
         active_items = set(observation["active_products"])
         needs_init = set(observation["initial_order_needed"])
         prices = observation["product_prices"]
+        # ``base_prices`` falls back to the (possibly stale) current price
+        # when the observation predates this field — keeps older Store
+        # call sites working without forcing a coordinated upgrade.
+        base_prices = observation.get("base_prices", prices)
         related = observation["related_products"]
         balance = observation["balance"]
         costs = observation["unit_costs"]
 
         # Four decision sub-passes, in fixed order:
         promos, promo_cooldown = self._plan_promos(
-            promos, promo_cooldown, step, inventory, capacity
+            promos, promo_cooldown, step, inventory, capacity, active_items
         )
         orders = self._plan_orders(
             inventory, pending, capacity, active_items, needs_init, balance, costs, step
         )
         pricing = self._plan_prices(
-            inventory, prices, capacity, active_items, promos, related, costs
+            inventory, base_prices, capacity, active_items, promos, related, costs
         )
         activate, deactivate = self._review_catalog(step, active_items)
 
@@ -245,6 +253,7 @@ class BaselinePolicy(Policy):
         step: int,
         inventory: Mapping[str, int],
         capacity: float,
+        active_items: set[str] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
         """Expire reached-duration promos, prune cooldowns, start new ones on heavy stock."""
         # Promotion windows are step-based; once duration is reached, expire.
@@ -258,11 +267,18 @@ class BaselinePolicy(Policy):
         # Drop already-elapsed cooldowns.
         promo_cooldown = {pid: s for pid, s in promo_cooldown.items() if s > step}
 
+        # Per-SKU "slice" — the fair share of capacity if it were evenly
+        # divided among the active assortment. Treating "heavy stock" as a
+        # fraction of the SLICE (not the whole capacity) is what makes the
+        # promo threshold meaningful in many-SKU stores.
+        n_active = max(1, len(active_items) if active_items is not None else 1)
+        slice_size = max(1.0, capacity / n_active)
+
         for pid, stock in inventory.items():
             # Only consider non-promoted, non-cooldown products.
             if pid not in promos and pid not in promo_cooldown:
-                # "Heavy stock" gate: stock above promo_threshold × capacity.
-                if stock > capacity * self.promo_threshold:
+                # "Heavy stock" gate: stock above promo_threshold × per-SKU slice.
+                if stock > slice_size * self.promo_threshold:
                     # Sample (or pass through) the promo discount.
                     discount = float(_maybe_sample(self.promo_discount, self.policy_rng))
                     # Promo duration sampled from [min, max] inclusive.
@@ -306,7 +322,8 @@ class BaselinePolicy(Policy):
 
                 if pid in needs_init:
                     # First-time order after activation: opportunistic fill.
-                    qty = self._initial_order(space, max_qty)
+                    slice_size = capacity / max(1, len(active_items)) if capacity else 0.0
+                    qty = self._initial_order(space, max_qty, slice_size)
                 elif position <= self.reorder_factor * (capacity / len(active_items)):
                     # Steady-state re-order: top up to ``qty_factor × per-SKU share``.
                     target = self.qty_factor * capacity / len(active_items)
@@ -329,9 +346,18 @@ class BaselinePolicy(Policy):
 
         return orders
 
-    def _initial_order(self, space: int, max_qty: int) -> int:
-        """Opportunistic first-order qty: fill init_qty_factor × space, capped by budget."""
+    def _initial_order(
+        self, space: int, max_qty: int, slice_size: float | None = None
+    ) -> int:
+        """Opportunistic first-order qty: fill init_qty_factor × space, capped by budget.
+
+        Also capped at the per-SKU "fair slice" when supplied, so a fresh
+        SKU in a many-SKU store doesn't gobble up enough headroom to
+        starve the rest of the assortment.
+        """
         qty = min(max_qty, int(space * self.init_qty_factor))
+        if slice_size is not None:
+            qty = min(qty, int(slice_size * self.init_qty_factor))
         # Sub-min orders are folded to zero (the fixed fee dominates).
         return qty if qty >= self.min_qty else 0
 
@@ -344,18 +370,25 @@ class BaselinePolicy(Policy):
     def _plan_prices(
         self,
         inventory: Mapping[str, int],
-        prices: Mapping[str, float],
+        base_prices: Mapping[str, float],
         capacity: float,
         active_items: set[str],
         promos: Mapping[str, Mapping[str, Any]],
         related: Mapping[str, list[tuple[str, float]]],
         costs: Mapping[str, float],
     ) -> dict[str, float]:
-        """Per-product price decision: dynamic factor for actives, clearance for inactives."""
+        """Per-product price decision: dynamic factor for actives, clearance for inactives.
+
+        Reference is the immutable ``base_prices[pid]`` (MSRP), NOT the
+        last-tick realised price. Reading the realised price made each
+        markdown / markup compound multiplicatively, so a sequence of
+        moderate stock-heavy ticks dragged the price toward the unit-cost
+        floor in ~10 ticks; reading the base price keeps the policy's
+        decisions on an additive ladder around MSRP.
+        """
         pricing: dict[str, float] = {}
         for pid in inventory.keys():
-            # Reference price = current base for this product.
-            base = prices[pid]
+            base = base_prices[pid]
             cost = costs[pid]
             if pid in active_items:
                 # Combine stock/trend/cross/promo factors into one multiplier.
@@ -364,7 +397,7 @@ class BaselinePolicy(Policy):
                 )
                 decision = base * factor
             else:
-                # Inactive ⇒ clearance pricing.
+                # Inactive ⇒ clearance pricing relative to MSRP.
                 decision = self.inactive_price_factor * base
             # Guardrail: never price below unit cost.
             pricing[pid] = max(cost, decision)
@@ -382,8 +415,16 @@ class BaselinePolicy(Policy):
         """Aggregate stock+trend+cross+promo signals into one multiplicative factor."""
         # Rolling sales trend for the focal product.
         trend = self._compute_sales_trend(pid)
-        # Stock ratio relative to total store capacity.
-        ratio = inventory[pid] / capacity if capacity else 0.0
+        # Stock ratio relative to the per-SKU "fair slice" of capacity.
+        # Using ``inventory[pid] / capacity`` makes the ratio vanishingly
+        # small for any single SKU in a many-SKU store, so the
+        # ``ratio > stock_hi_ratio`` markdown branch never fires and
+        # ``ratio < stock_lo_ratio`` is always true. Dividing by
+        # ``capacity / n_active`` instead gives a meaningful "how full is
+        # this SKU's bucket?" signal regardless of catalog size.
+        n_active = max(1, len(active_items))
+        slice_size = max(1.0, capacity / n_active) if capacity else 0.0
+        ratio = inventory[pid] / slice_size if slice_size else 0.0
 
         if trend > self.trend_threshold and ratio < self.stock_lo_ratio:
             # Strong demand + low stock ⇒ raise price.
@@ -395,9 +436,13 @@ class BaselinePolicy(Policy):
             factor = 1.0
 
         # Per-related-product cross-adjustment. Active + in-inventory only.
+        # Cross-related ratio uses the same per-SKU slice as the focal
+        # SKU above — using ``capacity`` directly made the ratio tiny in
+        # many-SKU stores and pinned this branch to always-fire-down,
+        # systematically pushing prices toward the cost floor.
         for rel_id, corr in related.get(pid, []):
             if rel_id in active_items and rel_id in inventory:
-                rel_ratio = inventory[rel_id] / capacity if capacity else 0.0
+                rel_ratio = inventory[rel_id] / slice_size if slice_size else 0.0
                 if rel_ratio > self.stock_hi_ratio:
                     # Related over-stocked ⇒ small price up on focal.
                     factor *= 1 + self.cross_price_adj * corr
@@ -434,15 +479,24 @@ class BaselinePolicy(Policy):
         to_activate: list[str] = []
         to_deactivate: list[str] = []
 
-        # Drop at most one slow-mover this review pass (the ``break``).
+        # Drop every detected slow-mover this review pass — but never below
+        # ``target_active_count``. The old implementation dropped at most
+        # one per review (``break``); on a many-SKU catalog where dozens of
+        # products drift to dead simultaneously, that left a long tail of
+        # inactive-but-still-stocked SKUs bleeding holding cost for hundreds
+        # of ticks while the policy slowly worked through them.
+        keep_min = self.target_active_count
+        remaining = len(active_items)
         for pid in list(active_items):
+            if remaining <= keep_min:
+                break
             if self._is_slow_mover(pid):
                 to_deactivate.append(pid)
-                break
+                remaining -= 1
 
         # If the active set has slack, promote at most one inactive
         # candidate with growth potential.
-        if len(active_items) < self.target_active_count:
+        if remaining < self.target_active_count:
             inactive = list(set(self.sales_log.keys()) - active_items)
             # Shuffle so the candidate isn't biased by iteration order.
             self.policy_rng.shuffle(inactive)
@@ -464,12 +518,15 @@ class BaselinePolicy(Policy):
 
         if sum(recent_stock) == 0:
             # Fully stocked out for a while and still no sales => slow mover.
-            if sum(list(sales_log)[-self.history_window * 6:]) == 0:
-                return True
-        for s in recent_stock:
-            # Consistently low stock implies supply-constrained, not slow.
-            if s < (self.slow_sales_limit / len(recent_stock)):
-                return False
+            return sum(list(sales_log)[-self.history_window * 6:]) == 0
+        # "Supply-constrained, not slow" needs a SUSTAINED low-stock pattern,
+        # not just one tick of stockout. The old per-element early-exit
+        # protected products that briefly hit 0 between an order and its
+        # arrival even though they were genuine slow movers overall.
+        low_threshold = self.slow_sales_limit / len(recent_stock)
+        low_fraction = sum(1 for s in recent_stock if s < low_threshold) / len(recent_stock)
+        if low_fraction > 0.5:
+            return False
         return sum(recent_sales) < self.slow_sales_limit
 
     def _has_growth_potential(self, pid: str) -> bool:
