@@ -5,7 +5,8 @@ adjacent triples shares ``(template, init_seed)`` so the two stores in the
 pair are bit-identical at step 0; they differ only in attached ``Policy``.
 Combined with the world-rng seeding contract (``policy_rng`` and
 ``world_rng`` never share state) this gives Common-Random-Numbers variance
-reduction across the two policy groups.
+reduction across the two policy groups — the cleanest A/B comparison the
+simulator supports.
 
 Output layout: pair ``i`` lives at indices ``2 * i`` (``policy_a``) and
 ``2 * i + 1`` (``policy_b``).
@@ -25,6 +26,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Standalone execution: project root on the import path.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -44,6 +46,8 @@ from src.sim.scenario import (
 )
 
 
+# Same toy catalog as ``example_homogeneous`` — keeps comparison runs
+# directly comparable.
 _CATALOG = load_catalog(
     [
         {
@@ -90,6 +94,7 @@ _CATALOG = load_catalog(
 )
 
 
+# Identical market block to ``example_homogeneous`` for clean A/B.
 _MARKET = MarketParams(
     cycle_len=365,
     cycle_amp=0.1,
@@ -144,6 +149,7 @@ _LIFECYCLE = ItemLifecycleParams(
 )
 
 
+# One reusable template shared by both policy variants.
 _TEMPLATE = StoreTemplate(
     id="standard",
     region="US",
@@ -182,8 +188,10 @@ scenario = Scenario(
     item_lifecycle=_LIFECYCLE,
     stores=make_stores(
         [
+            # Pair 0: aggressive vs conservative on init_seed=1.
             (_TEMPLATE, 1, _POLICY_AGGRESSIVE),
             (_TEMPLATE, 1, _POLICY_CONSERVATIVE),
+            # Pair 1: same contrast on init_seed=2.
             (_TEMPLATE, 2, _POLICY_AGGRESSIVE),
             (_TEMPLATE, 2, _POLICY_CONSERVATIVE),
         ]

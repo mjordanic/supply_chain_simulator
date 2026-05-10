@@ -1,6 +1,11 @@
-"""Runner with the full integration loop (issues 03 + 04 + 05 + 07).
+"""Runner with the full integration loop.
 
-The seeding contract from ADR 0001:
+The runner owns one simulation execution: given a frozen ``Scenario``,
+it instantiates the world (``Market``, ``EventEngine``, ``ItemRegistry``,
+and a per-instance ``Store`` for each ``StoreInstance``), then runs the
+observe → decide → advance → log loop for ``n_steps`` ticks.
+
+The seeding contract (ADR 0001):
 
 - ``world_rng`` is seeded from ``Scenario.world_seed``. Consumed by
   ``ItemRegistry`` (lifecycle stage progression), ``Market`` (demand /
@@ -58,7 +63,10 @@ class Runner:
     """
 
     def __init__(self, scenario: Scenario) -> None:
+        # Source-of-truth artifact; held for later metadata queries.
         self.scenario = scenario
+        # Single shared world RNG seeded from the scenario seed. Every
+        # world-side stochastic draw goes through this stream.
         self.world_rng: Random = Random(scenario.world_seed)
         # Construction order matters for RNG bookkeeping. ItemRegistry first
         # so its lifecycle-distribution draws (if any) are stable; Market
@@ -74,6 +82,9 @@ class Runner:
             registry=self.item_registry,
         )
         self.event_engine = EventEngine(scenario.disruption, self.world_rng)
+        # One ``Store`` per ``StoreInstance``. Each receives its own
+        # ``init_seed`` so the per-store init RNG stays independent of
+        # the world stream.
         self.stores: list[Store] = [
             Store(
                 s.template,
@@ -88,6 +99,9 @@ class Runner:
         ]
 
     def run(self) -> dict[str, Any]:
+        """Execute the full simulation and return the accumulated run log."""
+        # Pre-allocate the nested run-log skeleton so the per-step append
+        # paths can stay dict-key-lookup-only (no defaultdicts).
         run_log = self._init_run_log()
 
         # Step-0 baseline snapshot: pre-tick state, no actions yet. Every
@@ -103,6 +117,7 @@ class Runner:
                 self._event_payload(event)
             )
 
+            # Phase 1: gather one action per store.
             actions: dict[int, dict[str, Any]] = {}
             for i, store in enumerate(self.stores):
                 obs = store.observe(
@@ -112,9 +127,13 @@ class Runner:
                 )
                 actions[i] = store.decide(obs)
 
+            # Phase 2: dispatch newly placed orders as scheduled callbacks.
             for i, store in enumerate(self.stores):
                 self._dispatch_orders(store, actions[i])
 
+            # Phase 3: realise demand for every (store, product) and
+            # settle the accounting. ``demand_traces`` is logged for
+            # observability — useful when debugging CRN drift.
             demand_traces: dict[int, dict[str, int]] = {}
             for i, store in enumerate(self.stores):
                 demand_traces[i] = self._process_demand(store, actions[i])
@@ -151,6 +170,8 @@ class Runner:
             },
             "stores": {},
         }
+        # Per-store sub-tree. ``step0_*`` fields capture the pre-run
+        # baseline so determinism tests can compare without re-running.
         for i, store in enumerate(self.stores):
             run_log["stores"][i] = {
                 "balance": [],
@@ -181,11 +202,13 @@ class Runner:
 
     @staticmethod
     def _event_payload(event) -> dict[str, Any] | None:
+        """Flatten a ``WorldEvent`` for JSON-friendly logging. ``None`` passthrough."""
         if event is None:
             return None
         return {
             "type": event.event_type,
             "severity": event.severity,
+            # ``list(...)`` so we don't smuggle a tuple/mutable ref into the log.
             "regions": list(event.affected_regions),
             "duration": event.duration,
         }
@@ -197,16 +220,21 @@ class Runner:
         ``adjusted_lead_time = int(base_lead_time / supply_factor)`` with a
         floor of 0.01 on the supply factor to avoid divide-by-zero.
         """
+        # Pull the order plan out of the action dict. Empty ⇒ early exit.
         orders = action.get("order", {})
         if not orders:
             return
         current_step = self.market.current_step()
+        # Region-level supply driving the lead-time adjustment.
         supply = self.market.market_state[store.region]["market_supply"]
+        # Floor at 0.01 so a depressed supply can't produce a divide-by-zero.
         supply_factor = max(0.01, supply / 100.0)
         for pid, qty in orders.items():
             if qty <= 0:
                 continue
+            # Base lead time per product (per-store copy).
             base_lead = store.delivery_lags[pid]
+            # Lower supply ⇒ longer effective lead time.
             adjusted_lead = int(base_lead / supply_factor)
             arrival_time = current_step + adjusted_lead
             self.event_engine.schedule(
@@ -226,17 +254,26 @@ class Runner:
         ``Market.sample_demand`` call — and therefore one ``world_rng``
         draw — regardless of whether it is in the active assortment.
         """
+        # Effective per-product prices for this tick (fall back to the
+        # store's current price if the policy didn't override).
         prices = action.get("price", {})
         orders = action.get("order", {})
+        # Demand trace returned for logging.
         traces: dict[str, int] = {}
         current_step = self.market.current_step()
+        # ``list(...)`` snapshots the key set — the loop body mutates
+        # store state but never the inventory key set, so this is purely
+        # defensive against accidental future changes.
         for pid in list(store.inventory.keys()):
             price = prices.get(pid, store.prices[pid])
             order_qty = orders.get(pid, 0)
+            # One ``world_rng`` draw per iteration — load-bearing for CRN.
             demand = self.market.sample_demand(
                 pid, store, price, current_step=current_step
             )
             store.settle(pid, demand=demand, price=price, order_qty=order_qty)
+            # Reflect the realised effective price back into the store
+            # so subsequent observations see the post-action state.
             store.prices[pid] = price
             traces[pid] = demand
         return traces
@@ -248,6 +285,7 @@ class Runner:
         demand_traces: dict[int, dict[str, int]] | None,
     ) -> None:
         """Append one timestep of state to ``run_log``."""
+        # Time axis — appended once per tick.
         run_log["global"]["time"]["simulation_step"].append(
             self.market.current_step()
         )
@@ -255,16 +293,20 @@ class Runner:
             self.market.current_date()
         )
 
+        # Per-region demand/supply snapshot.
         for region in self.market.regions:
             state = self.market.market_state[region]
             run_log["global"]["market_supply"][region].append(state["market_supply"])
             run_log["global"]["market_demand"][region].append(state["market_demand"])
 
+        # Per-product lifecycle snapshot.
         for pid, item in self.item_registry.items.items():
             run_log["global"]["products"][pid]["lifecycle_stage"].append(
                 item.lifecycle_stage
             )
 
+        # Per-store metrics — balance, active count, demand trace,
+        # plus a long per-product accounting tail.
         for i, store in enumerate(self.stores):
             store_log = run_log["stores"][i]
             action = actions.get(i, {})
@@ -274,6 +316,7 @@ class Runner:
             store_log["balance"].append(store.balance)
             store_log["active_product_count"].append(len(store.active_items))
             if demand_traces is None:
+                # Step-0 baseline ⇒ no demand drawn yet.
                 store_log["demand_trace"].append({})
             else:
                 store_log["demand_trace"].append(dict(demand_traces.get(i, {})))
@@ -294,6 +337,8 @@ class Runner:
                 product_log["revenue"].append(store.revenue.get(pid, 0.0))
                 product_log["total_cost"].append(store.total_cost.get(pid, 0.0))
                 product_log["holding_cost"].append(store.holding_cost.get(pid, 0.0))
+                # Profit recomputed at log time so a future change to
+                # ``Store.settle`` doesn't quietly desync this column.
                 product_log["profit"].append(
                     store.revenue.get(pid, 0.0) - store.total_cost.get(pid, 0.0)
                 )
@@ -303,7 +348,9 @@ def _make_delivery_callback(store: Store, pid: str, qty: int):
     """Bind ``(store, pid, qty)`` into a zero-arg callback for ``EventEngine``.
 
     A separate factory keeps each callback's closure independent — using a
-    naked lambda inside a loop would capture loop variables by reference.
+    naked lambda inside a loop would capture loop variables by reference
+    and every callback would end up calling ``store.deliver`` with the
+    *last* iteration's pid and qty.
     """
 
     def _callback() -> None:

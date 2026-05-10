@@ -3,7 +3,8 @@
 Demonstrates ``make_stores(triples)`` with three triples that share one
 ``StoreTemplate`` and one ``BaselinePolicy`` instance but vary
 ``init_seed`` so each store's step-0 active SKU set and stock allocation
-is distinct.
+is distinct. The right starting point for evaluating one policy across
+several heterogeneous starting conditions (a "robustness sweep").
 
 Run it directly::
 
@@ -41,6 +42,7 @@ from src.sim.scenario import (
 )
 
 
+# Five-product toy catalog. ``load_catalog`` assigns ``P0000``–``P0004`` ids.
 _CATALOG = load_catalog(
     [
         {
@@ -54,6 +56,8 @@ _CATALOG = load_catalog(
         {
             "name": "Widget B",
             "category": "Widgets",
+            # Cross-product correlation with Widget A — feeds into
+            # ``Market.cross_demand_factor``.
             "related_products": [["Widget A", 0.5]],
             "base_price": 30.0,
             "unit_cost": 18.0,
@@ -87,6 +91,9 @@ _CATALOG = load_catalog(
 )
 
 
+# Hand-authored ``MarketParams`` — domain knobs + math defaults flat
+# at one level. All seasonal months pooled into ``all_season`` so the
+# example doesn't exercise seasonality.
 _MARKET = MarketParams(
     cycle_len=365,
     cycle_amp=0.1,
@@ -117,6 +124,7 @@ _MARKET = MarketParams(
     cross_inv_lo=0.3,
     cross_inv_hi=0.7,
     cross_factor_range=(0.3, 1.6),
+    # Constant trend ⇒ no drift; the cycle and shocks dominate.
     trend=Constant(1.0),
     demand_shock=Normal(0.0, 5.0),
     supply_shock=Normal(0.0, 5.0),
@@ -124,6 +132,7 @@ _MARKET = MarketParams(
 )
 
 
+# Low-probability disruption events with fixed severity / duration.
 _DISRUPTION = DisruptionParams(
     event_prob=0.05,
     types=["natural_disaster", "economic_crisis"],
@@ -133,7 +142,10 @@ _DISRUPTION = DisruptionParams(
 )
 
 
+# Canonical 5-stage product lifecycle list.
 _LIFECYCLE_STAGES = ["introduction", "growth", "maturity", "decline", "dead"]
+# Strict-terminal lifecycle: every transition probability is zero so
+# every product stays at its ``init_stage`` for the whole run.
 _LIFECYCLE = ItemLifecycleParams(
     stages=_LIFECYCLE_STAGES,
     init_stage="maturity",
@@ -141,6 +153,9 @@ _LIFECYCLE = ItemLifecycleParams(
 )
 
 
+# Reusable store specification. Scalars only — no ``Distribution`` wraps,
+# so every store from this template starts with identical numerics modulo
+# ``init_rng`` selecting active SKUs.
 _TEMPLATE = StoreTemplate(
     id="standard",
     region="US",
@@ -154,6 +169,9 @@ _TEMPLATE = StoreTemplate(
 )
 
 
+# Single ``BaselinePolicy`` shared across all three stores. Sharing the
+# instance also means a single ``policy_rng`` is consumed across all
+# three stores' decision streams.
 _POLICY = BaselinePolicy(
     policy_seed=1000,
     min_qty=1,
@@ -171,6 +189,8 @@ _POLICY = BaselinePolicy(
 )
 
 
+# Scenario top-level binding — the CLI shim and standalone ``main``
+# both pick this up.
 scenario = Scenario(
     catalog=_CATALOG,
     market=_MARKET,
@@ -178,6 +198,7 @@ scenario = Scenario(
     item_lifecycle=_LIFECYCLE,
     stores=make_stores(
         [
+            # Three stores, same template + same policy, distinct seeds.
             (_TEMPLATE, 1, _POLICY),
             (_TEMPLATE, 2, _POLICY),
             (_TEMPLATE, 3, _POLICY),
@@ -192,6 +213,7 @@ scenario = Scenario(
 def main() -> None:
     """Run the scenario and dump artifacts to ``data/example_homogeneous``."""
     run_log = Runner(scenario).run()
+    # Co-locate artifacts under the project's ``data/`` folder.
     output = _PROJECT_ROOT / "data" / "example_homogeneous"
     DataExporter(scenario, run_log).export_all(str(output))
     print(f"Wrote run artifacts to {output}")

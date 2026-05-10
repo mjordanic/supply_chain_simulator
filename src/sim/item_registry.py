@@ -1,8 +1,9 @@
 """Typed ``ItemRegistry``.
 
-Per-item lifecycle state. Distribution-typed fields on
-``ItemLifecycleParams`` (and per-``Ware`` overrides) are resolved against
-``world_rng`` once at construction time; the cached scalar values feed
+Holds one live ``Item`` per catalog ``Ware`` plus the global lifecycle
+stage for each. Distribution-typed fields on ``ItemLifecycleParams``
+(and per-``Ware`` overrides) are resolved against ``world_rng`` once at
+construction time; the cached scalar values feed
 ``LifecycleClock.advance_stage`` on every tick.
 
 Per-``Ware`` overrides (issue 02): ``Ware.init_stage`` and
@@ -37,6 +38,7 @@ from src.sim.scenario import ItemLifecycleParams, Ware
 
 
 def _maybe_sample(value: Any, rng: Random) -> Any:
+    """If ``value`` is a ``Distribution``, draw one sample; otherwise pass through."""
     if isinstance(value, Distribution):
         return value.sample(rng)
     return value
@@ -48,12 +50,21 @@ def _resolve_stage_change_probs(
     rng: Random,
 ) -> dict[str, float]:
     """Pick override-or-default and sample any Distribution-valued entries."""
+    # ``override is None`` ⇒ fall back to the catalog-wide default table.
     source = override if override is not None else default
+    # ``_maybe_sample`` on each entry, in iteration order — so any
+    # ``Distribution``-valued probability consumes a deterministic
+    # ``world_rng`` draw at construction time.
     return {stage: float(_maybe_sample(prob, rng)) for stage, prob in source.items()}
 
 
 class Item:
-    """One product's mutable lifecycle state."""
+    """One product's mutable lifecycle state.
+
+    Constructed once per catalog entry by ``ItemRegistry.__init__``. The
+    only field that mutates after construction is ``lifecycle_stage``
+    (advanced by ``ItemRegistry.tick``); everything else is fixed.
+    """
 
     def __init__(
         self,
@@ -70,22 +81,44 @@ class Item:
         init_stock_share: float,
         seasonality: str = "all_season",
     ) -> None:
+        # Stable id assigned by ``load_catalog`` (``P0000``, ``P0001``, …).
         self.product_id = product_id
+        # Display name (free-form string).
         self.name = name
+        # Taxonomy category for grouping in dashboards / reports.
         self.category = category
+        # Cross-product correlation graph: ``[(other_pid, weight∈[0,1])]``.
         self.related_products = related_products
+        # Catalog-authored base price; ``Market`` uses it to compute the
+        # price-elasticity factor in ``sample_demand``.
         self.base_price = base_price
+        # Authoring cost per unit; ``Store`` charges this for orders and
+        # holding, and uses it as a price floor in the policy layer.
         self.unit_cost = unit_cost
+        # Current PLC stage — mutates each tick via ``advance_stage``.
         self.lifecycle_stage = lifecycle_stage
+        # Per-current-stage transition probability table (already
+        # resolved — no ``Distribution`` objects survive past here).
         self.stage_change_probs = stage_change_probs
+        # Hype amplitude ``α`` in the freshness curve. ``0`` ⇒ staple.
         self.freshness_alpha = freshness_alpha
+        # Hype decay length ``β`` in the freshness curve.
         self.freshness_decay = freshness_decay
+        # Weight used by ``StoreInitializer.init_store_state`` to
+        # allocate the initial-stock budget across the active set.
         self.init_stock_share = init_stock_share
+        # Seasonality label (closed enum on ``Ware``; used by
+        # ``Market.season_factor`` to pick peak vs. off multiplier).
         self.seasonality = seasonality
 
 
 class ItemRegistry:
-    """Catalog of ``Item``s indexed by ``product_id``."""
+    """Catalog of ``Item``s indexed by ``product_id``.
+
+    Owns the global lifecycle stage for every catalog SKU (one stage
+    across all stores) and its stochastic transitions. ``tick()``
+    advances every item exactly once per call using ``world_rng``.
+    """
 
     def __init__(
         self,
@@ -93,7 +126,10 @@ class ItemRegistry:
         catalog: list[Ware],
         world_rng: Random,
     ) -> None:
+        # Keep the params dataclass for downstream lookups (mostly tests).
         self.params = params
+        # The shared world RNG — every per-item Distribution sample
+        # draws from this stream so paired Scenarios stay CRN-aligned.
         self.rng = world_rng
         # Catalog-wide freshness defaults are resolved once. Sampling
         # order: before the per-Ware loop, so downstream world_rng
@@ -113,12 +149,19 @@ class ItemRegistry:
         self.default_init_stock_share = float(
             _maybe_sample(params.default_init_stock_share, world_rng)
         )
+        # ``product_id → Item`` index. Preserves catalog declaration
+        # order because Python dicts are insertion-ordered since 3.7.
         self.items: dict[str, Item] = {}
         for w in catalog:
+            # Resolve init_stage: per-Ware override beats catalog default.
             init_stage_source = (
                 w.init_stage if w.init_stage is not None else params.init_stage
             )
             init_stage = _maybe_sample(init_stage_source, world_rng)
+            # Resolve the per-stage transition table. ``override`` wins
+            # iff explicitly set on the Ware; otherwise reuse the
+            # catalog-wide default. Distribution-valued entries get
+            # sampled at this point.
             stage_change_probs = _resolve_stage_change_probs(
                 w.stage_change_probs,
                 params.default_stage_change_probs,
@@ -169,6 +212,9 @@ class ItemRegistry:
         """Advance every item one cyclic step via ``LifecycleClock``.
 
         One ``world_rng`` draw per item per tick — load-bearing for CRN.
+        Iteration order is catalog declaration order (dict
+        insertion-ordered) so two runs with the same ``world_seed`` see
+        the same draw sequence.
         """
         for item in self.items.values():
             item.lifecycle_stage = lifecycle_clock.advance_stage(
@@ -176,14 +222,17 @@ class ItemRegistry:
             )
 
     def stage(self, product_id: str) -> str | None:
+        """Current lifecycle stage of ``product_id``, or ``None`` if unknown."""
         item = self.items.get(product_id)
         return item.lifecycle_stage if item else None
 
     def seasonality(self, product_id: str) -> str | None:
+        """Seasonality label of ``product_id``, or ``None`` if unknown."""
         item = self.items.get(product_id)
         return item.seasonality if item else None
 
     def related(self, product_id: str) -> list[tuple[str, float]]:
+        """Cross-product correlation graph for ``product_id`` (copy)."""
         item = self.items.get(product_id)
         return list(item.related_products) if item else []
 

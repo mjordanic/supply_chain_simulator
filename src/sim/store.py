@@ -1,10 +1,15 @@
 """Public ``Store`` (issue 05).
 
-Replaces the issue-03 runner-internal ``_Store`` skeleton and the previous
-``StoreAgent`` from ``src/agents/base_agent.py``. The accounting math
-(revenue, holding/order/total cost, balance evolution, capacity-clamped
-deliveries, pending bookkeeping) is preserved verbatim from
-``StoreAgent``.
+A ``Store`` is a single retail-agent in the simulation. It owns:
+
+- a region tag plus operating parameters (capacity, holding rate, lead
+  time, order fee, opening balance);
+- per-product inventory, sales, demand, prices, and accounting counters
+  (revenue, holding cost, order cost, total cost);
+- a set of currently active SKUs plus an ``activation_tick`` map that
+  drives the per-(store, product) freshness curve;
+- a reference to an attached ``Policy`` (may be ``None`` for
+  determinism-test fixtures that don't make decisions).
 
 Two construction-shape changes vs. the old ``StoreAgent``:
 
@@ -19,9 +24,9 @@ Two construction-shape changes vs. the old ``StoreAgent``:
    ``scalar | Distribution``) are sampled lazily here against the
    ``init_rng``, replacing the old ``init_params`` dict-broadcast.
 
-The full integration pass (issue 07) wires per-step ``settle`` /
-``deliver`` calls into the Runner; this module owns the per-store math
-in isolation.
+The accounting math (revenue, holding/order/total cost, balance
+evolution, capacity-clamped deliveries, pending bookkeeping) is
+preserved verbatim from ``StoreAgent``.
 """
 
 from __future__ import annotations
@@ -56,8 +61,13 @@ class Store:
         freshness_decay: float = 1.0,
         item_registry: ItemRegistry | None = None,
     ) -> None:
+        # Keep the template handy for downstream lookups (and to make
+        # the construction inputs introspectable on the live ``Store``).
         self.template = template
+        # The per-store init RNG seed — captured for traceability;
+        # consumed inside ``init_store_state`` via ``Random(init_seed)``.
         self.init_seed = init_seed
+        # Attached decision-making policy (or ``None`` for skeleton runs).
         self.policy = policy
         # Catalog-wide freshness curve parameters. Plain-Store callers
         # (T4 unit tests) keep the no-op scalar default. The Runner
@@ -66,6 +76,8 @@ class Store:
         # scalar fields stay as a fallback for the registry-less path.
         self.freshness_alpha = float(freshness_alpha)
         self.freshness_decay = float(freshness_decay)
+        # Optional registry — when supplied, the freshness multiplier
+        # and the weighted initial-stock allocator both consult it.
         self.item_registry = item_registry
 
         # Resolve all step-0 state through the pure ``init_store_state``
@@ -78,12 +90,21 @@ class Store:
         # into the stock allocation; the registry-less path falls back
         # to the legacy even split.
         state = init_store_state(template, init_seed, catalog, item_registry)
+        # Operating geography for the store. ``Market`` uses this to
+        # route demand/supply state from the right region.
         self.region: str = state.region
+        # Total units of inventory the store can hold across all SKUs.
         self.capacity = state.capacity
+        # Cash balance — mutates each ``settle`` call.
         self.balance = state.balance
+        # Fraction of capacity initially filled (cached so reports can
+        # cite the realised value rather than re-sampling).
         self.init_stock_pct = state.init_stock_pct
+        # Default lead time for new orders (per-product copy below).
         self.delivery_lag = state.delivery_lag
+        # Per-step holding cost rate (per-product copy below).
         self.holding_rate = state.holding_rate
+        # Fixed fee per non-zero order.
         self.order_fee = state.order_fee
 
         # Active items keep insertion order so step-by-step iteration
@@ -92,27 +113,49 @@ class Store:
         self.active_items: list[str] = list(state.active_ids)
         # Step at which each product was last activated. Initial active
         # SKUs are deliberately *not* populated by ``init_store_state``
-        # today so the freshness curve evaluates to 1 at step 0
-        # (baseline-equivalent behaviour; explicit
-        # ``init_freshness="fresh"`` mode lands in issue 07).
+        # in baseline mode so the freshness curve evaluates to 1 at
+        # step 0; ``"fresh"`` mode seeds them at ``τ=0``.
         self.activation_tick: dict[str, int] = dict(state.activation_tick)
+        # Per-product on-hand units. Populated in the ``_register_item``
+        # loop below from ``state.inventory``.
         self.inventory: dict[str, int] = {}
+        # Units actually sold this step (≤ demand).
         self.sales: dict[str, int] = {}
+        # Realised demand this step (may exceed inventory ⇒ lost sales).
         self.demand: dict[str, int] = {}
+        # Per-product copy of the template lead time. Kept per-product
+        # so a future per-SKU lead time override can be wired without
+        # changing the runner.
         self.delivery_lags: dict[str, float] = {}
+        # Per-product holding cost rate.
         self.holding_rates: dict[str, float] = {}
+        # Units in transit per product. ``defaultdict(int)`` so deliver
+        # paths can decrement without an explicit zero-init.
         self.pending: defaultdict[str, int] = defaultdict(int)
+        # Currently active promotions: ``pid → {discount, duration, start_step}``.
         self.promotions: dict[str, Any] = {}
+        # End-of-cooldown step per product (post-promo recovery).
         self.promo_cooldown: dict[str, int] = {}
+        # Newly activated products that haven't yet placed their first
+        # replenishment — used by the policy's "initial order" branch.
         self.needs_init_order: set[str] = set()
+        # Current selling price per product (set initially to base_price).
         self.prices: dict[str, float] = {}
+        # Unit cost per product (used by holding/order cost math and as
+        # the per-product price floor in the policy).
         self.costs: dict[str, float] = {}
+        # Last-step holding cost per product (for the run log).
         self.holding_cost: dict[str, float] = {}
+        # Last-step revenue per product.
         self.revenue: dict[str, float] = {}
+        # Last-step order cost (qty × unit_cost) per product.
         self.order_cost: dict[str, float] = {}
+        # Last-step total cost (holding + order + per-order fee).
         self.total_cost: dict[str, float] = {}
 
         for w in catalog:
+            # Initialise every catalog SKU's bookkeeping, even those
+            # inactive at step 0 (their inventory will simply be 0).
             self._register_item(
                 w.product_id, w.base_price, w.unit_cost, state.inventory[w.product_id]
             )
@@ -123,6 +166,9 @@ class Store:
         """Initialise per-product bookkeeping fields for ``product_id``."""
         self.inventory[product_id] = stock
         self.sales[product_id] = 0
+        # Pull defaults from the per-store fields resolved by
+        # ``init_store_state`` — copies make the per-product dicts
+        # mutable independent of the per-store scalars.
         self.delivery_lags[product_id] = self.delivery_lag
         self.holding_rates[product_id] = self.holding_rate
         self.prices[product_id] = base_price
@@ -143,20 +189,29 @@ class Store:
         fixed ``order_fee`` applies iff ``order_qty > 0``. Balance is
         updated by ``revenue − total_cost``.
         """
+        # Clamp negative demand to zero. Negative draws can come from
+        # Gaussian shocks pushed below zero by the multiplier stack.
         demand = max(0, demand)
         self.demand[product_id] = demand
+        # Lost sales surface as ``demand > sold`` in the run log.
         sold = min(demand, self.inventory[product_id])
         self.sales[product_id] = sold
+        # Inventory decrement — ``max(0, ...)`` is belt-and-suspenders
+        # given ``sold <= inventory`` above.
         self.inventory[product_id] = max(0, self.inventory[product_id] - sold)
 
+        # Revenue is realised at the effective sell price (not base price).
         self.revenue[product_id] = sold * price
+        # Holding cost on residual inventory: units × rate × unit_cost.
         self.holding_cost[product_id] = (
             self.inventory[product_id]
             * self.holding_rates[product_id]
             * self.costs[product_id]
         )
+        # Order cost = qty ordered × unit_cost.
         self.order_cost[product_id] = order_qty * self.costs[product_id]
 
+        # Fixed fee charged iff we actually ordered something this step.
         fee = self.order_fee if order_qty > 0 else 0
         self.total_cost[product_id] = (
             self.holding_cost[product_id] + self.order_cost[product_id] + fee
@@ -175,9 +230,13 @@ class Store:
         an over-delivered order is no longer in-flight even if part of it
         was dropped at the receiving dock.
         """
+        # Remaining headroom across all SKUs (single shared capacity).
         space = self.capacity - sum(self.inventory.values())
+        # Receive what fits; the rest is silently dropped (matches old behaviour).
         received = min(qty, space)
         self.inventory[product_id] += received
+        # Pending count drops by the FULL dispatched ``qty`` even when
+        # part of it was dropped. See the docstring for the rationale.
         self.pending[product_id] = max(0, self.pending.get(product_id, 0) - qty)
 
     def activate_item(self, product_id: str, current_step: int = 0) -> None:
@@ -188,9 +247,12 @@ class Store:
         every (re-)activation. ``deactivate_item`` deliberately leaves
         the entry alone — the next activation overwrites it.
         """
+        # Avoid duplicate entries in the ordered active list.
         if product_id not in self.active_items:
             self.active_items.append(product_id)
+        # Re-seed the freshness clock at ``current_step``.
         self.activation_tick[product_id] = current_step
+        # Flag so the policy places an initial replenishment order next tick.
         self.needs_init_order.add(product_id)
 
     def deactivate_item(self, product_id: str) -> None:
@@ -199,25 +261,32 @@ class Store:
             self.active_items.remove(product_id)
 
     def is_active(self, product_id: str) -> bool:
+        """Return whether ``product_id`` is in the active assortment."""
         return product_id in self.active_items
 
     def freshness_multiplier(self, product_id: str, current_step: int) -> float:
         """Return the per-(store, product) freshness factor at ``current_step``.
 
         Products with no entry in ``activation_tick`` (initial active
-        SKUs, or never-activated SKUs) return ``1.0`` — no hype boost,
-        no penalty. Activated products evaluate ``FreshnessCurve`` with
-        ``τ = current_step − activation_tick[product_id]`` against the
-        per-``Ware`` ``(α, β)`` resolved by ``ItemRegistry`` when one is
-        attached, else the catalog-wide scalar fallback.
+        SKUs under baseline mode, or never-activated SKUs) return
+        ``1.0`` — no hype boost, no penalty. Activated products evaluate
+        ``FreshnessCurve`` with ``τ = current_step − activation_tick[product_id]``
+        against the per-``Ware`` ``(α, β)`` resolved by ``ItemRegistry``
+        when one is attached, else the catalog-wide scalar fallback.
         """
+        # "No entry" ⇒ no freshness effect. This is what makes
+        # baseline-mode initial actives skip the hype window.
         if product_id not in self.activation_tick:
             return 1.0
+        # Ticks since (re-)activation.
         tau = current_step - self.activation_tick[product_id]
         if self.item_registry is not None:
+            # Prefer per-Ware overrides resolved by the registry.
             alpha = self.item_registry.freshness_alpha(product_id)
             decay = self.item_registry.freshness_decay(product_id)
         else:
+            # Registry-less path (T4 unit tests): use the catalog-wide
+            # scalar fallback supplied at construction.
             alpha = self.freshness_alpha
             decay = self.freshness_decay
         return freshness_curve.multiplier(alpha, decay, tau)
@@ -235,12 +304,17 @@ class Store:
         relationships; pass ``None`` (default) for skeleton flows where the
         related-products graph is not consulted.
         """
+        # Per-product cross-correlation graph. ``registry`` is the
+        # authoritative source when supplied; otherwise hand back empty
+        # graphs so the policy's cross-price branch becomes a no-op.
         related: dict[str, list[tuple[str, float]]]
         if registry is not None:
             related = {pid: registry.related(pid) for pid in self.inventory}
         else:
             related = {pid: [] for pid in self.inventory}
 
+        # Build a snapshot dict — every value is a *copy* of mutable
+        # state so the policy can't accidentally mutate the store.
         return {
             "current_sim_step": step,
             "region": self.region,
@@ -267,17 +341,26 @@ class Store:
         """
         if self.policy is None:
             return {}
+        # Policy returns a dict with keys: promotions, promotion_cooldown,
+        # order, price, activate, deactivate.
         decisions = self.policy.decide(observation)
 
+        # Reflect promotion plan back into store state.
         self.promotions = decisions.get("promotions", {})
         self.promo_cooldown = decisions.get("promotion_cooldown", {})
 
+        # Add positive-qty orders to ``pending`` so the runner can
+        # schedule delivery callbacks and other consumers see in-transit
+        # counts. ``needs_init_order`` is cleared as soon as the
+        # first-replenishment order is placed.
         for pid, qty in decisions.get("order", {}).items():
             if qty > 0:
                 if pid in self.needs_init_order:
                     self.needs_init_order.remove(pid)
                 self.pending[pid] += qty
 
+        # Pass the step to activate_item so the freshness clock resets
+        # to the actual tick rather than always to 0.
         current_step = int(observation.get("current_sim_step", 0))
         for pid in decisions.get("activate", []):
             self.activate_item(pid, current_step)

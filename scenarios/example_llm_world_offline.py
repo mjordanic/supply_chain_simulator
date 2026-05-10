@@ -1,6 +1,6 @@
 """Example: WorldBuilder wired to a canned (offline) LLM client.
 
-Demonstrates the five-call pipeline without needing ``OPENAI_API_KEY``.
+Demonstrates the full pipeline without needing ``OPENAI_API_KEY``.
 ``CannedClient`` implements the ``LLMClient`` Protocol and pops a
 pre-built Pydantic payload per ``structured_completion`` call. This is
 the same test seam used by ``tests/llm/test_world_builder.py``.
@@ -29,6 +29,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
+# Standalone execution: project root on the import path.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -62,6 +63,8 @@ from src.sim.scenario import (
 )
 
 
+# Bound on the schema TypeVar so ``structured_completion`` is statically
+# typed as "returns an instance of the same schema".
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -74,14 +77,18 @@ class CannedClient:
     """
 
     def __init__(self, responses: list[BaseModel]) -> None:
+        # Mutable copy of the response queue — popped in-order on each call.
         self._responses = list(responses)
 
     def structured_completion(
         self, *, system: str, user: str, schema: type[T]
     ) -> T:
+        """Return the next canned payload; raise if the queue is exhausted or schemas mismatch."""
         if not self._responses:
             raise RuntimeError("CannedClient: out of canned responses")
         payload = self._responses.pop(0)
+        # Type-check so a re-ordered call sequence fails loudly rather
+        # than corrupting the build.
         if not isinstance(payload, schema):
             raise RuntimeError(
                 f"CannedClient: expected {schema.__name__}, got "
@@ -90,6 +97,9 @@ class CannedClient:
         return payload  # type: ignore[return-value]
 
 
+# --- canned payloads, one per LLM call in the WorldBuilder pipeline ---
+
+# 1. Market-domain slice authored as if by the LLM.
 _MARKET = MarketDomain(
     cycle_len=365,
     peak_factor=1.3,
@@ -106,6 +116,7 @@ _MARKET = MarketDomain(
 )
 
 
+# 2. Taxonomy: three buckets with hand-tuned target shares.
 _TAXONOMY = Taxonomy(
     archetype="fashion_retail",
     categories=[
@@ -116,6 +127,8 @@ _TAXONOMY = Taxonomy(
 )
 
 
+# 3. Catalog: six concrete SKUs (matching the skeleton allocation
+# produced by ``allocate_skeletons(n=6, _TAXONOMY)``).
 _CATALOG = Catalog(
     items=[
         CatalogItem(
@@ -164,6 +177,7 @@ _CATALOG = Catalog(
 )
 
 
+# 4. Correlations: one ``ItemRelations`` per catalog item, in order.
 _CORRELATIONS = Correlations(
     items=[
         ItemRelations(name="Linen Shirt", related=[]),
@@ -182,6 +196,7 @@ _CORRELATIONS = Correlations(
 )
 
 
+# 5. Freshness curves: jeans + belt are staples (α=0), the rest get hype.
 _FRESHNESS = FreshnessSet(
     items=[
         ItemFreshness(name="Linen Shirt", alpha=0.2, decay=30.0),
@@ -194,6 +209,7 @@ _FRESHNESS = FreshnessSet(
 )
 
 
+# 6. Store templates: a "flagship" (bigger capacity / balance) + a "standard".
 _TEMPLATES = StoreTemplateList(
     templates=[
         StoreTemplateSpec(
@@ -224,6 +240,8 @@ _TEMPLATES = StoreTemplateList(
 )
 
 
+# Wire the canned client into the WorldBuilder and run the same pipeline
+# the production scenario uses — no special-case code path.
 _client = CannedClient(
     [_MARKET, _TAXONOMY, _CATALOG, _CORRELATIONS, _FRESHNESS, _TEMPLATES]
 )
@@ -231,6 +249,7 @@ _builder = WorldBuilder(archetype="fashion_retail", client=_client)
 _world = _builder.build(n_items=len(_CATALOG.items))
 
 
+# Use the "standard" template for the per-store roster.
 _template = _world.store_templates["standard"]
 
 
@@ -282,6 +301,7 @@ scenario = Scenario.from_world(
 
 
 def main() -> None:
+    """Run the scenario and dump artifacts to ``data/example_llm_world_offline``."""
     run_log = Runner(scenario).run()
     output = _PROJECT_ROOT / "data" / "example_llm_world_offline"
     DataExporter(scenario, run_log).export_all(str(output))

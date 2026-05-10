@@ -1,27 +1,40 @@
-"""``WorldBuilder``: six-stage catalog + store/market builds.
+"""``WorldBuilder``: LLM-driven world generator.
 
-Orchestrates the LLM stages plus a deterministic Python sampler:
+Given a single archetype string (``"fashion_retail"``, ``"grocery"``,
+…), ``WorldBuilder.build(n_items)`` returns a runnable
+``World(catalog, market, store_templates)`` artifact. The result is
+deliberately *partial* — disruption parameters, item-lifecycle
+parameters, policies, and seeds remain author-supplied — because that
+slice is what stays domain-agnostic.
+
+Pipeline (each stage is cached per-builder instance):
 
 1. ``build_market_domain_params()`` — one LLM call producing the
    domain-meaningful slice; ``MarketParams`` is assembled by merging the
    slice with hand-set math defaults. Sets ``regions`` for downstream.
 2. ``build_taxonomy()`` — one LLM call, returns ``Taxonomy``.
-3. ``sample_catalog(n)`` — deterministic skeleton allocator distributes
-   ``n`` slots across taxonomy categories proportional to ``target_share``;
-   one LLM call names+prices the slots into a ``Catalog``; a chunked LLM
-   call authors cross-product ``related_products`` against the explicit
-   name list; a second chunked LLM call authors per-item freshness
-   curve params (``alpha``, ``decay``). Refs that don't resolve (or
-   self-references / duplicates) are dropped at the boundary rather
-   than triggering retries — the prompt-bounded candidate sets keep
-   this near-zero in practice. Output is converted to ``list[Ware]``
-   via ``load_catalog``; items the LLM didn't author for freshness
-   keep ``Ware`` defaults of ``None`` so ``ItemRegistry`` falls back
-   to ``ItemLifecycleParams`` defaults.
+3. ``sample_catalog(n)`` — four sub-steps. A deterministic Python
+   skeleton allocator distributes ``n`` slots across taxonomy
+   categories proportional to ``target_share``; one LLM call names and
+   prices the slots; a chunked LLM call authors cross-product
+   ``related_products`` against the explicit name list; a chunked LLM
+   call authors per-``Ware`` freshness curve params (``alpha``,
+   ``decay``). Refs that don't resolve (or self-references /
+   duplicates) are dropped at the boundary rather than triggering
+   retries — the prompt-bounded candidate sets keep this near-zero in
+   practice. Output is converted to ``list[Ware]`` via ``load_catalog``;
+   items the LLM didn't author for freshness keep ``Ware`` defaults of
+   ``None`` so ``ItemRegistry`` falls back to ``ItemLifecycleParams``
+   defaults.
 4. ``build_store_templates()`` — one LLM call, returns
    ``dict[str, StoreTemplate]``. The starting roster is sampled at
    store-construction time from ``init_active_count`` so this prompt no
    longer depends on the catalog.
+
+Total LLM calls for ``build(n_items)``:
+``2 + ceil(n/correlations_chunk_size) + ceil(n/freshness_chunk_size) + 1``
+(market, taxonomy, catalog, chunked correlations, chunked freshness,
+templates).
 
 Schema-failure retry feeds the previous validation error back into the
 next prompt (see ``llm.prompts._with_retry``).
@@ -30,15 +43,22 @@ next prompt (see ``llm.prompts._with_retry``).
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from openai import APIConnectionError
 from pydantic import BaseModel, ValidationError
 
 from src.llm.openai_client import LLMClient
+
+
+# Module-scoped logger; surfaced via ``logging.basicConfig`` in
+# scenarios.
+logger = logging.getLogger(__name__)
 from src.llm.prompts import (
     catalog_prompt,
     correlations_prompt,
@@ -66,8 +86,11 @@ from src.sim.scenario import (
 )
 
 
+# Bumped manually when the builder/output shape changes; written into
+# ``World.meta`` so old cached worlds can be detected on load.
 BUILDER_VERSION = "1"
 
+# Default retry budget per LLM stage when schema validation fails.
 _DEFAULT_MAX_RETRIES = 3
 
 # Correlations are authored in chunks so each call stays within the model's
@@ -84,7 +107,10 @@ _DEFAULT_FRESHNESS_CHUNK_SIZE = 50
 
 
 # Hand-set math defaults applied to every ``MarketParams`` produced by
-# ``build_market_domain_params``. The LLM does not author these.
+# ``build_market_domain_params``. The LLM does not author these. Keeping
+# them centralised here means a downstream tweak (e.g. a new
+# ``stage_multipliers["dead"]`` value) propagates to every generated
+# world automatically.
 _MARKET_MATH_DEFAULTS: dict[str, Any] = {
     "cycle_amp": 0.1,
     "correlation": 0.7,
@@ -116,7 +142,13 @@ _MARKET_MATH_DEFAULTS: dict[str, Any] = {
 
 @dataclass
 class World:
-    """LLM-generated world artifact consumed by ``Scenario`` authoring."""
+    """LLM-generated world artifact consumed by ``Scenario`` authoring.
+
+    Three structured fields: ``catalog`` (list of ``Ware``), ``market``
+    (full ``MarketParams``), and ``store_templates`` (``dict[id,
+    StoreTemplate]``). ``meta`` carries provenance for the cache:
+    archetype, n_items, model id, builder version, build timestamp.
+    """
 
     catalog: list[Ware]
     market: MarketParams
@@ -124,6 +156,7 @@ class World:
     meta: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-friendly nested dict."""
         return {
             "catalog": [_ware_to_dict(w) for w in self.catalog],
             "market": self.market.to_dict(),
@@ -132,15 +165,18 @@ class World:
         }
 
     def to_json(self, path: str | Path | None = None) -> str:
+        """Serialise to JSON, optionally writing to ``path`` (creating dirs)."""
         s = json.dumps(self.to_dict())
         if path is not None:
             p = Path(path)
+            # Ensure the cache directory exists.
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(s, encoding="utf-8")
         return s
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "World":
+        """Inverse of ``to_dict``: rebuild catalog + market + templates."""
         return cls(
             catalog=[_ware_from_dict(w) for w in d["catalog"]],
             market=MarketParams.from_dict(d["market"]),
@@ -153,9 +189,17 @@ class World:
 
     @classmethod
     def from_json(cls, source: str | Path) -> "World":
+        """Load a ``World`` from a path or a JSON string.
+
+        Accepts both ``Path`` and ``str``; if the string looks like a
+        file path that exists, it's read as a file, otherwise it's
+        treated as the raw JSON payload.
+        """
         if isinstance(source, Path):
             text = source.read_text(encoding="utf-8")
         else:
+            # ``Path`` raises ``OSError`` on absurdly long inputs — fall
+            # back to "treat as raw JSON" in that case.
             p = Path(source)
             try:
                 is_file = p.exists()
@@ -165,6 +209,7 @@ class World:
         return cls.from_dict(json.loads(text))
 
     def catalog_df(self) -> Any:
+        """One-row-per-catalog-Ware DataFrame view (for notebook inspection)."""
         import pandas as pd
         rows = []
         for w in self.catalog:
@@ -174,6 +219,7 @@ class World:
                 "category": w.category,
                 "base_price": w.base_price,
                 "unit_cost": w.unit_cost,
+                # Convenience-derived margin column.
                 "margin": w.base_price - w.unit_cost,
                 "seasonality": w.seasonality,
                 "freshness_alpha": w.freshness_alpha,
@@ -186,6 +232,7 @@ class World:
         return pd.DataFrame(rows)
 
     def store_templates_df(self) -> Any:
+        """One-row-per-template DataFrame view."""
         import pandas as pd
         from dataclasses import fields
         rows = []
@@ -194,13 +241,17 @@ class World:
         return pd.DataFrame(rows)
 
     def market_df(self) -> Any:
+        """Single-row DataFrame view of ``MarketParams``."""
         import pandas as pd
         from dataclasses import fields
         row = {f.name: getattr(self.market, f.name) for f in fields(self.market)}
         return pd.DataFrame([row])
 
     def meta_df(self) -> Any:
+        """Single-row DataFrame view of the build-provenance ``meta`` block."""
         import pandas as pd
+        # Pinned column set so an empty / missing meta still produces
+        # the same schema.
         _META_COLUMNS = ["archetype", "n_items", "model", "builder_version", "built_at"]
         if self.meta is None:
             return pd.DataFrame(columns=_META_COLUMNS)
@@ -217,18 +268,25 @@ def allocate_skeletons(n: int, taxonomy: Taxonomy) -> list[str]:
     """
     if n <= 0:
         raise ValueError("allocate_skeletons: n must be positive")
+    # Pull the category list once for repeated indexing below.
     cats = taxonomy.categories
     if not cats:
         raise ValueError("allocate_skeletons: taxonomy has no categories")
 
+    # Normalise denominators in case shares don't sum to exactly 1.
     total = sum(c.target_share for c in cats)
+    # Per-category slot count — populated by one of two branches below.
     counts: list[int] = []
     if n >= len(cats):
         # Floor each share, top up the largest-shortfall category until total == n.
         floors = [int((n * c.target_share) // total) for c in cats]
         floors = [max(1, f) for f in floors]  # every category at least one
+        # Rounding remainder. Positive ⇒ we need to add slots; negative
+        # (rare, when the floor + min-1 stretches past n) ⇒ we need to
+        # subtract.
         deficit = n - sum(floors)
         if deficit > 0:
+            # Add to highest-share categories first.
             order = sorted(
                 range(len(cats)),
                 key=lambda i: cats[i].target_share / total,
@@ -240,6 +298,7 @@ def allocate_skeletons(n: int, taxonomy: Taxonomy) -> list[str]:
                 floors[i] += 1
                 deficit -= 1
         elif deficit < 0:
+            # Remove from lowest-share categories first; never below 1.
             order = sorted(
                 range(len(cats)),
                 key=lambda i: cats[i].target_share / total,
@@ -261,6 +320,7 @@ def allocate_skeletons(n: int, taxonomy: Taxonomy) -> list[str]:
         keep = set(order[:n])
         counts = [1 if i in keep else 0 for i in range(len(cats))]
 
+    # Expand counts → flat list of category names in taxonomy order.
     return [
         cat.name for cat, count in zip(cats, counts) for _ in range(count)
     ]
@@ -276,11 +336,14 @@ def _sanitise_correlations(
     authored — the caller merges chunk dicts into the final per-catalog
     map (initialised to empty lists).
     """
+    # Output map for this chunk.
     out: dict[str, list[tuple[str, float]]] = {}
     for entry in payload.items:
         if entry.name not in valid_names:
             continue  # LLM hallucinated an item that's not in the catalog
+        # Per-item dedup set so duplicate refs collapse to one entry.
         seen: set[str] = set()
+        # Per-item related list (preserves first-seen order).
         bag: list[tuple[str, float]] = []
         for ref in entry.related:
             if ref.name not in valid_names:
@@ -315,9 +378,9 @@ def _sanitise_freshness(
 class WorldBuilder:
     """Orchestrate the LLM stages plus deterministic skeleton sampling.
 
-    Mutating the same instance across calls is fine; ``build_taxonomy`` and
-    later builders cache their last result so ``build()`` does not re-call
-    the LLM redundantly. Pass a fresh ``WorldBuilder`` to start over.
+    Mutating the same instance across calls is fine; each stage method
+    caches its last result so ``build()`` does not re-call the LLM
+    redundantly. Pass a fresh ``WorldBuilder`` to start over.
     """
 
     def __init__(
@@ -328,22 +391,33 @@ class WorldBuilder:
         correlations_chunk_size: int = _DEFAULT_CORRELATIONS_CHUNK_SIZE,
         freshness_chunk_size: int = _DEFAULT_FRESHNESS_CHUNK_SIZE,
     ) -> None:
+        # Validate chunk sizes upfront — zero/negative would silently
+        # produce no calls and an empty result.
         if correlations_chunk_size <= 0:
             raise ValueError("correlations_chunk_size must be positive")
         if freshness_chunk_size <= 0:
             raise ValueError("freshness_chunk_size must be positive")
+        # Archetype string passed verbatim into every prompt.
         self.archetype = archetype
+        # ``LLMClient`` implementation — production OpenAI client or a test fake.
         self.client = client
+        # Per-call retry budget when Pydantic validation fails.
         self.max_retries = max_retries
+        # Per-chunk size for the chunked correlations / freshness calls.
         self.correlations_chunk_size = correlations_chunk_size
         self.freshness_chunk_size = freshness_chunk_size
+        # Per-stage caches. ``None`` ⇒ "not yet built"; subsequent calls
+        # reuse the cached result so ``build()`` is idempotent.
         self._taxonomy: Taxonomy | None = None
         self._catalog: list[Ware] | None = None
         self._templates: dict[str, StoreTemplate] | None = None
         self._market: MarketParams | None = None
+        # Region list resolved by the market call; consumed by the
+        # store-templates prompt.
         self._regions: list[str] | None = None
 
     def build_taxonomy(self) -> Taxonomy:
+        """Return (and cache) the LLM-authored ``Taxonomy``."""
         if self._taxonomy is not None:
             return self._taxonomy
         result = self._call_with_retry(
@@ -378,10 +452,14 @@ class WorldBuilder:
         """
         if n <= 0:
             raise ValueError("sample_catalog: n must be positive")
+        # Stage 2: deterministic skeleton allocation (uses cached taxonomy).
         taxonomy = self.build_taxonomy()
         skeletons = allocate_skeletons(n, taxonomy)
+        # Encode taxonomy as JSON for the catalog prompt — keeps the
+        # category context tight without bloating the user message.
         taxonomy_json = taxonomy.model_dump_json()
 
+        # Stage 3a: catalog naming.
         catalog_payload = self._call_with_retry(
             schema=Catalog,
             prompt_builder=lambda err: catalog_prompt(
@@ -389,16 +467,23 @@ class WorldBuilder:
             ),
         )
 
+        # Catalog name list & lookup set for downstream sanitisation.
         catalog_names = [it.name for it in catalog_payload.items]
         valid_names = set(catalog_names)
+        # (name, category) pairs used as the chunked input for the
+        # correlations & freshness prompts.
         item_pairs = [(it.name, it.category) for it in catalog_payload.items]
 
+        # Stage 3b: chunked correlations. Pre-seed every catalog name
+        # with an empty related list so items the LLM omits stay valid.
         related_by_name: dict[str, list[tuple[str, float]]] = {
             n: [] for n in catalog_names
         }
         corr_chunk_size = self.correlations_chunk_size
         for start in range(0, len(item_pairs), corr_chunk_size):
             chunk = item_pairs[start : start + corr_chunk_size]
+            # Bind ``_chunk=chunk`` in the lambda to dodge the
+            # "late-binding loop variable" footgun.
             payload = self._call_with_retry(
                 schema=Correlations,
                 prompt_builder=lambda err, _chunk=chunk: correlations_prompt(
@@ -409,6 +494,8 @@ class WorldBuilder:
                 _sanitise_correlations(payload, valid_names)
             )
 
+        # Stage 3c: chunked freshness. Authored entries override the
+        # ``Ware`` default; missing entries stay ``None``.
         freshness_by_name: dict[str, tuple[float, float]] = {}
         fresh_chunk_size = self.freshness_chunk_size
         for start in range(0, len(item_pairs), fresh_chunk_size):
@@ -423,11 +510,14 @@ class WorldBuilder:
                 _sanitise_freshness(payload, valid_names)
             )
 
+        # Stitch the per-item dicts together into kwargs for ``load_catalog``.
         items: list[dict[str, Any]] = []
         for it in catalog_payload.items:
             d: dict[str, Any] = {
                 "name": it.name,
                 "category": it.category,
+                # Convert the sanitised correlation tuples into the
+                # ``[[name, corr], …]`` list shape ``load_catalog`` expects.
                 "related_products": [
                     [rel_name, corr]
                     for rel_name, corr in related_by_name[it.name]
@@ -436,6 +526,7 @@ class WorldBuilder:
                 "unit_cost": it.unit_cost,
                 "seasonality": it.seasonality.value,
             }
+            # Only set freshness fields when the LLM actually authored them.
             if it.name in freshness_by_name:
                 alpha, decay = freshness_by_name[it.name]
                 d["freshness_alpha"] = alpha
@@ -454,6 +545,7 @@ class WorldBuilder:
         """
         if self._templates is not None:
             return self._templates
+        # Ensure regions are resolved (drives the prompt's geography list).
         regions = self._regions_from_market()
 
         payload = self._call_with_retry(
@@ -462,6 +554,7 @@ class WorldBuilder:
                 self.archetype, regions, err
             ),
         )
+        # Materialise the dict keyed by template id.
         templates: dict[str, StoreTemplate] = {}
         for spec in payload.templates:
             templates[spec.id] = StoreTemplate(
@@ -480,12 +573,15 @@ class WorldBuilder:
         return templates
 
     def build_market_domain_params(self) -> MarketParams:
+        """One LLM call producing the domain slice; merged with math defaults."""
         if self._market is not None:
             return self._market
+        # Domain-meaningful slice authored by the LLM.
         domain = self._call_with_retry(
             schema=MarketDomain,
             prompt_builder=lambda err: market_domain_prompt(self.archetype, err),
         )
+        # Build the merged params: LLM slice ∪ hand-set math defaults.
         merged: dict[str, Any] = {
             "cycle_len": domain.cycle_len,
             "peak_factor": domain.peak_factor,
@@ -498,19 +594,23 @@ class WorldBuilder:
         }
         merged.update(_MARKET_MATH_DEFAULTS)
         self._market = MarketParams(**merged)
+        # Cache regions for the templates prompt.
         self._regions = list(domain.regions)
         return self._market
 
     def build(self, n_items: int) -> World:
         """Run all stages and return the merged ``World``.
 
-        Order: market_domain (sets regions) → taxonomy → catalog (three
-        sub-calls: catalog → correlations → freshness) → store_templates.
-        Cached results are reused on re-entry.
+        Order: ``build_market_domain_params`` (sets regions) →
+        ``sample_catalog`` (which internally builds taxonomy +
+        correlations + freshness) → ``build_store_templates``.
+        Cached results are reused on re-entry, so a second ``build``
+        call won't re-hit the API.
         """
         market = self.build_market_domain_params()
         catalog = self.sample_catalog(n_items)
         templates = self.build_store_templates()
+        # Provenance block, written into ``world.json`` on first save.
         meta: dict[str, Any] = {
             "archetype": self.archetype,
             "n_items": n_items,
@@ -552,24 +652,44 @@ class WorldBuilder:
         ``ValidationError``). Use it for cross-payload invariants the
         per-call schema cannot express.
         """
+        # Last seen error string — drives the retry preamble next iteration.
         last_error: str | None = None
+        # Original exception for the eventual ``raise … from`` chain.
         last_exc: ValidationError | None = None
-        for _ in range(self.max_retries):
+        for attempt in range(self.max_retries):
             system, user = prompt_builder(last_error)
+            logger.info(
+                "WorldBuilder LLM request schema=%s attempt=%s/%s",
+                schema.__name__,
+                attempt + 1,
+                self.max_retries,
+            )
             try:
                 parsed = self.client.structured_completion(
                     system=system, user=user, schema=schema
                 )
+            except APIConnectionError:
+                # Network/proxy errors aren't going to fix themselves
+                # via prompt retries — propagate so the caller can act.
+                logger.error(
+                    "WorldBuilder: connection error during schema=%s "
+                    "(not retried; fix network/base URL)",
+                    schema.__name__,
+                )
+                raise
             except ValidationError as e:
+                # Stash the error string for the next attempt's preamble.
                 last_error = str(e)
                 last_exc = e
                 continue
             if post_validate is not None:
+                # Cross-payload invariant check; same retry channel.
                 err_msg = post_validate(parsed)
                 if err_msg is not None:
                     last_error = err_msg
                     continue
             return parsed
+        # Budget exhausted — raise with full context for the operator.
         raise RuntimeError(
             f"WorldBuilder: schema {schema.__name__} failed validation "
             f"after {self.max_retries} attempts; last error:\n{last_error}"
@@ -577,7 +697,7 @@ class WorldBuilder:
 
 
 class LLMBuildAbortedError(Exception):
-    """Raised when a `load_or_build_world` call is aborted by the user or the environment."""
+    """Raised when a ``load_or_build_world`` call is aborted by the user or the environment."""
 
 
 def load_or_build_world(
@@ -588,17 +708,20 @@ def load_or_build_world(
     force_rebuild: bool = False,
     auto_confirm: bool = False,
 ) -> "World":
-    """Return a cached World or build one with user consent.
+    """Return a cached ``World`` or build one with user consent.
 
     Looks for ``<base_dir>/<name>/world.json``. Returns it immediately on a
     cache hit (unless ``force_rebuild=True``). On a cache miss (or rebuild),
     prints a two-line warning to stderr and, unless ``auto_confirm=True``,
     prompts the user before invoking ``build_fn``.
     """
+    # Conventional cache path: ``<base_dir>/<name>/world.json``.
     path = Path(base_dir) / name / "world.json"
     if path.exists() and not force_rebuild:
         return World.from_json(path)
 
+    # Cache miss / forced rebuild — let the operator confirm so a
+    # surprise OpenAI bill never happens silently.
     print(f"World cache not found or rebuild forced: {path}", file=sys.stderr)
     print("Building requires 5+ OpenAI calls.", file=sys.stderr)
 
@@ -606,13 +729,18 @@ def load_or_build_world(
         try:
             response = input("  Press Enter to proceed, anything else to abort: ")
         except (KeyboardInterrupt, EOFError) as exc:
+            # ``EOFError`` happens in non-interactive contexts
+            # (CI / piped invocation). Surface that fact in the
+            # exception type so callers can handle it.
             raise LLMBuildAbortedError(
                 f"Build aborted due to {type(exc).__name__}; "
                 "use auto_confirm=True for non-interactive runs."
             ) from exc
         if response.strip():
+            # Any non-empty response is treated as "no".
             raise LLMBuildAbortedError(f"Build aborted by user: {response!r}")
 
+    # Authorised build. Persist to disk so subsequent runs hit cache.
     world = build_fn()
     world.to_json(path)
     return world

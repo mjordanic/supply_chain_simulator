@@ -1,6 +1,7 @@
 """LLM prompts for the world-builder pipeline.
 
-One function per LLM stage. Each returns ``(system, user)`` tuple. The
+One function per LLM stage. Each returns a ``(system, user)`` tuple
+suitable for the ``OpenAIClient.structured_completion`` call. The
 ``last_error`` argument prepends a validation-failure block to the user
 message so the LLM sees what was wrong on the previous attempt; pass
 ``None`` on the first attempt to omit it.
@@ -9,12 +10,17 @@ The catalog flow is split across ``catalog_prompt`` (per-item basics:
 name, category, price, cost, seasonality), ``correlations_prompt``
 (cross-product references), and ``freshness_prompt`` (per-item
 freshness curve params). Splitting keeps each prompt narrow enough
-that cheap models stay reliable.
+that cheap models stay reliable. ``correlations`` and ``freshness``
+are also *chunked* by the caller — see ``world_builder.WorldBuilder``.
 """
 
 from __future__ import annotations
 
 
+# Templated preamble prepended to a user prompt on retry. ``{error}``
+# is the stringified Pydantic ``ValidationError`` from the previous
+# attempt; surfacing it verbatim has been the most reliable way to
+# coax cheap models into producing a schema-compliant response.
 _RETRY_PREAMBLE = (
     "Your previous response failed schema validation. "
     "The exact validation error was:\n\n{error}\n\n"
@@ -23,6 +29,7 @@ _RETRY_PREAMBLE = (
 
 
 def _with_retry(user: str, last_error: str | None) -> str:
+    """If ``last_error`` is non-empty, prepend the retry preamble; else passthrough."""
     if last_error:
         return _RETRY_PREAMBLE.format(error=last_error) + user
     return user
@@ -30,10 +37,12 @@ def _with_retry(user: str, last_error: str | None) -> str:
 
 def taxonomy_prompt(archetype: str, last_error: str | None = None) -> tuple[str, str]:
     """Stage 1: ask the LLM for a category taxonomy."""
+    # System message — sets the role and the schema-strictness ground rule.
     system = (
         "You are a retail merchandising expert. You design product taxonomies "
         "for retail simulations. Respond strictly in the requested schema."
     )
+    # User message — the actual task description.
     user = (
         f"Design a product taxonomy for a retail business of archetype "
         f"'{archetype}'. Produce 3 to 8 distinct top-level categories. For "
@@ -64,6 +73,7 @@ def catalog_prompt(
         "of SKUs for a simulation. Respect the provided category for each "
         "slot. Respond strictly in the requested schema."
     )
+    # Pre-rendered bullet list of skeleton slots (one per output item).
     bulleted = "\n".join(
         f"- slot {i}: category={cat!r}" for i, cat in enumerate(skeletons)
     )
@@ -104,6 +114,7 @@ def correlations_prompt(
         "You are a retail merchandising expert. You annotate cross-product "
         "demand correlations. Respond strictly in the requested schema."
     )
+    # Pre-rendered chunk list — one bullet per item to annotate.
     bulleted = "\n".join(f"- {name!r} (category: {cat})" for name, cat in items)
     user = (
         f"Archetype: '{archetype}'.\n\n"
@@ -144,6 +155,7 @@ def freshness_prompt(
         "freshness curves for a demand simulation. Respond strictly in "
         "the requested schema."
     )
+    # Pre-rendered chunk list.
     bulleted = "\n".join(f"- {name!r} (category: {cat})" for name, cat in items)
     user = (
         f"Archetype: '{archetype}'.\n\n"
@@ -206,7 +218,7 @@ def market_domain_prompt(
     archetype: str,
     last_error: str | None = None,
 ) -> tuple[str, str]:
-    """Build prompt for the LLM-owned slice of MarketParams."""
+    """Build prompt for the LLM-owned slice of ``MarketParams``."""
     system = (
         "You are a retail demand-modelling expert. Pick domain-meaningful "
         "market parameters for a simulation. Respond strictly in the "

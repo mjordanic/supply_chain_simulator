@@ -1,7 +1,8 @@
 """100-item fashion-retail world, built via LLM and cached locally.
 
-Requires ``OPENAI_API_KEY`` in the environment on the first run (cache miss).
-Subsequent runs load from ``data/worlds/fashion_retail_100/world.json`` silently.
+Requires ``OPENAI_API_KEY`` in the environment on the first run
+(cache miss). Subsequent runs load from
+``data/worlds/fashion_retail_100/world.json`` silently.
 
 Run it directly::
 
@@ -18,6 +19,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Standalone execution: project root on the import path.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -36,11 +38,13 @@ from src.sim.scenario import (
 )
 
 
+# Build parameters.
 _ARCHETYPE = "fashion_retail"
 _N_ITEMS = 100
 _N_STORES = 3
 
 
+# Build (or load from cache) the LLM-generated world.
 _client = OpenAIClient()
 _builder = WorldBuilder(archetype=_ARCHETYPE, client=_client)
 _world = load_or_build_world(
@@ -49,9 +53,11 @@ _world = load_or_build_world(
 )
 
 
+# First template returned by the LLM — sized for a generic fashion store.
 _template = next(iter(_world.store_templates.values()))
 
 
+# Author the policy.
 _policy = BaselinePolicy(
     policy_seed=1000,
     min_qty=1,
@@ -69,6 +75,7 @@ _policy = BaselinePolicy(
 )
 
 
+# Wire LLM-derived catalog/market into a complete Scenario.
 scenario = Scenario.from_world(
     _world,
     disruption=DisruptionParams(
@@ -81,6 +88,7 @@ scenario = Scenario.from_world(
     item_lifecycle=ItemLifecycleParams(
         stages=["introduction", "growth", "maturity", "decline", "dead"],
         init_stage="maturity",
+        # Strict-terminal lifecycle for this demo.
         default_stage_change_probs={
             s: 0.0
             for s in ["introduction", "growth", "maturity", "decline", "dead"]
@@ -96,9 +104,11 @@ scenario = Scenario.from_world(
 
 
 def main() -> None:
+    """Run the scenario and dump artifacts to ``data/llm_world_100``."""
     run_log = Runner(scenario).run()
     output = _PROJECT_ROOT / "data" / "llm_world_100"
     DataExporter(scenario, run_log).export_all(str(output))
+    # Echo the world structure for sanity checks.
     print(f"Archetype: {_ARCHETYPE}")
     print(f"Catalog ({len(_world.catalog)} items):")
     for w in _world.catalog:

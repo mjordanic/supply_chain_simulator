@@ -26,7 +26,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Seasonality(str, Enum):
-    """Closed enum for ``CatalogItem.seasonality``."""
+    """Closed enum for ``CatalogItem.seasonality``.
+
+    Must match the strings handled by ``Market.season_factor`` —
+    extending the enum requires updating the ``season_months`` map on
+    every authoring scenario.
+    """
 
     SPRING = "spring"
     SUMMER = "summer"
@@ -38,7 +43,12 @@ class Seasonality(str, Enum):
 
 
 class InitFreshness(str, Enum):
-    """Closed enum for ``StoreTemplateSpec.init_freshness``."""
+    """Closed enum for ``StoreTemplateSpec.init_freshness``.
+
+    Mirrors the ``Literal`` on ``StoreTemplate``: ``baseline`` for
+    established stores (initial SKUs skip hype) vs ``fresh`` for
+    grand-opening (initial SKUs enter at τ=0).
+    """
 
     BASELINE = "baseline"
     FRESH = "fresh"
@@ -51,9 +61,12 @@ class RelatedRef(BaseModel):
     ``Market.cross_demand_factor`` and is not signed.
     """
 
+    # ``extra="forbid"`` so the LLM can't smuggle extra keys past validation.
     model_config = ConfigDict(extra="forbid")
 
+    # Other item's name. Resolved against the catalog at sanitisation time.
     name: str = Field(min_length=1)
+    # Correlation strength — unsigned (sign is encoded by inventory ratio).
     correlation: float = Field(ge=0.0, le=1.0)
 
 
@@ -68,14 +81,20 @@ class CatalogItem(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Distinctive product name (uniqueness asserted by the caller).
     name: str = Field(min_length=1)
+    # Must match the slot's pre-assigned category from the taxonomy.
     category: str = Field(min_length=1)
+    # Authoring sell price. Strictly > 0 (the validator below enforces > unit_cost).
     base_price: float = Field(gt=0)
+    # Unit cost (≥ 0). Used as the price floor inside ``BaselinePolicy``.
     unit_cost: float = Field(ge=0)
+    # Seasonal pattern.
     seasonality: Seasonality
 
     @model_validator(mode="after")
     def _price_strictly_above_cost(self) -> "CatalogItem":
+        """Ensure positive margin — zero-or-negative-margin items would break price floors."""
         if self.base_price <= self.unit_cost:
             raise ValueError(
                 f"CatalogItem {self.name!r}: base_price ({self.base_price}) "
@@ -94,6 +113,7 @@ class Catalog(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # One entry per skeleton slot in the catalog prompt.
     items: list[CatalogItem] = Field(min_length=1)
 
 
@@ -109,7 +129,9 @@ class ItemRelations(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # The item being annotated. Validated against the catalog by the sanitiser.
     name: str = Field(min_length=1)
+    # 0-N related references (empty list is valid).
     related: list[RelatedRef]
 
 
@@ -124,6 +146,7 @@ class Correlations(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # One ``ItemRelations`` per input chunk item.
     items: list[ItemRelations] = Field(min_length=1)
 
 
@@ -150,8 +173,11 @@ class ItemFreshness(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Item to annotate. Validated against the catalog by the sanitiser.
     name: str = Field(min_length=1)
+    # Hype amplitude ``α`` ≥ 0. 0 means "staple, no hype curve".
     alpha: float = Field(ge=0.0)
+    # Hype decay constant ``β`` > 0 (strictly positive to avoid div-by-zero).
     decay: float = Field(gt=0.0)
 
 
@@ -179,8 +205,11 @@ class TaxonomyCategory(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Human-readable category name (used as ``CatalogItem.category``).
     name: str = Field(min_length=1)
+    # Short free-form description; helps the catalog prompt stay on-archetype.
     description: str
+    # Fraction of slots this category should claim. Open at 0, closed at 1.
     target_share: float = Field(gt=0.0, le=1.0)
 
 
@@ -189,7 +218,9 @@ class Taxonomy(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Archetype string (echoed by the LLM verbatim).
     archetype: str = Field(min_length=1)
+    # 1-N taxonomy buckets.
     categories: list[TaxonomyCategory] = Field(min_length=1)
 
 
@@ -204,20 +235,35 @@ class StoreTemplateSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Template label, unique within the ``StoreTemplateList``.
     id: str = Field(min_length=1)
+    # Region key (must be among ``MarketDomain.regions``).
     region: str = Field(min_length=1)
+    # Total inventory capacity.
     capacity: float = Field(ge=0)
+    # Opening cash balance.
     init_balance: float = Field(ge=0)
+    # Fraction of capacity initially stocked (∈ [0, 1]).
     init_stock_pct: float = Field(ge=0, le=1)
+    # Default lead time (steps).
     delivery_lag: float = Field(ge=0)
+    # Per-step holding cost rate.
     holding_rate: float = Field(ge=0)
+    # Fixed per-order fee.
     order_fee: float = Field(ge=0)
+    # How many SKUs to activate at step 0 (sampled at init time).
     init_active_count: int = Field(ge=0)
+    # "baseline" or "fresh" — see ``InitFreshness``.
     init_freshness: InitFreshness
 
 
 class StoreTemplateList(BaseModel):
-    """Wrapper around the LLM's store-templates payload."""
+    """Wrapper around the LLM's store-templates payload.
+
+    Enforces ``id`` uniqueness inside the payload — duplicate template
+    ids would clobber each other when the builder turns the list into
+    a dict.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -225,6 +271,7 @@ class StoreTemplateList(BaseModel):
 
     @model_validator(mode="after")
     def _unique_ids(self) -> "StoreTemplateList":
+        """Reject the payload when ids collide."""
         ids = [t.id for t in self.templates]
         if len(ids) != len(set(ids)):
             raise ValueError(
@@ -243,7 +290,10 @@ class SeasonWindow(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Season label (matches ``Seasonality`` values in practice; not
+    # strictly enforced here so unusual labels can be introduced if needed).
     name: str = Field(min_length=1)
+    # Calendar months (1-12).
     months: list[Annotated[int, Field(ge=1, le=12)]]
 
 
@@ -257,17 +307,25 @@ class MarketDomain(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Period of the seasonal cycle in steps.
     cycle_len: int = Field(gt=0)
+    # In-season demand multiplier.
     peak_factor: float = Field(gt=0)
+    # Off-season demand multiplier.
     off_factor: float = Field(gt=0)
+    # Step-0 demand / supply levels.
     init_demand: float = Field(ge=0)
     init_supply: float = Field(ge=0)
+    # List of ``(name, months)`` records; converted to a dict by ``season_months_dict``.
     season_months: list[SeasonWindow] = Field(min_length=1)
+    # Region keys for the simulation.
     regions: list[str] = Field(min_length=1)
+    # Price elasticity exponent — must be negative (validator below).
     price_elasticity: float
 
     @model_validator(mode="after")
     def _elasticity_negative(self) -> "MarketDomain":
+        """Demand must fall with price — enforce a negative elasticity."""
         if self.price_elasticity >= 0:
             raise ValueError(
                 f"MarketDomain.price_elasticity must be negative, got "
@@ -277,6 +335,7 @@ class MarketDomain(BaseModel):
 
     @model_validator(mode="after")
     def _season_names_unique(self) -> "MarketDomain":
+        """Reject the payload when two ``SeasonWindow`` entries share a name."""
         names = [w.name for w in self.season_months]
         if len(names) != len(set(names)):
             raise ValueError(

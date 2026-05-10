@@ -1,10 +1,10 @@
 """Scenario dataclass and authoring helpers.
 
-A ``Scenario`` is a flat declarative description of one experiment: catalog,
-typed parameter bags (``MarketParams`` / ``DisruptionParams`` /
-``ItemLifecycleParams``), the list of ``StoreInstance``s that will run inside
-it, ``n_steps``, ``start_date``, and ``world_seed``. Replaces the six-dict /
-two-level config system (``src/config.py`` + ``ConfigResolver``).
+A ``Scenario`` is a flat declarative description of one experiment:
+catalog, typed parameter bags (``MarketParams`` / ``DisruptionParams`` /
+``ItemLifecycleParams``), the list of ``StoreInstance``s that will run
+inside it, ``n_steps``, ``start_date``, and ``world_seed``. Replaces the
+six-dict / two-level config system (``src/config.py`` + ``ConfigResolver``).
 
 Stochastic fields take ``Distribution`` instances; sampling cadence is
 determined by *where the distribution is consumed*, not by an
@@ -13,6 +13,15 @@ determined by *where the distribution is consumed*, not by an
 Policies are *not* serialised — the LLM never authors policies. ``to_json``
 omits the ``policy`` field of each ``StoreInstance``; ``from_json`` reads
 back instances with ``policy=None`` and the caller re-attaches policies.
+
+This module also hosts authoring helpers:
+
+- ``load_catalog(items)`` — build ``[Ware]`` with stable ``P{i:04d}`` ids.
+- ``make_stores(triples)`` — turn ``(template, init_seed, policy)`` triples
+  into a ``[StoreInstance]`` roster.
+- ``load_scenario_from_path(path)`` — import a Python module and return
+  its top-level ``scenario`` symbol, preserving live Policy instances
+  (used by ``main.py``).
 """
 
 from __future__ import annotations
@@ -27,6 +36,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
 
 if TYPE_CHECKING:
+    # Avoid the runtime import cycle: ``src.llm.world_builder`` imports
+    # from this module, so we only pull ``World`` in for static type
+    # checking.
     from src.llm.world_builder import World
 
 from src.sim.distributions import (
@@ -36,6 +48,12 @@ from src.sim.distributions import (
 )
 
 
+# A ``Ware`` is the static catalog record: 7 required + 5 optional
+# per-Ware override fields, defaulting to ``None`` so ``ItemRegistry``
+# falls back to ``ItemLifecycleParams`` when the author didn't specify.
+# We use ``namedtuple`` rather than ``dataclass`` because tests still
+# build large literal lists of Wares and the positional-construction
+# ergonomics matter.
 Ware = namedtuple(
     "Ware",
     [
@@ -70,11 +88,24 @@ Ware = namedtuple(
 
 
 def load_catalog(items: Iterable[Mapping[str, Any]]) -> list[Ware]:
-    """Build a catalog of ``Ware``s, assigning ``P{i:04d}`` ids in order."""
+    """Build a catalog of ``Ware``s, assigning ``P{i:04d}`` ids in order.
+
+    ``product_id`` keys on the input dicts are silently discarded so the
+    function is the single source of truth for id assignment — two
+    scenarios authored against the same dict list will produce
+    identical product_ids.
+    """
+    # Output buffer; populated in iteration order so the id sequence is
+    # deterministic.
     out: list[Ware] = []
     for i, item in enumerate(items):
+        # Shallow copy so we don't mutate caller-owned dicts.
         kwargs = dict(item)
+        # Any caller-supplied ``product_id`` is replaced — this is the
+        # canonical id-assignment point.
         kwargs.pop("product_id", None)
+        # Normalise related_products entries into tuples — JSON
+        # round-trip would otherwise deliver them as lists.
         related = kwargs.get("related_products", [])
         kwargs["related_products"] = [tuple(p) for p in related]
         out.append(Ware(product_id=f"P{i:04d}", **kwargs))
@@ -82,6 +113,7 @@ def load_catalog(items: Iterable[Mapping[str, Any]]) -> list[Ware]:
 
 
 def _serialize(value: Any) -> Any:
+    """Recursively convert ``Distribution`` instances and nested containers to JSON-friendly forms."""
     if isinstance(value, Distribution):
         return value.to_dict()
     if isinstance(value, dict):
@@ -92,7 +124,9 @@ def _serialize(value: Any) -> Any:
 
 
 def _deserialize(value: Any) -> Any:
+    """Inverse of ``_serialize``: rebuild ``Distribution`` instances from tagged dicts."""
     if isinstance(value, dict):
+        # ``type`` key + matching registry entry ⇒ this dict is a serialised Distribution.
         if "type" in value and value["type"] in _DISTRIBUTION_REGISTRY:
             return distribution_from_dict(value)
         return {k: _deserialize(v) for k, v in value.items()}
@@ -102,9 +136,11 @@ def _deserialize(value: Any) -> Any:
 
 
 def _ware_to_dict(w: Ware) -> dict[str, Any]:
+    """Serialise a ``Ware`` to a JSON-friendly dict (lists in place of tuples)."""
     d: dict[str, Any] = {}
     for k, v in w._asdict().items():
         if k == "related_products":
+            # Tuples → lists so JSON doesn't lose the inner shape.
             d[k] = [list(p) for p in v]
         else:
             d[k] = _serialize(v)
@@ -112,6 +148,7 @@ def _ware_to_dict(w: Ware) -> dict[str, Any]:
 
 
 def _ware_from_dict(d: Mapping[str, Any]) -> Ware:
+    """Inverse of ``_ware_to_dict``; rebuilds tuples and ``Distribution`` instances."""
     return Ware(
         product_id=d["product_id"],
         name=d["name"],
@@ -169,31 +206,47 @@ class StoreTemplate:
     active SKU so they enter at full hype (multiplier ``1 + α``).
     """
 
+    # Short label for the template (used in run logs / store parquet).
     id: str
+    # Region key — must appear in ``MarketParams.regions``.
     region: str
+    # Total inventory capacity. Scalar or Distribution.
     capacity: int | float | Distribution
+    # Opening cash balance.
     init_balance: int | float | Distribution
+    # Fraction of capacity initially stocked (in [0, 1]).
     init_stock_pct: float | Distribution
+    # Default delivery lead time.
     delivery_lag: int | float | Distribution
+    # Per-step holding cost rate.
     holding_rate: float | Distribution
+    # Fixed fee per non-zero order.
     order_fee: int | float | Distribution
+    # Count of initial active SKUs (ignored when ``init_active_products`` set).
     init_active_count: int | float | Distribution
+    # Optional explicit step-0 roster — overrides the random sample.
     init_active_products: list[str] | None = None
+    # Step-0 freshness regime: established ("baseline") vs grand-opening ("fresh").
     init_freshness: Literal["baseline", "fresh"] = "baseline"
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialise every field via ``_serialize`` (Distributions → tagged dicts)."""
         return {f.name: _serialize(getattr(self, f.name)) for f in fields(self)}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "StoreTemplate":
+        """Inverse of ``to_dict``; validates required fields and ``init_freshness``."""
+        # Surface missing required fields as a single sorted error.
         missing = set(_TEMPLATE_FIELDS) - set(d)
         if missing:
             raise ValueError(
                 f"StoreTemplate.from_dict: missing fields {sorted(missing)}"
             )
         kwargs: dict[str, Any] = {k: _deserialize(d[k]) for k in _TEMPLATE_FIELDS}
+        # Optional roster — pass through if present and non-null.
         if "init_active_products" in d and d["init_active_products"] is not None:
             kwargs["init_active_products"] = list(d["init_active_products"])
+        # Optional freshness mode with closed-enum validation.
         if "init_freshness" in d and d["init_freshness"] is not None:
             mode = d["init_freshness"]
             if mode not in ("baseline", "fresh"):
@@ -215,11 +268,16 @@ class StoreInstance:
     while policies are wired up in the experiment script.
     """
 
+    # Reusable specification — multiple instances may share a template.
     template: StoreTemplate
+    # Per-instance RNG seed; bit-identity contract: two instances with
+    # the same ``(template, init_seed)`` start step 0 identical.
     init_seed: int
+    # Decision-making brain — not serialised (re-attached on load).
     policy: Any | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-friendly form. Note: ``policy`` is intentionally omitted."""
         return {
             "template": self.template.to_dict(),
             "init_seed": self.init_seed,
@@ -227,6 +285,7 @@ class StoreInstance:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "StoreInstance":
+        """Rebuild a ``StoreInstance`` from JSON; ``policy`` always returns ``None``."""
         return cls(
             template=StoreTemplate.from_dict(d["template"]),
             init_seed=d["init_seed"],
@@ -245,39 +304,60 @@ class MarketParams:
     and are sampled by ``Market`` against an injected ``world_rng``.
     """
 
+    # Period of the seasonal sine wave in steps.
     cycle_len: int | Distribution
+    # Amplitude of the same wave.
     cycle_amp: float | Distribution
+    # Step-0 demand / supply levels.
     init_demand: float
     init_supply: float
+    # In-season / off-season demand multipliers.
     peak_factor: float | Distribution
     off_factor: float | Distribution
+    # ``{label: [month1, …]}`` mapping for ``season_factor`` lookup.
     season_months: dict[str, list[int]]
+    # Region keys driving per-region market_state allocation.
     regions: list[str]
+    # Correlation between demand and supply shocks.
     correlation: float
+    # How often (in steps) ``trend`` is re-drawn.
     trend_update_interval: int
+    # Demand / supply state clamp range.
     min_value: float
     max_value: float
+    # PLC stage demand multipliers — keys mirror ``CANONICAL_STAGES``.
     stage_multipliers: dict[str, float | Distribution]
+    # Price elasticity exponent (should be negative).
     price_elasticity: float
+    # Multiplier applied during promotions.
     promo_multiplier: float
+    # Floor / divisor used inside the demand factor calculation.
     demand_factor_min: float
     demand_divisor: float
     supply_factor_min: float
     supply_divisor: float
+    # Authoring range — kept for reference; current math doesn't read it.
     demand_range: tuple[float, float]
+    # Inventory ratio band for the cross-product adjustment.
     cross_inv_lo: float
     cross_inv_hi: float
+    # Cross-factor clamp range.
     cross_factor_range: tuple[float, float]
+    # Trend factor distribution (sampled at construction + every interval).
     trend: Distribution
+    # Per-step random shocks.
     demand_shock: Distribution
     supply_shock: Distribution
+    # Base demand draw consumed once per (store, product, tick) in ``sample_demand``.
     base_demand: Distribution
 
     def to_dict(self) -> dict[str, Any]:
+        """Recursive ``_serialize`` over every field."""
         return {f.name: _serialize(getattr(self, f.name)) for f in fields(self)}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "MarketParams":
+        """Inverse of ``to_dict``. Restores tuple shapes lost via JSON."""
         out = {f.name: _deserialize(d[f.name]) for f in fields(cls) if f.name in d}
         # Tuple-typed range fields lose their tuple-ness through JSON; restore.
         for tuple_field in ("demand_range", "cross_factor_range"):
@@ -288,17 +368,26 @@ class MarketParams:
 
 @dataclass
 class DisruptionParams:
+    """Typed parameter bag for the ``EventEngine``."""
+
+    # Per-tick Bernoulli probability of spawning a disruption event.
     event_prob: float
+    # Allowed event types (one is uniformly chosen on spawn).
     types: list[str]
+    # Region pool the event may target.
     regions: list[str]
+    # Per-event severity sampled at spawn time.
     severity: Distribution
+    # Per-event duration sampled at spawn time.
     duration: Distribution
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialise every field via ``_serialize``."""
         return {f.name: _serialize(getattr(self, f.name)) for f in fields(self)}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "DisruptionParams":
+        """Deserialise ``Distribution``-valued fields back into instances."""
         return cls(**{f.name: _deserialize(d[f.name]) for f in fields(cls) if f.name in d})
 
 
@@ -330,21 +419,29 @@ class ItemLifecycleParams:
     preserving prior behaviour for scenarios that don't author the field.
     """
 
+    # Canonical stage list — keys must mirror ``CANONICAL_STAGES``.
     stages: list[str]
+    # Initial stage for every catalog Ware (overridable per Ware).
     init_stage: str | Distribution
+    # Catalog-wide per-stage transition table (overridable per Ware).
     default_stage_change_probs: dict[str, float | Distribution]
+    # Catalog-wide freshness curve defaults.
     default_freshness_alpha: float | Distribution = 0.0
     default_freshness_decay: float | Distribution = 1.0
+    # Catalog-wide initial-stock weight default.
     default_init_stock_share: float | Distribution = 1.0
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialise every field via ``_serialize``."""
         return {f.name: _serialize(getattr(self, f.name)) for f in fields(self)}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "ItemLifecycleParams":
+        """Inverse of ``to_dict``; per-field ``_deserialize`` to rebuild Distributions."""
         return cls(**{f.name: _deserialize(d[f.name]) for f in fields(cls) if f.name in d})
 
 
+# Required top-level keys for ``Scenario.from_dict`` validation.
 _SCENARIO_REQUIRED = (
     "catalog",
     "market",
@@ -361,16 +458,25 @@ _SCENARIO_REQUIRED = (
 class Scenario:
     """Flat declarative description of one experiment."""
 
+    # The full product catalog.
     catalog: list[Ware]
+    # Market parameter bag.
     market: MarketParams
+    # Disruption / event-engine parameters.
     disruption: DisruptionParams
+    # Lifecycle / freshness defaults.
     item_lifecycle: ItemLifecycleParams
+    # Per-store roster (instances may share templates and policies).
     stores: list[StoreInstance]
+    # Number of ticks to run.
     n_steps: int
+    # Wall-clock starting date.
     start_date: datetime
+    # Seed for ``world_rng`` (deterministic world trajectory).
     world_seed: int
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-friendly dict (policies omitted on each store instance)."""
         return {
             "catalog": [_ware_to_dict(w) for w in self.catalog],
             "market": self.market.to_dict(),
@@ -383,10 +489,12 @@ class Scenario:
         }
 
     def to_json(self) -> str:
+        """Compact JSON string. Round-trip via ``Scenario.from_json``."""
         return json.dumps(self.to_dict())
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Scenario":
+        """Validate required keys then rebuild the full ``Scenario``."""
         missing = set(_SCENARIO_REQUIRED) - set(d)
         if missing:
             raise ValueError(f"Scenario.from_dict: missing keys {sorted(missing)}")
@@ -402,6 +510,7 @@ class Scenario:
         )
 
     def catalog_df(self) -> Any:
+        """One-row-per-Ware DataFrame; used by ``DataExporter`` + notebooks."""
         import pandas as pd
 
         rows = [
@@ -411,6 +520,7 @@ class Scenario:
                 "category": w.category,
                 "base_price": w.base_price,
                 "unit_cost": w.unit_cost,
+                # Derived margin so notebooks don't have to subtract.
                 "margin": w.base_price - w.unit_cost,
                 "seasonality": w.seasonality,
                 "freshness_alpha": w.freshness_alpha,
@@ -425,6 +535,12 @@ class Scenario:
         return pd.DataFrame(rows)
 
     def stores_df(self) -> Any:
+        """One-row-per-StoreInstance DataFrame.
+
+        ``policy_class`` is filled in from live ``Policy`` instances;
+        scenarios reconstructed via ``from_json`` show ``None`` because
+        policies are intentionally not serialised.
+        """
         import pandas as pd
 
         rows = [
@@ -444,6 +560,7 @@ class Scenario:
         return pd.DataFrame(rows)
 
     def market_df(self) -> Any:
+        """Single-row DataFrame view of ``MarketParams`` (one column per field)."""
         import pandas as pd
         from dataclasses import fields as dc_fields
 
@@ -452,6 +569,7 @@ class Scenario:
         )
 
     def disruption_df(self) -> Any:
+        """Single-row DataFrame view of ``DisruptionParams``."""
         import pandas as pd
         from dataclasses import fields as dc_fields
 
@@ -465,6 +583,7 @@ class Scenario:
         )
 
     def lifecycle_df(self) -> Any:
+        """Single-row DataFrame view of ``ItemLifecycleParams``."""
         import pandas as pd
         from dataclasses import fields as dc_fields
 
@@ -478,6 +597,7 @@ class Scenario:
         )
 
     def summary_df(self) -> Any:
+        """Single-row top-level summary (counts, seed, start date)."""
         import pandas as pd
 
         return pd.DataFrame(
@@ -504,6 +624,12 @@ class Scenario:
         start_date: datetime,
         world_seed: int,
     ) -> "Scenario":
+        """Build a ``Scenario`` from an LLM-generated ``World`` + author-supplied pieces.
+
+        ``World`` provides the catalog and market; the caller fills in
+        disruption parameters, lifecycle defaults, the per-store roster,
+        and the seeds.
+        """
         return cls(
             catalog=world.catalog,
             market=world.market,
@@ -517,6 +643,7 @@ class Scenario:
 
     @classmethod
     def from_json(cls, s: str) -> "Scenario":
+        """Parse a JSON string into a ``Scenario`` (policies always ``None``)."""
         try:
             payload = json.loads(s)
         except json.JSONDecodeError as e:
@@ -539,6 +666,8 @@ def make_stores(
     list. There is no regime abstraction above this — k-way comparisons,
     paired runs, and singletons are all the same shape.
     """
+    # Materialise so we can validate non-emptiness and iterate twice
+    # (the comprehension below).
     triples = list(triples)
     if not triples:
         raise ValueError("make_stores: triples must be non-empty")
@@ -563,18 +692,24 @@ def load_scenario_from_path(path: str | Path) -> "Scenario":
         AttributeError: if the loaded module has no ``scenario`` attribute.
         TypeError: if ``module.scenario`` is not a ``Scenario`` instance.
     """
+    # Coerce string input to Path for the existence check.
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(
             f"load_scenario_from_path: scenario file not found: {path}"
         )
 
+    # Build a private module spec — the name is prefixed with an
+    # underscore + the file stem so multiple loads don't collide in
+    # ``sys.modules``.
     spec = importlib.util.spec_from_file_location(f"_scenario_{path.stem}", path)
     if spec is None or spec.loader is None:
         raise ImportError(
             f"load_scenario_from_path: could not build module spec for {path}"
         )
     module = importlib.util.module_from_spec(spec)
+    # Register the module before executing it so relative imports inside
+    # the scenario file resolve correctly.
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)  # type: ignore[union-attr]
 

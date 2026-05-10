@@ -43,6 +43,11 @@ if TYPE_CHECKING:  # avoid runtime cycle: ItemRegistry imports scenario.
 
 
 def _maybe_sample(value: Any, rng: Random) -> Any:
+    """Sample ``value`` against ``rng`` iff it's a ``Distribution``; else passthrough.
+
+    Used everywhere a template field is typed ``scalar | Distribution`` —
+    a one-liner so each call site doesn't need its own isinstance check.
+    """
     if isinstance(value, Distribution):
         return value.sample(rng)
     return value
@@ -63,15 +68,31 @@ class InitialStoreState:
     ``init_freshness="fresh"`` (grand-opening, full hype at step 0).
     """
 
+    # The region the store sits in — pulled directly from the template
+    # (never sampled).
     region: str
+    # Total inventory capacity (units). Float so distributions of any
+    # numeric type round-trip cleanly; downstream callers cast as needed.
     capacity: float
+    # Opening cash balance.
     balance: float
+    # Fraction of capacity to fill at step 0, in [0, 1].
     init_stock_pct: float
+    # Lead time for replenishment orders, in simulation steps.
     delivery_lag: float
+    # Per-step holding cost rate (fraction of unit cost).
     holding_rate: float
+    # Fixed fee charged per non-zero replenishment order.
     order_fee: float
+    # Product ids active at step 0, preserving the order in which they
+    # were authored / sampled — this drives iteration order for the
+    # weighted-stock allocator below.
     active_ids: list[str]
+    # Per-product stock at step 0, keyed by *every* catalog product_id
+    # (inactive ones carry 0).
     inventory: dict[str, int]
+    # Optional per-product "last activated at step ``t``" seed. See
+    # the dataclass docstring for the "baseline" vs "fresh" semantics.
     activation_tick: dict[str, int] = field(default_factory=dict)
 
 
@@ -90,9 +111,15 @@ def init_store_state(
     weight; when ``None`` (T4 unit-test path), the legacy even-split is
     used instead.
     """
+    # Single RNG instance owned by this call. Never share with
+    # ``world_rng`` / ``policy_rng`` — that would couple step-0 state to
+    # policy / market choices and break the CRN contract.
     init_rng = Random(init_seed)
 
+    # Region is a plain string on the template — never a Distribution.
     region: str = template.region
+    # The next six lines are the load-bearing draw order (see module
+    # docstring). Reordering breaks bit-identity for every existing run.
     capacity = float(_maybe_sample(template.capacity, init_rng))
     balance = float(_maybe_sample(template.init_balance, init_rng))
     init_stock_pct = float(_maybe_sample(template.init_stock_pct, init_rng))
@@ -100,6 +127,9 @@ def init_store_state(
     holding_rate = float(_maybe_sample(template.holding_rate, init_rng))
     order_fee = float(_maybe_sample(template.order_fee, init_rng))
 
+    # Catalog product ids in declaration order — used both for the
+    # random-sample fallback and for "unknown id" validation when the
+    # template specifies an explicit roster.
     product_ids = [w.product_id for w in catalog]
     if template.init_active_products is not None:
         # Explicit per-template roster (issue 06). Skip both the
@@ -118,8 +148,14 @@ def init_store_state(
         active_ids = list(template.init_active_products)
         n_active = len(active_ids)
     else:
+        # Sample a count then sample the actual SKUs. Two ``init_rng``
+        # draws total — preserved from the pre-issue-06 behaviour.
         n_active = int(_maybe_sample(template.init_active_count, init_rng))
+        # Clamp so a misconfigured huge count doesn't blow past the
+        # catalog size (``rng.sample`` would raise).
         n_active = max(0, min(n_active, len(catalog)))
+        # ``rng.sample`` draws without replacement; the iteration order
+        # of the returned list is deterministic for a given rng state.
         active_ids = (
             init_rng.sample(product_ids, n_active) if n_active > 0 else []
         )
@@ -133,19 +169,32 @@ def init_store_state(
     # ``min(per_item, total_stock - allocated)`` clamp that absorbs the
     # rounding remainder into the last active Ware.
     total_stock = int(capacity * init_stock_pct)
+    # Set lookup for "is this id active?" inside the allocator loop.
     active_set = set(active_ids)
+    # ``weights`` stays ``None`` for the legacy even-split path.
     weights: dict[str, float] | None = None
     if item_registry is not None and n_active > 0:
+        # Resolve per-active ``init_stock_share``. ``max(0.0, ...)``
+        # defends against negative weights the registry might surface
+        # from buggy authored data — the allocation math below assumes
+        # non-negative weights.
         candidate = {
             pid: max(0.0, float(item_registry.init_stock_share(pid)))
             for pid in active_ids
         }
+        # Only use weighted mode if at least one weight is positive,
+        # otherwise we'd divide by zero below.
         if sum(candidate.values()) > 0.0:
             weights = candidate
 
+    # Per-product stock for *every* catalog id (inactive ⇒ 0).
     inventory: dict[str, int] = {}
     if weights is not None:
+        # Weighted allocation: each active SKU gets
+        # ``floor(total_stock * weight / sum_weights)`` units.
         sum_weights = sum(weights.values())
+        # Running counter so the last allocated SKU absorbs any
+        # rounding shortfall via the clamp below.
         allocated = 0
         for w in catalog:
             if w.product_id in active_set:
@@ -161,6 +210,8 @@ def init_store_state(
                 stock = 0
             inventory[w.product_id] = stock
     else:
+        # Legacy even-split: ``floor`` of equal shares; the last entry
+        # absorbs the rounding remainder via the same ``allocated`` clamp.
         per_item = total_stock // n_active if n_active > 0 else 0
         allocated = 0
         for w in catalog:
