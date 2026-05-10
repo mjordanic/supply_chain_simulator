@@ -56,20 +56,23 @@ If the task is not complete, add a note to the issue file with what was done.
 
 # REPORT
 
-After everything else (commit, issue file move, etc.), emit a single fenced ` ```report ` block as the very last thing in your final message. This is how `ralph/afk.sh` records progress across iterations so a credit-out / killed session can resume cleanly. Do NOT skip this block — even on `no-tasks` or `failed` iterations.
+After everything else (commit, issue file move, etc.), append a single row to the progress log file whose path was given in the `AUTONOMY` block. Do this even on `no-tasks` or `failed` iterations.
 
-Format (YAML-ish, one field per line):
+If the file is missing the table header (first run, or file contains only an `afk.sh` sentinel comment), prepend this header before appending your row:
 
-```report
-issue_id: <id worked on, or "none">
-status: committed | blocked | failed | no-progress | no-tasks
-commit_sha: <full SHA, or "none">
-branch: <current branch>
-files_changed:
-  - <path>
-notes: <one short sentence — what you did, or why nothing happened>
-follow_ups:
-  - <item or omit list if none>
+```
+# Ralph progress
+
+| Finished | Issue | Status | Commit | Notes |
+|----------|-------|--------|--------|-------|
+```
+
+Do not touch any `<!-- afk.sh:in-progress … -->` comment lines — `afk.sh` manages those itself.
+
+Then append exactly one row:
+
+```
+| YYYY-MM-DD HH:MM | <issue id or "none"> | <status> | <short SHA or "none"> | <one-line note> |
 ```
 
 Status values:
@@ -80,7 +83,7 @@ Status values:
 - `no-progress` — iteration produced nothing actionable for any other reason. Explain in `notes`.
 - `no-tasks` — no `ready-for-agent` issues remain. Also output `<promise>NO MORE TASKS</promise>` so the loop exits.
 
-The block must be plain text inside the fenced ` ```report ` ... ` ``` ` markers — no nested code fences, no extra prose between the markers. Keep `notes` to one line.
+Keep `notes` to one line. Escape any `|` characters in the note as `\|` so the table doesn't break.
 
 # FINAL RULES
 
