@@ -218,7 +218,8 @@ class Runner:
 
         Lead-time math is verbatim from ``SimulationRunner._submit_order``:
         ``adjusted_lead_time = int(base_lead_time / supply_factor)`` with a
-        floor of 0.01 on the supply factor to avoid divide-by-zero.
+        floor of ``params.supply_factor_min`` on the supply factor to avoid
+        divide-by-zero.
         """
         # Pull the order plan out of the action dict. Empty ⇒ early exit.
         orders = action.get("order", {})
@@ -227,8 +228,11 @@ class Runner:
         current_step = self.market.current_step()
         # Region-level supply driving the lead-time adjustment.
         supply = self.market.market_state[store.region]["market_supply"]
-        # Floor at 0.01 so a depressed supply can't produce a divide-by-zero.
-        supply_factor = max(0.01, supply / 100.0)
+        # Floor at ``supply_factor_min`` so a depressed supply can't produce a divide-by-zero.
+        supply_factor = max(
+            self.market.params.supply_factor_min,
+            supply / self.market.params.supply_divisor,
+        )
         for pid, qty in orders.items():
             if qty <= 0:
                 continue

@@ -74,8 +74,8 @@ _N_STEPS = 500
 
 # Calibration constants (see module docstring for rationale).
 _TARGET_ACTIVE = 10
-_FLAGSHIP_CAPACITY = 1000
-_FLAGSHIP_BALANCE = 100_000.0
+_FLAGSHIP_CAPACITY = 10000
+_FLAGSHIP_BALANCE = 1000000.0
 # Higher than _TARGET_ACTIVE so the policy has slack to deactivate slow movers.
 _INIT_ACTIVE_COUNT = 10
 
@@ -138,10 +138,10 @@ def _build_policy(seed: int) -> BaselinePolicy:
         promo_threshold=0.45,
         promo_discount=0.7,
         min_promo_len=4,
-        max_promo_len=8,
-        promo_cd_len=8,
+        max_promo_len=15,
+        promo_cd_len=80,
         slow_sales_limit=4,
-        history_window=10,
+        history_window=20,
         max_history=20,
         reorder_factor=0.3,
         # Order in big batches: target per-SKU inventory ≈ 2× the fair
