@@ -216,7 +216,7 @@ class Store:
         # Order cost = qty ordered × unit_cost.
         self.order_cost[product_id] = order_qty * self.costs[product_id]
 
-        # Fixed fee charged iff we actually ordered something this step.
+        # Fixed fee charged if we actually ordered something this step.
         fee = self.order_fee if order_qty > 0 else 0
         self.total_cost[product_id] = (
             self.holding_cost[product_id] + self.order_cost[product_id] + fee

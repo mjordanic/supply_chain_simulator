@@ -153,7 +153,7 @@ class EventEngine:
             new_event = self.spawn_event()
             self.active.append(new_event)
 
-        # 4. Fire any callbacks whose ``delay`` step has been reached.
+        # 4. Fire any callbacks whose ``delay`` step has been reached. (DELIVERY)
         current = market.current_step()
         fired: list[FutureEvent] = []
         for event in self.queued:

@@ -111,7 +111,7 @@ class Runner:
         for _ in range(self.scenario.n_steps):
             # World ticks first; policy.decide observes the post-tick state.
             self.market.tick()
-            event = self.event_engine.tick(self.market)
+            event = self.event_engine.tick(self.market) #applies deliveries and disruption events to the market
             self.item_registry.tick()
             run_log["global"]["events"]["occurrences"].append(
                 self._event_payload(event)
