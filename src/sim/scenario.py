@@ -331,13 +331,11 @@ class MarketParams:
     price_elasticity: float
     # Multiplier applied during promotions.
     promo_multiplier: float
-    # Floor / divisor used inside the demand factor calculation.
+    # Floor used inside the demand / supply factor calculations. Since
+    # ``market_demand`` / ``market_supply`` live on a 0–2  scale
+    # and are consumed directly as factors, no divisor is needed.
     demand_factor_min: float
-    demand_divisor: float
     supply_factor_min: float
-    supply_divisor: float
-    # Authoring range — kept for reference; current math doesn't read it.
-    demand_range: tuple[float, float]
     # Inventory ratio band for the cross-product adjustment.
     cross_inv_lo: float
     cross_inv_hi: float
@@ -360,9 +358,8 @@ class MarketParams:
         """Inverse of ``to_dict``. Restores tuple shapes lost via JSON."""
         out = {f.name: _deserialize(d[f.name]) for f in fields(cls) if f.name in d}
         # Tuple-typed range fields lose their tuple-ness through JSON; restore.
-        for tuple_field in ("demand_range", "cross_factor_range"):
-            if tuple_field in out and isinstance(out[tuple_field], list):
-                out[tuple_field] = tuple(out[tuple_field])
+        if "cross_factor_range" in out and isinstance(out["cross_factor_range"], list):
+            out["cross_factor_range"] = tuple(out["cross_factor_range"])
         return cls(**out)
 
 

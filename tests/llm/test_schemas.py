@@ -239,8 +239,6 @@ def _valid_market(**overrides):
         cycle_len=365,
         peak_factor=1.2,
         off_factor=0.7,
-        init_demand=100.0,
-        init_supply=100.0,
         season_months=[
             {
                 "name": "all_season",

@@ -230,11 +230,13 @@ class Market:
         # Global PLC stage for this product.
         stage = self.registry.stage(product_id)
 
-        # Region-level demand factor — clamped so a depressed market
-        # doesn't collapse demand entirely.
+        # Region-level demand factor — ``market_demand`` is already on
+        # the 0–2 scale, so it's consumed directly as a factor.
+        # The clamp prevents a depressed market from collapsing demand
+        # entirely.
         demand_factor = max(
             self.params.demand_factor_min,
-            self.market_state[store.region]["market_demand"] / self.params.demand_divisor,
+            self.market_state[store.region]["market_demand"],
         )
         # 1. Lifecycle stage multiplier (e.g. growth ≫ decline).
         multiplier = self.stage_multipliers[stage]

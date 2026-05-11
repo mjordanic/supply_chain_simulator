@@ -38,7 +38,7 @@ from src.sim.scenario import (
 
 # Bump this constant when simulator numerics change intentionally. A
 # failing assertion prints the observed digest so it can be copied here.
-EXPECTED_HASH = "15b2404b02057f40801ddb942d1776d90d974f9e1679c9bace45e0b9ccf67c19"
+EXPECTED_HASH = "122892b3c0a4e29b14a668280e21633ac4b18f3f1c93ef23239680505595cdea"
 
 
 N_STEPS = 30
@@ -87,17 +87,17 @@ def _canonical_catalog():
 def _canonical_market():
     return MarketParams(
         cycle_len=180,
-        cycle_amp=0.15,
-        init_demand=100.0,
-        init_supply=100.0,
+        cycle_amp=0.0015,
+        init_demand=1.0,
+        init_supply=1.0,
         peak_factor=1.25,
         off_factor=0.75,
         season_months={"all_season": list(range(1, 13))},
         regions=["US"],
         correlation=0.6,
         trend_update_interval=15,
-        min_value=20.0,
-        max_value=200.0,
+        min_value=0.2,
+        max_value=2.0,
         stage_multipliers={
             "introduction": 0.7,
             "growth": 1.4,
@@ -108,16 +108,13 @@ def _canonical_market():
         price_elasticity=-1.4,
         promo_multiplier=1.0,
         demand_factor_min=0.1,
-        demand_divisor=100.0,
         supply_factor_min=0.05,
-        supply_divisor=100.0,
-        demand_range=(70.0, 130.0),
         cross_inv_lo=0.3,
         cross_inv_hi=0.7,
         cross_factor_range=(0.3, 1.6),
         trend=Constant(1.0),
-        demand_shock=Normal(0.0, 4.0),
-        supply_shock=Normal(0.0, 4.0),
+        demand_shock=Normal(0.0, 0.04),
+        supply_shock=Normal(0.0, 0.04),
         base_demand=Uniform(2, 7),
     )
 
@@ -127,7 +124,7 @@ def _canonical_disruption():
         event_prob=0.1,
         types=["natural_disaster", "economic_crisis"],
         regions=["US"],
-        severity=Constant(1.0),
+        severity=Constant(0.01),
         duration=Constant(2),
     )
 

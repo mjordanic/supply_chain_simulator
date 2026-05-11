@@ -313,9 +313,6 @@ class MarketDomain(BaseModel):
     peak_factor: float = Field(gt=0)
     # Off-season demand multiplier.
     off_factor: float = Field(gt=0)
-    # Step-0 demand / supply levels.
-    init_demand: float = Field(ge=0)
-    init_supply: float = Field(ge=0)
     # List of ``(name, months)`` records; converted to a dict by ``season_months_dict``.
     season_months: list[SeasonWindow] = Field(min_length=1)
     # Region keys for the simulation.

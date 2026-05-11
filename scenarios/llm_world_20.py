@@ -55,7 +55,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.llm.openai_client import OpenAIClient
 from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
-from src.sim.distributions import Constant
+from src.sim.distributions import Constant, Normal, Uniform
 from src.sim.policy import BaselinePolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
@@ -182,8 +182,8 @@ scenario = Scenario.from_world(
             "political_unrest",
         ],
         regions=_world.market.regions,
-        severity=Constant(1.2),
-        duration=Constant(5),
+        severity=Uniform(0.005, 0.02),
+        duration=Uniform(5, 20),
     ),
     item_lifecycle=ItemLifecycleParams(
         stages=_LIFECYCLE_STAGES,
@@ -191,11 +191,11 @@ scenario = Scenario.from_world(
         # Non-zero transitions so the PLC actually moves products
         # across stages during the run.
         default_stage_change_probs={
-            "introduction": 0.04,
-            "growth": 0.03,
-            "maturity": 0.005,
-            "decline": 0.05,
-            "dead": 0.001,
+            "introduction": 0.004,
+            "growth": 0.003,
+            "maturity": 0.0005,
+            "decline": 0.005,
+            "dead": 0.0001,
         },
     ),
     stores=make_stores(

@@ -51,17 +51,17 @@ class StubPolicy:
 def _market() -> MarketParams:
     return MarketParams(
         cycle_len=365,
-        cycle_amp=0.1,
-        init_demand=100.0,
-        init_supply=100.0,
+        cycle_amp=0.001,
+        init_demand=1.0,
+        init_supply=1.0,
         peak_factor=1.2,
         off_factor=0.7,
         season_months={"all_season": list(range(1, 13))},
         regions=["US", "EU"],
         correlation=0.7,
         trend_update_interval=50,
-        min_value=20.0,
-        max_value=200.0,
+        min_value=0.2,
+        max_value=2.0,
         stage_multipliers={
             "introduction": 0.7,
             "growth": Uniform(1.2, 2.0),
@@ -71,16 +71,13 @@ def _market() -> MarketParams:
         price_elasticity=-1.5,
         promo_multiplier=1.0,
         demand_factor_min=0.1,
-        demand_divisor=100.0,
         supply_factor_min=0.01,
-        supply_divisor=100.0,
-        demand_range=(80.0, 120.0),
         cross_inv_lo=0.3,
         cross_inv_hi=0.7,
         cross_factor_range=(0.3, 1.6),
         trend=Constant(1.0),
-        demand_shock=Normal(0.0, 2.0),
-        supply_shock=Normal(0.0, 2.0),
+        demand_shock=Normal(0.0, 0.02),
+        supply_shock=Normal(0.0, 0.02),
         base_demand=Constant(50),
     )
 
@@ -90,7 +87,7 @@ def _disruption() -> DisruptionParams:
         event_prob=0.0,
         types=["natural_disaster"],
         regions=["US", "EU"],
-        severity=Constant(1.0),
+        severity=Constant(0.01),
         duration=Constant(5),
     )
 
@@ -305,7 +302,6 @@ def test_scenario_round_trip_preserves_distribution_inside_dict() -> None:
 def test_scenario_round_trip_preserves_tuple_typed_ranges() -> None:
     scenario = _scenario()
     restored = Scenario.from_json(scenario.to_json())
-    assert restored.market.demand_range == (80.0, 120.0)
     assert restored.market.cross_factor_range == (0.3, 1.6)
 
 
@@ -320,7 +316,7 @@ def test_scenario_round_trip_preserves_catalog_related_products_as_tuples() -> N
 def test_scenario_round_trip_preserves_distributions_in_disruption() -> None:
     scenario = _scenario()
     restored = Scenario.from_json(scenario.to_json())
-    assert restored.disruption.severity == Constant(1.0)
+    assert restored.disruption.severity == Constant(0.01)
     assert restored.disruption.duration == Constant(5)
 
 

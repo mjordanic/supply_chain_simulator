@@ -15,25 +15,22 @@ from src.sim.scenario import DisruptionParams, MarketParams
 def _market() -> Market:
     params = MarketParams(
         cycle_len=365,
-        cycle_amp=0.1,
-        init_demand=100.0,
-        init_supply=100.0,
+        cycle_amp=0.001,
+        init_demand=1.0,
+        init_supply=1.0,
         peak_factor=1.2,
         off_factor=0.7,
         season_months={"all": list(range(1, 13))},
         regions=["US", "EU"],
         correlation=0.5,
         trend_update_interval=10,
-        min_value=20.0,
-        max_value=200.0,
+        min_value=0.2,
+        max_value=2.0,
         stage_multipliers={"maturity": 1.0},
         price_elasticity=-1.5,
         promo_multiplier=1.0,
         demand_factor_min=0.1,
-        demand_divisor=100.0,
         supply_factor_min=0.01,
-        supply_divisor=100.0,
-        demand_range=(80.0, 120.0),
         cross_inv_lo=0.3,
         cross_inv_hi=0.7,
         cross_factor_range=(0.3, 1.6),
@@ -83,7 +80,7 @@ def test_active_event_applied_each_tick_until_expiry():
     engine.active.append(
         WorldEvent(
             event_type="natural_disaster",
-            severity=10.0,
+            severity=0.1,
             affected_regions=["US"],
             duration=3,
         )
@@ -97,7 +94,7 @@ def test_active_event_applied_each_tick_until_expiry():
 
     # After 3 applications the event is filtered out.
     assert engine.active == []
-    # Demand was decremented by 10 three times, then capped at min_value if needed.
+    # Demand was decremented by 0.1 three times, then capped at min_value if needed.
     assert market.market_state["US"]["market_demand"] < initial_demand
 
 

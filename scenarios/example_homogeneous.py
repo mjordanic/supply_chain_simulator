@@ -96,17 +96,17 @@ _CATALOG = load_catalog(
 # example doesn't exercise seasonality.
 _MARKET = MarketParams(
     cycle_len=365,
-    cycle_amp=0.1,
-    init_demand=100.0,
-    init_supply=100.0,
+    cycle_amp=0.3,
+    init_demand=1.0,
+    init_supply=1.0,
     peak_factor=1.2,
     off_factor=0.7,
     season_months={"all_season": list(range(1, 13))},
     regions=["US"],
     correlation=0.7,
     trend_update_interval=20,
-    min_value=20.0,
-    max_value=200.0,
+    min_value=0.2,
+    max_value=2.0,
     stage_multipliers={
         "introduction": 0.7,
         "growth": 1.5,
@@ -117,17 +117,14 @@ _MARKET = MarketParams(
     price_elasticity=-1.5,
     promo_multiplier=1.0,
     demand_factor_min=0.1,
-    demand_divisor=100.0,
     supply_factor_min=0.01,
-    supply_divisor=100.0,
-    demand_range=(80.0, 120.0),
     cross_inv_lo=0.3,
     cross_inv_hi=0.7,
     cross_factor_range=(0.3, 1.6),
     # Constant trend ⇒ no drift; the cycle and shocks dominate.
     trend=Constant(1.0),
-    demand_shock=Normal(0.0, 5.0),
-    supply_shock=Normal(0.0, 5.0),
+    demand_shock=Normal(0.0, 0.01),
+    supply_shock=Normal(0.0, 0.01),
     base_demand=Uniform(2, 8),
 )
 
@@ -137,7 +134,7 @@ _DISRUPTION = DisruptionParams(
     event_prob=0.05,
     types=["natural_disaster", "economic_crisis"],
     regions=["US"],
-    severity=Constant(1.0),
+    severity=Constant(0.01),
     duration=Constant(3),
 )
 

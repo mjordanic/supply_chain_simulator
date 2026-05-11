@@ -182,7 +182,7 @@ scenario = Scenario.from_world(
             "political_unrest",
         ],
         regions=_world.market.regions,
-        severity=Constant(1.2),
+        severity=Constant(0.012),
         duration=Constant(5),
     ),
     item_lifecycle=ItemLifecycleParams(

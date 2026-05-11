@@ -32,31 +32,28 @@ from src.sim.scenario import (
 def _market_params(**overrides) -> MarketParams:
     defaults: dict = dict(
         cycle_len=365,
-        cycle_amp=0.1,
-        init_demand=100.0,
-        init_supply=100.0,
+        cycle_amp=0.001,
+        init_demand=1.0,
+        init_supply=1.0,
         peak_factor=1.5,
         off_factor=0.7,
         season_months={"summer": [6, 7, 8], "winter": [12, 1, 2]},
         regions=["US", "EU"],
         correlation=0.5,
         trend_update_interval=10,
-        min_value=20.0,
-        max_value=200.0,
+        min_value=0.2,
+        max_value=2.0,
         stage_multipliers={"introduction": 0.7, "growth": 1.5, "maturity": 1.0, "decline": 0.2},
         price_elasticity=-1.5,
         promo_multiplier=1.0,
         demand_factor_min=0.1,
-        demand_divisor=100.0,
         supply_factor_min=0.01,
-        supply_divisor=100.0,
-        demand_range=(80.0, 120.0),
         cross_inv_lo=0.3,
         cross_inv_hi=0.7,
         cross_factor_range=(0.3, 1.6),
         trend=Constant(1.0),
-        demand_shock=Normal(0.0, 1.0),
-        supply_shock=Normal(0.0, 1.0),
+        demand_shock=Normal(0.0, 0.01),
+        supply_shock=Normal(0.0, 0.01),
         base_demand=Constant(50),
     )
     defaults.update(overrides)
@@ -72,12 +69,12 @@ def test_market_demand_supply_clamped_under_extreme_shocks():
     """Even with shock distributions far outside ``[min_value, max_value]``,
     the clamp keeps both series inside bounds at every step."""
     params = _market_params(
-        # Wildly bipolar shocks: standard deviation 1000 will pull values to
-        # ±thousands without the clamp.
-        demand_shock=Normal(0.0, 1000.0),
-        supply_shock=Normal(0.0, 1000.0),
-        min_value=20.0,
-        max_value=200.0,
+        # Wildly bipolar shocks: standard deviation 10 will pull values to
+        # ±thousands of the 0–2 percent scale without the clamp.
+        demand_shock=Normal(0.0, 10.0),
+        supply_shock=Normal(0.0, 10.0),
+        min_value=0.2,
+        max_value=2.0,
     )
     market = Market(params, Random(7), datetime(2024, 1, 1))
 

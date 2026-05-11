@@ -84,8 +84,6 @@ def _market_response(regions=("US",)) -> MarketDomain:
         cycle_len=365,
         peak_factor=1.2,
         off_factor=0.7,
-        init_demand=100.0,
-        init_supply=100.0,
         season_months=[{"name": "all_season", "months": list(range(1, 13))}],
         regions=list(regions),
         price_elasticity=-1.5,
@@ -600,9 +598,12 @@ def test_build_market_domain_params_merges_handset_defaults() -> None:
     assert params.price_elasticity == -1.5
     assert params.regions == ["US"]
     # Hand-set math defaults:
-    assert params.cycle_amp == 0.1
-    assert params.demand_divisor == 100.0
+    assert params.cycle_amp == 0.0
+    assert params.demand_factor_min == 0.1
     assert params.cross_inv_lo == 0.3
+    # Init demand/supply default to midpoint of the clamp band.
+    assert params.init_demand == (params.max_value - params.min_value) / 2
+    assert params.init_supply == (params.max_value - params.min_value) / 2
     # Distribution defaults are present and correctly typed:
     from src.sim.distributions import Distribution
     assert isinstance(params.trend, Distribution)

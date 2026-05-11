@@ -82,7 +82,7 @@ scenario = Scenario.from_world(
         event_prob=0.05,
         types=["natural_disaster", "economic_crisis"],
         regions=_world.market.regions,
-        severity=Constant(1.0),
+        severity=Constant(0.01),
         duration=Constant(3),
     ),
     item_lifecycle=ItemLifecycleParams(

@@ -216,10 +216,10 @@ class Runner:
     def _dispatch_orders(self, store: Store, action: dict[str, Any]) -> None:
         """Schedule a delivery callback for every positive-qty order.
 
-        Lead-time math is verbatim from ``SimulationRunner._submit_order``:
-        ``adjusted_lead_time = int(base_lead_time / supply_factor)`` with a
-        floor of ``params.supply_factor_min`` on the supply factor to avoid
-        divide-by-zero.
+        Lead-time math: ``adjusted_lead_time = int(base_lead_time / supply_factor)``.
+        ``market_supply`` is already on the 0–2 scale, so it's used
+        directly as the factor, floored at ``params.supply_factor_min`` to
+        avoid divide-by-zero.
         """
         # Pull the order plan out of the action dict. Empty ⇒ early exit.
         orders = action.get("order", {})
@@ -227,12 +227,11 @@ class Runner:
             return
         current_step = self.market.current_step()
         # Region-level supply driving the lead-time adjustment.
+        # ``market_supply`` is already on the 0–2  scale and used
+        # directly as a factor. Floored at ``supply_factor_min`` to avoid
+        # a divide-by-zero.
         supply = self.market.market_state[store.region]["market_supply"]
-        # Floor at ``supply_factor_min`` so a depressed supply can't produce a divide-by-zero.
-        supply_factor = max(
-            self.market.params.supply_factor_min,
-            supply / self.market.params.supply_divisor,
-        )
+        supply_factor = max(self.market.params.supply_factor_min, supply)
         for pid, qty in orders.items():
             if qty <= 0:
                 continue

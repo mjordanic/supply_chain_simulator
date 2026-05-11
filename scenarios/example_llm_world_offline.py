@@ -104,8 +104,6 @@ _MARKET = MarketDomain(
     cycle_len=365,
     peak_factor=1.3,
     off_factor=0.6,
-    init_demand=120.0,
-    init_supply=120.0,
     season_months=[
         {"name": "spring/summer", "months": [3, 4, 5, 6, 7, 8]},
         {"name": "fall/winter", "months": [9, 10, 11, 12, 1, 2]},
@@ -276,7 +274,7 @@ scenario = Scenario.from_world(
         event_prob=0.05,
         types=["natural_disaster", "economic_crisis"],
         regions=_world.market.regions,
-        severity=Constant(1.0),
+        severity=Constant(0.01),
         duration=Constant(3),
     ),
     item_lifecycle=ItemLifecycleParams(

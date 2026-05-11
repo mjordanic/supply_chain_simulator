@@ -112,11 +112,11 @@ _DEFAULT_FRESHNESS_CHUNK_SIZE = 50
 # ``stage_multipliers["dead"]`` value) propagates to every generated
 # world automatically.
 _MARKET_MATH_DEFAULTS: dict[str, Any] = {
-    "cycle_amp": 0.1,
+    "cycle_amp": 0.0065,
     "correlation": 0.7,
     "trend_update_interval": 20,
-    "min_value": 20.0,
-    "max_value": 200.0,
+    "min_value": 0.2,
+    "max_value": 2.0,
     "stage_multipliers": {
         "introduction": 0.7,
         "growth": 1.5,
@@ -126,16 +126,13 @@ _MARKET_MATH_DEFAULTS: dict[str, Any] = {
     },
     "promo_multiplier": 1.0,
     "demand_factor_min": 0.1,
-    "demand_divisor": 100.0,
     "supply_factor_min": 0.01,
-    "supply_divisor": 100.0,
-    "demand_range": (80.0, 120.0),
     "cross_inv_lo": 0.3,
     "cross_inv_hi": 0.7,
     "cross_factor_range": (0.3, 1.6),
-    "trend": Constant(1.0),
-    "demand_shock": Normal(0.0, 5.0),
-    "supply_shock": Normal(0.0, 5.0),
+    "trend": Constant(1.001),
+    "demand_shock": Normal(0.0, 0.01),
+    "supply_shock": Normal(0.0, 0.01),
     "base_demand": Uniform(2, 8),
 }
 
@@ -158,15 +155,15 @@ class World:
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly nested dict."""
         return {
-            "catalog": [_ware_to_dict(w) for w in self.catalog],
             "market": self.market.to_dict(),
             "store_templates": {k: v.to_dict() for k, v in self.store_templates.items()},
             "meta": self.meta,
+            "catalog": [_ware_to_dict(w) for w in self.catalog],
         }
 
     def to_json(self, path: str | Path | None = None) -> str:
         """Serialise to JSON, optionally writing to ``path`` (creating dirs)."""
-        s = json.dumps(self.to_dict())
+        s = json.dumps(self.to_dict(), indent=2)
         if path is not None:
             p = Path(path)
             # Ensure the cache directory exists.
@@ -586,13 +583,15 @@ class WorldBuilder:
             "cycle_len": domain.cycle_len,
             "peak_factor": domain.peak_factor,
             "off_factor": domain.off_factor,
-            "init_demand": domain.init_demand,
-            "init_supply": domain.init_supply,
             "season_months": domain.season_months_dict(),
             "regions": list(domain.regions),
             "price_elasticity": domain.price_elasticity,
         }
         merged.update(_MARKET_MATH_DEFAULTS)
+        # Default starting demand/supply: midpoint of the clamp band.
+        init_default = (merged["max_value"] - merged["min_value"]) / 2
+        merged["init_demand"] = init_default
+        merged["init_supply"] = init_default
         self._market = MarketParams(**merged)
         # Cache regions for the templates prompt.
         self._regions = list(domain.regions)

@@ -231,8 +231,6 @@ def market_domain_prompt(
         "(positive integer; typically 90 to 730 for daily steps)\n"
         "- peak_factor: in-season demand multiplier (positive, typically > 1)\n"
         "- off_factor: out-of-season demand multiplier (positive, typically < 1)\n"
-        "- init_demand: starting demand level (non-negative)\n"
-        "- init_supply: starting supply level (non-negative)\n"
         "- season_months: list of {name, months} entries. 'name' is a "
         "seasonality label drawn from 'spring', 'summer', 'fall', 'winter', "
         "'spring/summer', 'fall/winter', 'all_season'. 'months' is a list of "
