@@ -223,28 +223,35 @@ def test_init_state_independent_of_policy():
 
 
 def test_activate_and_deactivate_item():
-    """activate adds + flags for first order; deactivate removes from active set."""
+    """activate adds to the active set; deactivate removes it.
+
+    The first-order flag has moved off Store onto ``BaselinePolicy``;
+    Store-level activation no longer touches that flag.
+    """
     s = _make_store()
     catalog_pids = [w.product_id for w in _catalog()]
     inactive_pid = next(p for p in catalog_pids if p not in s.active_items)
 
     s.activate_item(inactive_pid)
     assert inactive_pid in s.active_items
-    assert inactive_pid in s.needs_init_order
 
     s.deactivate_item(inactive_pid)
     assert inactive_pid not in s.active_items
 
 
 def test_decide_threads_policy_decisions_into_state():
-    """Policy-returned order/promotion/activate/deactivate decisions land on the store."""
+    """Policy-returned order/promotion/activate/deactivate decisions land on the store.
+
+    The post-promo cooldown map is policy-internal state now and is
+    therefore not part of the action shape Store reads — it stays on
+    the policy and never touches the store.
+    """
 
     class _StubPolicy(NoopPolicy):
         def decide(self, observation):
             return {
                 "order": {"P0000": 5, "P0001": 0},
                 "promotions": {"P0000": {"discount": 0.1}},
-                "promotion_cooldown": {"P0001": 7},
                 "activate": ["P0002"],
                 "deactivate": ["P0001"],
             }
@@ -255,6 +262,5 @@ def test_decide_threads_policy_decisions_into_state():
     assert s.pending["P0000"] == 5
     assert "P0001" not in s.pending or s.pending["P0001"] == 0
     assert s.promotions == {"P0000": {"discount": 0.1}}
-    assert s.promo_cooldown == {"P0001": 7}
     assert "P0002" in s.active_items
     assert "P0001" not in s.active_items

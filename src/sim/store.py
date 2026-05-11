@@ -133,12 +133,10 @@ class Store:
         # paths can decrement without an explicit zero-init.
         self.pending: defaultdict[str, int] = defaultdict(int)
         # Currently active promotions: ``pid → {discount, duration, start_step}``.
+        # Reflected back from the policy decision so Market / Runner can
+        # read live promo state. Post-promo cooldown and the first-order
+        # flag are policy-internal state — they no longer live on Store.
         self.promotions: dict[str, Any] = {}
-        # End-of-cooldown step per product (post-promo recovery).
-        self.promo_cooldown: dict[str, int] = {}
-        # Newly activated products that haven't yet placed their first
-        # replenishment — used by the policy's "initial order" branch.
-        self.needs_init_order: set[str] = set()
         # Current selling price per product (set initially to base_price).
         self.prices: dict[str, float] = {}
         # MSRP / authored base price per product. Frozen at registration so
@@ -245,20 +243,22 @@ class Store:
         self.pending[product_id] = max(0, self.pending.get(product_id, 0) - qty)
 
     def activate_item(self, product_id: str, current_step: int = 0) -> None:
-        """Activate ``product_id`` and mark it for first replenishment.
+        """Activate ``product_id`` and reset its freshness clock.
 
         ``activation_tick[product_id]`` is overwritten with
         ``current_step`` so the freshness curve resets to ``τ = 0`` on
         every (re-)activation. ``deactivate_item`` deliberately leaves
         the entry alone — the next activation overwrites it.
+
+        The first-order flag used by ``BaselinePolicy`` for opportunistic
+        initial replenishment is set inside the policy when it emits
+        the ``activate`` decision, so this method no longer touches it.
         """
         # Avoid duplicate entries in the ordered active list.
         if product_id not in self.active_items:
             self.active_items.append(product_id)
         # Re-seed the freshness clock at ``current_step``.
         self.activation_tick[product_id] = current_step
-        # Flag so the policy places an initial replenishment order next tick.
-        self.needs_init_order.add(product_id)
 
     def deactivate_item(self, product_id: str) -> None:
         """Drop ``product_id`` from the active assortment if present."""
@@ -327,7 +327,6 @@ class Store:
             "active_products": list(self.active_items),
             "max_capacity": self.capacity,
             "outstanding_orders": dict(self.pending),
-            "initial_order_needed": set(self.needs_init_order),
             "product_prices": dict(self.prices),
             "base_prices": dict(self.base_prices),
             "unit_costs": dict(self.costs),
@@ -335,7 +334,6 @@ class Store:
             "balance": self.balance,
             "sales": dict(self.sales),
             "promotions": dict(self.promotions),
-            "promotion_cooldown": dict(self.promo_cooldown),
             "market_state": dict(market_state[self.region]),
         }
 
@@ -347,22 +345,21 @@ class Store:
         """
         if self.policy is None:
             return {}
-        # Policy returns a dict with keys: promotions, promotion_cooldown,
-        # order, price, activate, deactivate.
+        # Policy returns a dict with keys: promotions, order, price,
+        # activate, deactivate. Post-promo cooldown and the first-order
+        # flag are policy-internal state and never round-trip here.
         decisions = self.policy.decide(observation)
 
-        # Reflect promotion plan back into store state.
+        # Reflect promotion plan back into store state. Market /
+        # Runner read ``store.promotions`` directly, so the live map
+        # has to land on the store after each tick.
         self.promotions = decisions.get("promotions", {})
-        self.promo_cooldown = decisions.get("promotion_cooldown", {})
 
         # Add positive-qty orders to ``pending`` so the runner can
         # schedule delivery callbacks and other consumers see in-transit
-        # counts. ``needs_init_order`` is cleared as soon as the
-        # first-replenishment order is placed.
+        # counts.
         for pid, qty in decisions.get("order", {}).items():
             if qty > 0:
-                if pid in self.needs_init_order:
-                    self.needs_init_order.remove(pid)
                 self.pending[pid] += qty
 
         # Pass the step to activate_item so the freshness clock resets

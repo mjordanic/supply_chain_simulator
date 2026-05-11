@@ -3,7 +3,10 @@
 A ``Policy`` is the decision-making brain attached to a ``Store``. It
 receives an ``Observation`` dict each tick and returns an ``Action``
 dict with four required keys (``order``, ``price``, ``activate``,
-``deactivate``) plus optional ``promotions`` / ``promotion_cooldown``.
+``deactivate``) plus an optional ``promotions`` map. Post-promo
+cooldowns and the first-order flag are policy-internal state on
+``BaselinePolicy`` (``promo_cooldown`` / ``needs_init_order``) — they
+no longer round-trip through Store.
 
 Each ``Policy`` instance owns its own ``policy_rng`` seeded from
 ``policy_seed``. World streams (``world_rng``) and policy streams never
@@ -75,8 +78,6 @@ class BaselinePolicy(Policy):
     - ``max_capacity`` (int | float): total store capacity.
     - ``outstanding_orders`` (dict[pid, int]): in-transit pending qty.
     - ``active_products`` (Iterable[pid]): products in the active assortment.
-    - ``initial_order_needed`` (Iterable[pid]): newly activated products
-      that have not yet received their first replenishment.
     - ``product_prices`` (dict[pid, float]): current realised prices per pid.
     - ``base_prices`` (dict[pid, float]): immutable MSRP reference prices
       per pid. The policy adjusts off this fixed reference rather than
@@ -88,7 +89,11 @@ class BaselinePolicy(Policy):
     - ``balance`` (float): store balance, divides into per-product budget.
     - ``sales`` (dict[pid, int]): units sold this step (for trend log).
     - ``promotions`` (dict[pid, dict]): currently active promotions.
-    - ``promotion_cooldown`` (dict[pid, int]): per-product cooldown end-step.
+
+    The policy owns the post-promo cooldown map and the first-order
+    flag for newly-activated products as ``self.promo_cooldown`` and
+    ``self.needs_init_order`` — neither field passes through the
+    observation any more.
 
     All stochastic choices (``randint``, ``shuffle``, ``promo_discount``
     sampling) consume ``self.policy_rng`` only.
@@ -177,6 +182,15 @@ class BaselinePolicy(Policy):
         self.stock_log: dict[str, deque[int]] = {}
         # Per-product "no-orders-before-this-step" cooldown map.
         self.order_cd: dict[str, int] = {}
+        # Post-promotion cooldown end-step per product. Owned by the
+        # policy — Store no longer round-trips this through observation.
+        self.promo_cooldown: dict[str, int] = {}
+        # Newly-activated products that have not yet placed their first
+        # replenishment order. Populated when the policy emits an
+        # ``activate`` decision; cleared when the corresponding order is
+        # placed in the same tick. Previously lived on Store as
+        # ``needs_init_order`` and travelled back through the observation.
+        self.needs_init_order: set[str] = set()
 
     def decide(self, observation: Mapping[str, Any]) -> dict[str, Any]:
         """Build and return one action dict for the given observation."""
@@ -187,13 +201,11 @@ class BaselinePolicy(Policy):
         # Pull observation fields into locals — keeps the four planner
         # calls readable and avoids dict-lookup repetition.
         promos = dict(observation["promotions"])
-        promo_cooldown = dict(observation["promotion_cooldown"])
         step = observation["current_sim_step"]
         inventory = observation["inventory"]
         capacity = observation["max_capacity"]
         pending = observation["outstanding_orders"]
         active_items = set(observation["active_products"])
-        needs_init = set(observation["initial_order_needed"])
         prices = observation["product_prices"]
         # ``base_prices`` falls back to the (possibly stale) current price
         # when the observation predates this field — keeps older Store
@@ -203,21 +215,28 @@ class BaselinePolicy(Policy):
         balance = observation["balance"]
         costs = observation["unit_costs"]
 
-        # Four decision sub-passes, in fixed order:
-        promos, promo_cooldown = self._plan_promos(
-            promos, promo_cooldown, step, inventory, capacity, active_items
+        # Four decision sub-passes, in fixed order. ``_plan_promos`` and
+        # ``_plan_orders`` mutate ``self.promo_cooldown`` and
+        # ``self.needs_init_order`` directly — both are pure policy state.
+        promos = self._plan_promos(
+            promos, step, inventory, capacity, active_items
         )
         orders = self._plan_orders(
-            inventory, pending, capacity, active_items, needs_init, balance, costs, step
+            inventory, pending, capacity, active_items, balance, costs, step
         )
         pricing = self._plan_prices(
             inventory, base_prices, capacity, active_items, promos, related, costs
         )
         activate, deactivate = self._review_catalog(step, active_items)
 
+        # Newly-activated products get flagged for an initial order on
+        # the *next* tick. Done after ``_plan_orders`` so this tick's
+        # decisions already saw the previous tick's flagged set.
+        for pid in activate:
+            self.needs_init_order.add(pid)
+
         return {
             "promotions": promos,
-            "promotion_cooldown": promo_cooldown,
             "order": orders,
             "price": pricing,
             "activate": activate,
@@ -249,23 +268,27 @@ class BaselinePolicy(Policy):
     def _plan_promos(
         self,
         promos: dict[str, dict[str, Any]],
-        promo_cooldown: dict[str, int],
         step: int,
         inventory: Mapping[str, int],
         capacity: float,
         active_items: set[str] | None = None,
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
-        """Expire reached-duration promos, prune cooldowns, start new ones on heavy stock."""
+    ) -> dict[str, dict[str, Any]]:
+        """Expire reached-duration promos, prune cooldowns, start new ones on heavy stock.
+
+        Mutates ``self.promo_cooldown`` in place — the cooldown map is
+        pure policy state and no longer round-trips through the Store
+        observation.
+        """
         # Promotion windows are step-based; once duration is reached, expire.
         expired = [pid for pid, p in promos.items() if step - p["start_step"] >= p["duration"]]
         for pid in expired:
             del promos[pid]
             # Set the cooldown end so the same product can't go on
             # promo again until ``promo_cd_len`` steps have passed.
-            promo_cooldown[pid] = step + self.promo_cd_len
+            self.promo_cooldown[pid] = step + self.promo_cd_len
 
         # Drop already-elapsed cooldowns.
-        promo_cooldown = {pid: s for pid, s in promo_cooldown.items() if s > step}
+        self.promo_cooldown = {pid: s for pid, s in self.promo_cooldown.items() if s > step}
 
         # Per-SKU "slice" — the fair share of capacity if it were evenly
         # divided among the active assortment. Treating "heavy stock" as a
@@ -276,7 +299,7 @@ class BaselinePolicy(Policy):
 
         for pid, stock in inventory.items():
             # Only consider non-promoted, non-cooldown products.
-            if pid not in promos and pid not in promo_cooldown:
+            if pid not in promos and pid not in self.promo_cooldown:
                 # "Heavy stock" gate: stock above promo_threshold × per-SKU slice.
                 if stock > slice_size * self.promo_threshold:
                     # Sample (or pass through) the promo discount.
@@ -288,7 +311,7 @@ class BaselinePolicy(Policy):
                         "duration": duration,
                         "start_step": step,
                     }
-        return promos, promo_cooldown
+        return promos
 
     def _plan_orders(
         self,
@@ -296,12 +319,16 @@ class BaselinePolicy(Policy):
         pending: Mapping[str, int],
         capacity: float,
         active_items: set[str],
-        needs_init: set[str],
         balance: float,
         costs: Mapping[str, float],
         step: int,
     ) -> dict[str, int]:
-        """Decide replenishment qty per product, respecting capacity + cooldown + budget."""
+        """Decide replenishment qty per product, respecting capacity + cooldown + budget.
+
+        Reads ``self.needs_init_order`` (policy-owned) for the first-order
+        branch and clears the flag for every pid that places a positive
+        order this tick.
+        """
         orders: dict[str, int] = {}
         # Running headroom — decremented as we allocate qty per pid.
         space = self._free_capacity(inventory, pending, capacity)
@@ -320,7 +347,7 @@ class BaselinePolicy(Policy):
                 # Per-product budget = (balance / #active) / unit_cost.
                 max_qty = max(0, int(balance / len(active_items) / costs[pid]))
 
-                if pid in needs_init:
+                if pid in self.needs_init_order:
                     # First-time order after activation: opportunistic fill.
                     slice_size = capacity / max(1, len(active_items)) if capacity else 0.0
                     qty = self._initial_order(space, max_qty, slice_size)
@@ -337,6 +364,8 @@ class BaselinePolicy(Policy):
                     jitter_bound = max(0, int(self.order_cd_len * self.order_cd_jitter))
                     jitter = self.policy_rng.randint(-jitter_bound, jitter_bound)
                     self.order_cd[pid] = step + self.order_cd_len + jitter
+                    # First-order flag is consumed exactly once.
+                    self.needs_init_order.discard(pid)
 
                 qty = int(qty)
                 orders[pid] = qty

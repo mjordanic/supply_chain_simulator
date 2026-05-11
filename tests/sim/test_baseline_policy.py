@@ -23,14 +23,12 @@ def _baseline_obs(
     capacity: int = 100,
     pending: dict[str, int] | None = None,
     active: set[str] | None = None,
-    needs_init: set[str] | None = None,
     prices: dict[str, float] | None = None,
     costs: dict[str, float] | None = None,
     related: dict[str, list[tuple[str, float]]] | None = None,
     balance: float = 10000.0,
     sales: dict[str, int] | None = None,
     promotions: dict[str, dict[str, Any]] | None = None,
-    promo_cooldown: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Build the full observation shape BaselinePolicy.decide expects."""
     if inventory is None:
@@ -39,8 +37,6 @@ def _baseline_obs(
         pending = {pid: 0 for pid in inventory}
     if active is None:
         active = set(inventory.keys())
-    if needs_init is None:
-        needs_init = set()
     if prices is None:
         prices = {pid: 20.0 for pid in inventory}
     if costs is None:
@@ -51,22 +47,18 @@ def _baseline_obs(
         sales = {pid: 0 for pid in inventory}
     if promotions is None:
         promotions = {}
-    if promo_cooldown is None:
-        promo_cooldown = {}
     return {
         "current_sim_step": step,
         "inventory": inventory,
         "max_capacity": capacity,
         "outstanding_orders": pending,
         "active_products": active,
-        "initial_order_needed": needs_init,
         "product_prices": prices,
         "related_products": related,
         "balance": balance,
         "unit_costs": costs,
         "sales": sales,
         "promotions": promotions,
-        "promotion_cooldown": promo_cooldown,
     }
 
 
@@ -116,6 +108,8 @@ def test_no_order_during_cooldown_after_decision_seeded():
     """When decide seeds a cooldown, the next decide within that window
     returns zero for the same product."""
     p = _policy(min_qty=1)
+    # Seed the first-order flag on the policy — observation no longer carries it.
+    p.needs_init_order = {"P0000", "P0001"}
     # Make replenishment look attractive: low stock, no pending, plenty of balance.
     obs = _baseline_obs(
         step=0,
@@ -123,7 +117,6 @@ def test_no_order_during_cooldown_after_decision_seeded():
         pending={"P0000": 0, "P0001": 0},
         capacity=100,
         active={"P0000", "P0001"},
-        needs_init={"P0000", "P0001"},
         prices={"P0000": 20.0, "P0001": 20.0},
         costs={"P0000": 10.0, "P0001": 10.0},
         related={"P0000": [], "P0001": []},
@@ -140,7 +133,6 @@ def test_no_order_during_cooldown_after_decision_seeded():
         pending={pid: 0 for pid in ordered},
         capacity=100,
         active={"P0000", "P0001"},
-        needs_init={"P0000", "P0001"},
         prices={"P0000": 20.0, "P0001": 20.0},
         costs={"P0000": 10.0, "P0001": 10.0},
         related={"P0000": [], "P0001": []},
@@ -158,13 +150,13 @@ def test_orders_never_exceed_free_capacity():
     inventory = {"P0000": 5, "P0001": 5, "P0002": 5}
     pending = {"P0000": 10, "P0001": 0, "P0002": 0}
     capacity = 100
+    p.needs_init_order = set(inventory.keys())  # maximises desired order qty
     obs = _baseline_obs(
         step=0,
         inventory=inventory,
         pending=pending,
         capacity=capacity,
         active=set(inventory.keys()),
-        needs_init=set(inventory.keys()),  # maximises desired order qty
         prices={pid: 20.0 for pid in inventory},
         costs={pid: 10.0 for pid in inventory},
         related={pid: [] for pid in inventory},
@@ -182,13 +174,13 @@ def test_orders_respect_capacity_when_inventory_almost_full():
     inventory = {"P0000": 95, "P0001": 4, "P0002": 1}
     pending = {pid: 0 for pid in inventory}
     capacity = 100  # free capacity = 0
+    p.needs_init_order = set(inventory.keys())
     obs = _baseline_obs(
         step=0,
         inventory=inventory,
         pending=pending,
         capacity=capacity,
         active=set(inventory.keys()),
-        needs_init=set(inventory.keys()),
         prices={pid: 20.0 for pid in inventory},
         costs={pid: 10.0 for pid in inventory},
         related={pid: [] for pid in inventory},
@@ -209,7 +201,6 @@ def test_returned_prices_are_at_least_unit_cost():
         inventory=inventory,
         capacity=100,
         active={"P0000", "P0001"},  # P0002 inactive
-        needs_init=set(),
         prices=prices,
         costs=costs,
         related={
@@ -234,7 +225,6 @@ def test_returned_prices_floor_when_inactive_factor_below_cost():
         inventory={"P0000": 10},
         capacity=100,
         active=set(),  # everything inactive
-        needs_init=set(),
         prices={"P0000": 20.0},
         costs={"P0000": 18.0},
         related={"P0000": []},
@@ -252,7 +242,6 @@ def test_activate_deactivate_only_on_review_step(review_interval: int):
         inventory=inventory,
         capacity=100,
         active={"P0000"},
-        needs_init=set(),
         prices={pid: 20.0 for pid in inventory},
         costs={pid: 10.0 for pid in inventory},
         related={pid: [] for pid in inventory},
@@ -278,7 +267,6 @@ def test_decide_consumes_only_policy_rng():
         inventory=inventory,
         capacity=100,
         active=set(inventory.keys()),
-        needs_init=set(),
         prices={pid: 20.0 for pid in inventory},
         costs={pid: 10.0 for pid in inventory},
         related={pid: [] for pid in inventory},
@@ -300,7 +288,6 @@ def test_decide_returns_full_action_dict_shape():
 
     assert set(decisions.keys()) == {
         "promotions",
-        "promotion_cooldown",
         "order",
         "price",
         "activate",
