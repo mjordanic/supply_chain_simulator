@@ -43,8 +43,8 @@ def _market() -> Market:
 
 
 def test_no_event_when_event_prob_zero():
-    """``event_prob = 0`` → ``tick`` returns ``None`` every step and
-    ``active`` stays empty."""
+    """``event_prob = 0`` → ``tick`` returns an empty active list every
+    step and ``active`` stays empty."""
     params = DisruptionParams(
         event_prob=0.0,
         types=["natural_disaster"],
@@ -58,7 +58,7 @@ def test_no_event_when_event_prob_zero():
     for _ in range(100):
         market.tick()
         result = engine.tick(market)
-        assert result is None
+        assert result == []
     assert engine.active == []
 
 

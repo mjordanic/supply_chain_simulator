@@ -133,7 +133,7 @@ _MARKET_MATH_DEFAULTS: dict[str, Any] = {
     "trend": Constant(1.001),
     "demand_shock": Normal(0.0, 0.01),
     "supply_shock": Normal(0.0, 0.01),
-    "base_demand": Uniform(2, 8),
+    "base_demand": Uniform(5, 20),
 }
 
 

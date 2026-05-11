@@ -111,10 +111,10 @@ class Runner:
         for _ in range(self.scenario.n_steps):
             # World ticks first; policy.decide observes the post-tick state.
             self.market.tick()
-            event = self.event_engine.tick(self.market) #applies deliveries and disruption events to the market
+            active_events = self.event_engine.tick(self.market) #applies deliveries and disruption events to the market
             self.item_registry.tick()
             run_log["global"]["events"]["occurrences"].append(
-                self._event_payload(event)
+                self._event_payloads(active_events)
             )
 
             # Phase 1: gather one action per store.
@@ -201,17 +201,25 @@ class Runner:
         return run_log
 
     @staticmethod
-    def _event_payload(event) -> dict[str, Any] | None:
-        """Flatten a ``WorldEvent`` for JSON-friendly logging. ``None`` passthrough."""
-        if event is None:
-            return None
-        return {
-            "type": event.event_type,
-            "severity": event.severity,
-            # ``list(...)`` so we don't smuggle a tuple/mutable ref into the log.
-            "regions": list(event.affected_regions),
-            "duration": event.duration,
-        }
+    def _event_payloads(events) -> list[dict[str, Any]]:
+        """Flatten the active ``WorldEvent`` list for JSON-friendly logging.
+
+        Records every event currently impacting the market this tick — not
+        only freshly-spawned ones — so the occurrences series captures
+        the full active set (overlapping multi-tick events included).
+        ``duration`` is the post-tick remaining lifetime: ``0`` means
+        "expired this tick after applying".
+        """
+        return [
+            {
+                "type": event.event_type,
+                "severity": event.severity,
+                # ``list(...)`` so we don't smuggle a tuple/mutable ref into the log.
+                "regions": list(event.affected_regions),
+                "duration": event.duration,
+            }
+            for event in events
+        ]
 
     def _dispatch_orders(self, store: Store, action: dict[str, Any]) -> None:
         """Schedule a delivery callback for every positive-qty order.

@@ -13,10 +13,12 @@ Two construction-shape changes vs. the previous
 2. ``DisruptionParams`` (typed dataclass with ``Distribution`` fields)
    replaces the old ``init_params`` / ``live_params`` dict pair.
 
-``tick(market)`` returns the *newly spawned* ``WorldEvent`` for logging,
-or ``None`` when no event spawned this step. The previous module returned
-nothing; surfacing the spawned event is what lets the runner build its
-``run_log["global"]["events"]["occurrences"]`` series.
+``tick(market)`` returns the *currently active* ``WorldEvent`` list
+(snapshot after the spawn step) for logging. Empty list means no event
+is currently impacting the market. The previous module returned
+nothing; surfacing the active set is what lets the runner build its
+``run_log["global"]["events"]["occurrences"]`` series — recording
+*everything affecting the market this tick*, not only spawn moments.
 """
 
 from __future__ import annotations
@@ -134,12 +136,16 @@ class EventEngine:
         duration = int(self.params.duration.sample(self.rng))
         return WorldEvent(event_type, severity, regions, duration)
 
-    def tick(self, market) -> WorldEvent | None:
-        """Advance one step.
+    def tick(self, market) -> list[WorldEvent]:
+        """Advance one step. Returns a snapshot of currently-active events.
 
         Order (preserved verbatim from ``event_manager.EventEngine.tick``):
         apply active events → drop expired → spawn check → fire queued
         callbacks at or before ``market.current_step()``.
+
+        The returned list is a snapshot of ``self.active`` taken *after*
+        the spawn step, so a freshly-spawned event is included and any
+        event whose duration ran out this tick is excluded.
         """
         # 1. Apply active events to the market state.
         for event in self.active:
@@ -148,10 +154,8 @@ class EventEngine:
         self.active = [e for e in self.active if e.duration > 0]
 
         # 3. Bernoulli check for spawning a new event this tick.
-        new_event: WorldEvent | None = None
         if self.rng.random() < self.params.event_prob:
-            new_event = self.spawn_event()
-            self.active.append(new_event)
+            self.active.append(self.spawn_event())
 
         # 4. Fire any callbacks whose ``delay`` step has been reached. (DELIVERY)
         current = market.current_step()
@@ -164,7 +168,8 @@ class EventEngine:
         # case but ``fired`` is tiny in practice.
         self.queued = [e for e in self.queued if e not in fired]
 
-        return new_event
+        # Snapshot — caller must not be affected by later mutations.
+        return list(self.active)
 
     def schedule(self, event_type: str, delay: int, callback: Callable[[], None]) -> None:
         """Queue ``callback`` to fire at simulation step ``delay``."""
