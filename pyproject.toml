@@ -27,6 +27,13 @@ dependencies = [
     "ipympl>=0.10.0",
 ]
 
+[project.optional-dependencies]
+rl = [
+    "torch>=2.0",
+    "gymnasium>=0.29",
+    "tensorboard",
+]
+
 [dependency-groups]
 dev = [
     "ipykernel>=6.29.5",
