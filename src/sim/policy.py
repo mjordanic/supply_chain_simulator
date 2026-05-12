@@ -478,8 +478,12 @@ class BaselinePolicy(Policy):
         slice_size = max(1.0, capacity / n_active) if capacity else 0.0
         ratio = inventory[pid] / slice_size if slice_size else 0.0
 
-        if trend > self.trend_threshold and ratio < self.stock_lo_ratio:
-            # Strong demand + low stock ⇒ raise price.
+        if trend > self.trend_threshold or ratio < self.stock_lo_ratio:
+            # Strong demand or low stock ⇒ raise price. Mirrors the
+            # markdown branch's OR semantics so markup/markdown fire on
+            # symmetric trigger breadth — previously the AND form made
+            # the markup branch fire only on the narrow trend∧stock
+            # intersection, biasing realised prices below MSRP.
             factor = self.price_up_factor
         elif trend < -self.trend_threshold or ratio > self.stock_hi_ratio:
             # Cooling demand or heavy stock ⇒ markdown.
