@@ -78,6 +78,7 @@ pytest = "^8.0.0"
 testpaths = ["tests"]
 markers = [
     "live: tests that hit the real OpenAI API (skipped when OPENAI_API_KEY is unset)",
+    "slow: tests that run a full training loop and take >10s (excluded from default fast run)",
 ]
 
 [build-system]
