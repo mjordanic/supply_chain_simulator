@@ -2243,6 +2243,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "dill" },
     { name = "groq" },
+    { name = "gymnasium" },
     { name = "httpx" },
     { name = "ipympl" },
     { name = "joblib" },
@@ -2257,15 +2258,9 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "seaborn" },
     { name = "statsmodels" },
-    { name = "torch" },
-    { name = "transformers" },
-]
-
-[package.optional-dependencies]
-rl = [
-    { name = "gymnasium" },
     { name = "tensorboard" },
     { name = "torch" },
+    { name = "transformers" },
 ]
 
 [package.dev-dependencies]
@@ -2281,7 +2276,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.37.1" },
     { name = "dill", specifier = ">=0.3.9" },
     { name = "groq", specifier = ">=0.11.0" },
-    { name = "gymnasium", marker = "extra == 'rl'", specifier = ">=0.29" },
+    { name = "gymnasium", specifier = ">=0.29" },
     { name = "httpx", specifier = "==0.27.2" },
     { name = "ipympl", specifier = ">=0.10.0" },
     { name = "joblib", specifier = ">=1.4.2" },
@@ -2296,12 +2291,10 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "statsmodels", specifier = ">=0.14.4" },
-    { name = "tensorboard", marker = "extra == 'rl'" },
+    { name = "tensorboard" },
     { name = "torch", specifier = ">=2.4.0" },
-    { name = "torch", marker = "extra == 'rl'", specifier = ">=2.0" },
     { name = "transformers", specifier = ">=4.44.2" },
 ]
-provides-extras = ["rl"]
 
 [package.metadata.requires-dev]
 dev = [

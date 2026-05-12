@@ -25,11 +25,6 @@ dependencies = [
     "plotly>=6.7.0",
     "nbformat>=5.10.4",
     "ipympl>=0.10.0",
-]
-
-[project.optional-dependencies]
-rl = [
-    "torch>=2.0",
     "gymnasium>=0.29",
     "tensorboard",
 ]
