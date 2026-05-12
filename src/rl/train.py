@@ -49,8 +49,9 @@ from torch.utils.tensorboard import SummaryWriter
 from src.rl.agents.ppo import Actor, train_ppo
 from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
+from src.rl.episode_sampler import _default_disruption_params
 from src.rl.eval import build_eval_seeds, evaluate
-from src.sim.scenario import StoreTemplate, load_catalog
+from src.sim.scenario import DisruptionParams, MarketParams, StoreTemplate, load_catalog
 from src.sim.policy import BaselinePolicy
 
 
@@ -61,8 +62,8 @@ from src.sim.policy import BaselinePolicy
 
 def _load_world_catalog_and_template(
     config: RLConfig,
-) -> tuple[list[Any], StoreTemplate]:
-    """Return ``(catalog, base_template)`` from a cached world or synthetic fallback.
+) -> tuple[list[Any], StoreTemplate, MarketParams | None, DisruptionParams | None]:
+    """Return ``(catalog, base_template, market_params, disruption_params)``.
 
     Resolution order:
     1. If ``config.world_cache_path`` is set and the file exists, load it.
@@ -70,8 +71,12 @@ def _load_world_catalog_and_template(
     3. Else synthesise a minimal catalog (no LLM required — useful for CI
        smoke runs and quick --total-env-steps experiments).
 
-    The synthetic catalog uses ``config.K_catalog`` products with simple
-    linear pricing so the env is fully functional without an OpenAI key.
+    For loaded worlds, ``market_params`` is the world's own ``MarketParams``
+    and ``disruption_params`` is the default with ``regions`` overridden to
+    match the world's market regions — without this, ``Market.market_state``
+    would be missing the keys used by the store template's ``region``. For
+    the synthetic fallback both are ``None`` so ``sample_episode`` uses its
+    own defaults.
     """
     # Try explicit path override first.
     if config.world_cache_path is not None:
@@ -98,8 +103,10 @@ def _load_world_catalog_and_template(
     return _build_synthetic_catalog(config)
 
 
-def _load_world_from_file(path: Path, config: RLConfig) -> tuple[list[Any], StoreTemplate]:
-    """Load catalog and extract a usable StoreTemplate from a cached world.json."""
+def _load_world_from_file(
+    path: Path, config: RLConfig
+) -> tuple[list[Any], StoreTemplate, MarketParams, DisruptionParams]:
+    """Load catalog, StoreTemplate, MarketParams, and DisruptionParams from a cached world.json."""
     from src.llm.world_builder import World
 
     world = World.from_json(path)
@@ -124,11 +131,19 @@ def _load_world_from_file(path: Path, config: RLConfig) -> tuple[list[Any], Stor
     else:
         tmpl = _default_template(config)
 
+    market_params = world.market
+    disruption_params = replace(
+        _default_disruption_params(),
+        regions=list(world.market.regions),
+    )
+
     print(f"[train] Loaded world from {path} ({len(catalog)} products).", file=sys.stderr)
-    return catalog, tmpl
+    return catalog, tmpl, market_params, disruption_params
 
 
-def _build_synthetic_catalog(config: RLConfig) -> tuple[list[Any], StoreTemplate]:
+def _build_synthetic_catalog(
+    config: RLConfig,
+) -> tuple[list[Any], StoreTemplate, None, None]:
     """Build a K_catalog-item synthetic catalog (no LLM) for CI / smoke runs."""
     n = config.K_catalog
     items = [
@@ -145,7 +160,7 @@ def _build_synthetic_catalog(config: RLConfig) -> tuple[list[Any], StoreTemplate
     catalog = load_catalog(items)
     tmpl = _default_template(config)
     print(f"[train] Synthetic catalog: {n} products.", file=sys.stderr)
-    return catalog, tmpl
+    return catalog, tmpl, None, None
 
 
 def _default_template(config: RLConfig) -> StoreTemplate:
@@ -197,6 +212,9 @@ def _make_eval_fn(
     config: RLConfig,
     writer: SummaryWriter,
     device: torch.device,
+    *,
+    market_params: MarketParams | None = None,
+    disruption_params: DisruptionParams | None = None,
 ) -> Any:
     """Return a closure ``(actor) → dict[str, float]`` usable as ``eval_fn``.
 
@@ -207,7 +225,13 @@ def _make_eval_fn(
     4. Saves a checkpoint each time it is invoked.
     """
     # Build eval specs once — they are deterministic so we cache them.
-    eval_specs = build_eval_seeds(catalog, base_template, config)
+    eval_specs = build_eval_seeds(
+        catalog,
+        base_template,
+        config,
+        market_params=market_params,
+        disruption_params=disruption_params,
+    )
 
     checkpoint_counter: list[int] = [0]  # mutable cell for the closure
 
@@ -376,7 +400,9 @@ def main(argv: list[str] | None = None) -> None:
     # ------------------------------------------------------------------
     # 1. Load catalog and base template.
     # ------------------------------------------------------------------
-    catalog, base_template = _load_world_catalog_and_template(config)
+    catalog, base_template, market_params, disruption_params = (
+        _load_world_catalog_and_template(config)
+    )
 
     # ------------------------------------------------------------------
     # 2. Build SyncVectorEnv.
@@ -386,6 +412,8 @@ def main(argv: list[str] | None = None) -> None:
             catalog=catalog,
             base_template=base_template,
             config=config,
+            market_params=market_params,
+            disruption_params=disruption_params,
         )
 
     n_envs = config.n_envs
@@ -410,7 +438,15 @@ def main(argv: list[str] | None = None) -> None:
     eval_fn = None
     if not args.no_eval:
         try:
-            eval_fn = _make_eval_fn(catalog, base_template, config, writer, device)
+            eval_fn = _make_eval_fn(
+                catalog,
+                base_template,
+                config,
+                writer,
+                device,
+                market_params=market_params,
+                disruption_params=disruption_params,
+            )
             print(
                 f"[train] Eval enabled: {config.n_eval_seeds} seeds, "
                 f"cadence={config.eval_cadence_env_steps} env steps.",
