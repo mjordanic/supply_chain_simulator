@@ -608,4 +608,55 @@ class BaselinePolicy(Policy):
         return sum(recent) == 0
 
 
-__all__ = ["Policy", "NoopPolicy", "BaselinePolicy"]
+class RLPolicy(Policy):
+    """Minimal ``Policy`` shim for the RL environment.
+
+    The env calls ``set_pending_action(action_dict)`` immediately before
+    invoking ``store.decide(observation)``.  ``decide`` returns that dict
+    and clears the pending slot so a second call without a fresh
+    ``set_pending_action`` raises immediately (catching integration bugs).
+
+    ``policy_rng`` is never consumed — all stochasticity in the RL env
+    flows through ``world_rng`` exactly as in ``Runner``.
+
+    Action dict format (same as ``BaselinePolicy``)::
+
+        {
+            "order":      {pid: int},
+            "price":      {pid: float},
+            "activate":   [],
+            "deactivate": [],
+            "promotions": {},
+        }
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self) -> None:
+        # policy_seed=None so policy_rng is unseeded (never drawn from).
+        super().__init__(policy_seed=None)
+        self._pending: dict | object = self._SENTINEL
+
+    def set_pending_action(self, action_dict: dict) -> None:
+        """Store ``action_dict`` so the next ``decide`` call can return it."""
+        self._pending = action_dict
+
+    def decide(self, observation) -> dict:
+        """Return the pending action dict and clear it.
+
+        Raises ``RuntimeError`` if called without a preceding
+        ``set_pending_action`` — this surfaces env wiring bugs immediately
+        rather than returning a silent empty action.
+        """
+        if self._pending is self._SENTINEL:
+            raise RuntimeError(
+                "RLPolicy.decide() called without a preceding set_pending_action(). "
+                "The RL env must call set_pending_action(action_dict) before "
+                "store.decide(obs) on every tick."
+            )
+        action = self._pending
+        self._pending = self._SENTINEL
+        return action
+
+
+__all__ = ["Policy", "NoopPolicy", "BaselinePolicy", "RLPolicy"]
