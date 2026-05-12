@@ -298,7 +298,6 @@ class Store:
 
     def observe(
         self,
-        market_state: Mapping[str, Mapping[str, float]],
         step: int,
         registry: ItemRegistry | None = None,
     ) -> dict[str, Any]:
@@ -308,6 +307,13 @@ class Store:
         ``registry`` is required when the attached policy uses cross-product
         relationships; pass ``None`` (default) for skeleton flows where the
         related-products graph is not consulted.
+
+        The latent regional ``market_state`` (``market_demand`` /
+        ``market_supply``) is deliberately NOT exposed: it is the hidden
+        driver of the demand process, and a realistic store-manager
+        policy only sees its own sales/stock history, not ground-truth
+        regional demand. Policies must infer market conditions from the
+        ``sales`` / ``inventory`` time series.
         """
         # Per-product cross-correlation graph. ``registry`` is the
         # authoritative source when supplied; otherwise hand back empty
@@ -334,7 +340,6 @@ class Store:
             "balance": self.balance,
             "sales": dict(self.sales),
             "promotions": dict(self.promotions),
-            "market_state": dict(market_state[self.region]),
         }
 
     def decide(self, observation: Mapping[str, Any]) -> dict[str, Any]:

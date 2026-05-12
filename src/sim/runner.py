@@ -121,7 +121,6 @@ class Runner:
             actions: dict[int, dict[str, Any]] = {}
             for i, store in enumerate(self.stores):
                 obs = store.observe(
-                    self.market.market_state,
                     self.market.current_step(),
                     self.item_registry,
                 )
