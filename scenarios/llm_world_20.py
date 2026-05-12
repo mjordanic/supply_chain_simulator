@@ -130,6 +130,17 @@ def _build_policy(seed: int) -> BaselinePolicy:
         init_qty_factor=0.4,
         review_interval=15,
         target_active_count=_TARGET_ACTIVE,
+        # Soft band around the target: deactivation may drop the active
+        # set down to ``target - 2``, and activation only kicks in once
+        # the count slips below that band. Avoids per-review churn on
+        # ±1 deviations.
+        active_margin=2,
+        # Per-pass cap on activations. At 1000 SKUs, bursting many
+        # activations at once shrinks the per-SKU capacity slice and
+        # budget share for every other active in the same tick — keep
+        # the refill rate measured so each init order lands cleanly
+        # above ``min_qty`` and doesn't starve the existing assortment.
+        max_activations_per_review=2,
         # ``promo_threshold`` and ``stock_*_ratio`` are now interpreted
         # against the *per-SKU slice* of capacity (``capacity / n_active``),
         # not the whole store, so the 0.45 / 0.2 / 0.6 defaults are
@@ -137,8 +148,7 @@ def _build_policy(seed: int) -> BaselinePolicy:
         # reading made the markdown branch unreachable for any single SKU.
         promo_threshold=0.45,
         promo_discount=0.7,
-        min_promo_len=4,
-        max_promo_len=15,
+        promo_len=Uniform(5, 20),
         promo_cd_len=80,
         slow_sales_limit=4,
         history_window=20,

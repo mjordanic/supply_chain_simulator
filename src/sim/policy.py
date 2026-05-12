@@ -105,18 +105,20 @@ class BaselinePolicy(Policy):
         policy_seed: int | None = None,
         min_qty: int = 10,
         init_qty_factor: float = 0.3,
-        min_promo_len: int = 3,
-        max_promo_len: int = 10,
+        promo_len: int | Distribution = 5,
         promo_cd_len: int = 10,
         review_interval: int = 5,
         promo_threshold: float = 0.7,
         target_active_count: int = 10,
+        active_margin: int = 2,
+        max_activations_per_review: int | None = None,
         slow_sales_limit: int = 5,
         stock_lo_ratio: float = 0.2,
         stock_hi_ratio: float = 0.6,
         price_up_factor: float = 1.1,
         price_down_factor: float = 0.9,
         history_window: int = 10,
+        slow_mover_lookback_factor: int = 6,
         trend_threshold: float = 0.05,
         cross_price_adj: float = 0.05,
         max_history: int = 100,
@@ -129,10 +131,9 @@ class BaselinePolicy(Policy):
     ) -> None:
         super().__init__(policy_seed=policy_seed)
 
-        # min_promo_len <= max_promo_len; preserve the old guard that
-        # silently swapped them if mis-ordered.
-        self.min_promo_len = min(min_promo_len, max_promo_len)
-        self.max_promo_len = max(min_promo_len, max_promo_len)
+        # Promo duration. Scalar ⇒ fixed length; Distribution ⇒ sampled
+        # per-promo via ``policy_rng``. Sample is ``int(...)``-cast at use site.
+        self.promo_len = promo_len
 
         # Minimum order quantity — anything below this is rounded down to 0.
         self.min_qty = min_qty
@@ -147,6 +148,19 @@ class BaselinePolicy(Policy):
         self.promo_threshold = promo_threshold
         # Target active-SKU count — drives the catalog-review activation branch.
         self.target_active_count = target_active_count
+        # Tolerance band around ``target_active_count``. Deactivation may
+        # drop the active count down to ``target - margin`` so a wave of
+        # dud-drops isn't blocked by the target floor; activation only
+        # kicks in once the count slips below ``target - margin`` so the
+        # policy doesn't churn on ±1 deviations. Activation always aims
+        # back at the centre, ``target_active_count``.
+        self.active_margin = active_margin
+        # Per-pass cap on activations. ``None`` ⇒ fill all the way to
+        # ``target`` in a single pass (bounded by available
+        # growth-potential inactives). A finite cap is useful when
+        # capacity / budget can't absorb a burst of init orders without
+        # each one falling below ``min_qty``.
+        self.max_activations_per_review = max_activations_per_review
         # Threshold for "no movement in window" deactivation.
         self.slow_sales_limit = slow_sales_limit
         # Stock-ratio band used by the dynamic pricing decision.
@@ -157,6 +171,10 @@ class BaselinePolicy(Policy):
         self.price_down_factor = price_down_factor
         # Window (in steps) used to compute the rolling sales trend.
         self.history_window = history_window
+        # Multiplier on ``history_window`` for the extended lookback used to
+        # confirm a slow mover when the product has been fully stocked out
+        # across the recent window.
+        self.slow_mover_lookback_factor = slow_mover_lookback_factor
         # Trend-magnitude threshold for triggering price moves.
         self.trend_threshold = trend_threshold
         # Per-related-product price adjustment magnitude.
@@ -215,9 +233,21 @@ class BaselinePolicy(Policy):
         balance = observation["balance"]
         costs = observation["unit_costs"]
 
-        # Four decision sub-passes, in fixed order. ``_plan_promos`` and
-        # ``_plan_orders`` mutate ``self.promo_cooldown`` and
-        # ``self.needs_init_order`` directly — both are pure policy state.
+        # Catalog review runs FIRST so activations / deactivations take
+        # effect within the same tick: a newly-activated SKU places its
+        # initial order this tick instead of waiting a cycle, and a SKU
+        # being dropped doesn't burn an order or active-tier price
+        # before being marked down to clearance.
+        activate, deactivate = self._review_catalog(step, active_items)
+        active_items = (active_items | set(activate)) - set(deactivate)
+        # Flag activations for the init-order branch in ``_plan_orders``;
+        # consumed and discarded in the same tick by that planner.
+        for pid in activate:
+            self.needs_init_order.add(pid)
+
+        # Remaining sub-passes operate on the updated catalog.
+        # ``_plan_promos`` mutates ``self.promo_cooldown`` and
+        # ``_plan_orders`` mutates ``self.needs_init_order``.
         promos = self._plan_promos(
             promos, step, inventory, capacity, active_items
         )
@@ -227,13 +257,6 @@ class BaselinePolicy(Policy):
         pricing = self._plan_prices(
             inventory, base_prices, capacity, active_items, promos, related, costs
         )
-        activate, deactivate = self._review_catalog(step, active_items)
-
-        # Newly-activated products get flagged for an initial order on
-        # the *next* tick. Done after ``_plan_orders`` so this tick's
-        # decisions already saw the previous tick's flagged set.
-        for pid in activate:
-            self.needs_init_order.add(pid)
 
         return {
             "promotions": promos,
@@ -304,8 +327,8 @@ class BaselinePolicy(Policy):
                 if stock > slice_size * self.promo_threshold:
                     # Sample (or pass through) the promo discount.
                     discount = float(_maybe_sample(self.promo_discount, self.policy_rng))
-                    # Promo duration sampled from [min, max] inclusive.
-                    duration = self.policy_rng.randint(self.min_promo_len, self.max_promo_len)
+                    # Sample (or pass through) the promo duration; cast to int.
+                    duration = int(_maybe_sample(self.promo_len, self.policy_rng))
                     promos[pid] = {
                         "discount": discount,
                         "duration": duration,
@@ -501,38 +524,52 @@ class BaselinePolicy(Policy):
         return avg_change / avg_sales if avg_sales > 0 else 0.0
 
     def _review_catalog(self, step: int, active_items: set[str]) -> tuple[list[str], list[str]]:
-        """Periodic activation/deactivation pass — runs every ``review_interval`` steps."""
+        """Periodic activation/deactivation pass — runs every ``review_interval`` steps.
+
+        Implements a soft hysteresis band around ``target_active_count``:
+        deactivation freely drops slow movers down to ``target - margin``;
+        activation only fires once the count slips below that lower band,
+        then refills back up to the centre (``target_active_count``),
+        capped per pass by ``max_activations_per_review`` when set.
+        """
         if step % self.review_interval != 0:
             return [], []
 
         to_activate: list[str] = []
         to_deactivate: list[str] = []
 
-        # Drop every detected slow-mover this review pass — but never below
-        # ``target_active_count``. The old implementation dropped at most
-        # one per review (``break``); on a many-SKU catalog where dozens of
-        # products drift to dead simultaneously, that left a long tail of
-        # inactive-but-still-stocked SKUs bleeding holding cost for hundreds
-        # of ticks while the policy slowly worked through them.
-        keep_min = self.target_active_count
+        # Lower edge of the soft target band.
+        low = self.target_active_count - self.active_margin
+
+        # Drop every detected slow mover this review pass — but never
+        # below the lower band. The old implementation dropped at most
+        # one per review (``break``); on a many-SKU catalog where dozens
+        # of products drift to dead simultaneously, that left a long
+        # tail of inactive-but-still-stocked SKUs bleeding holding cost
+        # for hundreds of ticks while the policy slowly worked through.
         remaining = len(active_items)
         for pid in list(active_items):
-            if remaining <= keep_min:
+            if remaining <= low:
                 break
             if self._is_slow_mover(pid):
                 to_deactivate.append(pid)
                 remaining -= 1
 
-        # If the active set has slack, promote at most one inactive
-        # candidate with growth potential.
-        if remaining < self.target_active_count:
+        # Activation hysteresis: only kick in once the count has slipped
+        # below the lower band. Refill toward the centre, capped per
+        # pass by ``max_activations_per_review`` (None ⇒ uncapped).
+        if remaining < low:
+            deficit = self.target_active_count - remaining
+            cap = self.max_activations_per_review
+            slots = deficit if cap is None else min(deficit, cap)
             inactive = list(set(self.sales_log.keys()) - active_items)
-            # Shuffle so the candidate isn't biased by iteration order.
+            # Shuffle so candidates aren't biased by iteration order.
             self.policy_rng.shuffle(inactive)
             for pid in inactive:
+                if len(to_activate) >= slots:
+                    break
                 if self._has_growth_potential(pid):
                     to_activate.append(pid)
-                    break
 
         return to_activate, to_deactivate
 
@@ -547,7 +584,7 @@ class BaselinePolicy(Policy):
 
         if sum(recent_stock) == 0:
             # Fully stocked out for a while and still no sales => slow mover.
-            return sum(list(sales_log)[-self.history_window * 6:]) == 0
+            return sum(list(sales_log)[-self.history_window * self.slow_mover_lookback_factor:]) == 0
         # "Supply-constrained, not slow" needs a SUSTAINED low-stock pattern,
         # not just one tick of stockout. The old per-element early-exit
         # protected products that briefly hit 0 between an order and its

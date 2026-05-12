@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from src.sim.distributions import Uniform
 from src.sim.policy import BaselinePolicy
 
 
@@ -68,8 +69,7 @@ def _policy(**overrides: Any) -> BaselinePolicy:
         policy_seed=42,
         min_qty=5,
         init_qty_factor=0.3,
-        min_promo_len=3,
-        max_promo_len=10,
+        promo_len=Uniform(3, 10),
         promo_cd_len=5,
         review_interval=5,
         promo_threshold=0.7,
@@ -305,8 +305,7 @@ def test_kwargs_constructor_no_init_params_dict():
         policy_seed=0,
         min_qty=10,
         init_qty_factor=0.3,
-        min_promo_len=3,
-        max_promo_len=10,
+        promo_len=Uniform(3, 10),
         promo_cd_len=5,
         review_interval=5,
         promo_threshold=0.7,

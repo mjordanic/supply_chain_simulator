@@ -27,7 +27,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.llm.openai_client import OpenAIClient
 from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
-from src.sim.distributions import Constant
+from src.sim.distributions import Constant, Uniform
 from src.sim.policy import BaselinePolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
@@ -62,8 +62,7 @@ _policy = BaselinePolicy(
     policy_seed=1000,
     min_qty=1,
     init_qty_factor=0.3,
-    min_promo_len=3,
-    max_promo_len=5,
+    promo_len=Uniform(3, 5),
     promo_cd_len=5,
     review_interval=10,
     promo_threshold=0.4,

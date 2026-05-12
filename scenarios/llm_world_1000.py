@@ -55,7 +55,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.llm.openai_client import OpenAIClient
 from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
-from src.sim.distributions import Constant
+from src.sim.distributions import Constant, Uniform
 from src.sim.policy import BaselinePolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
@@ -137,8 +137,7 @@ def _build_policy(seed: int) -> BaselinePolicy:
         # reading made the markdown branch unreachable for any single SKU.
         promo_threshold=0.45,
         promo_discount=0.7,
-        min_promo_len=4,
-        max_promo_len=8,
+        promo_len=Uniform(4, 8),
         promo_cd_len=8,
         slow_sales_limit=4,
         history_window=10,

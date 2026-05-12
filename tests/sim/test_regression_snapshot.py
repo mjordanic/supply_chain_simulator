@@ -38,7 +38,7 @@ from src.sim.scenario import (
 
 # Bump this constant when simulator numerics change intentionally. A
 # failing assertion prints the observed digest so it can be copied here.
-EXPECTED_HASH = "993d86da600d70ebcc1f4bcf27ba57302ad2f0e6489a64b2fb3d871e2c903819"
+EXPECTED_HASH = "d9029e4ad39f0754ce37b344c68541d22e6af22207bcc51937d88d402be06b77"
 
 
 N_STEPS = 30
@@ -157,8 +157,7 @@ def _canonical_policy(seed: int) -> BaselinePolicy:
         policy_seed=seed,
         min_qty=1,
         init_qty_factor=0.3,
-        min_promo_len=3,
-        max_promo_len=5,
+        promo_len=Uniform(3, 5),
         promo_cd_len=4,
         review_interval=8,
         promo_threshold=0.2,
