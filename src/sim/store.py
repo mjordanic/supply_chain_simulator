@@ -340,6 +340,9 @@ class Store:
             "balance": self.balance,
             "sales": dict(self.sales),
             "promotions": dict(self.promotions),
+            # Per-product delivery lag (issue 01: TextbookReorderPolicy reads
+            # this to compute demand-units reorder levels scale-invariantly).
+            "delivery_lags": dict(self.delivery_lags),
         }
 
     def decide(self, observation: Mapping[str, Any]) -> dict[str, Any]:
