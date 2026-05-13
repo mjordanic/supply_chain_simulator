@@ -680,6 +680,7 @@ __all__ = [
     "RLPolicy",
     "TextbookReorderPolicy",
     "OrderUpToPolicy",
+    "ReorderPointPolicy",
 ]
 
 
@@ -1145,3 +1146,48 @@ class OrderUpToPolicy(TextbookReorderPolicy):
     def _quantity(self, pid: str, position: int, s: float, S: float) -> int:
         """Order up to S — current position."""
         return max(0, int(round(S - position)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ReorderPointPolicy — (s,Q) continuous review
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ReorderPointPolicy(TextbookReorderPolicy):
+    """(s,Q) continuous-review policy.
+
+    Reorders whenever ``position < s`` and places a fixed quantity ``Q``.
+
+    Reorder levels (demand-units framing):
+
+        s = (delivery_lag + safety_lead_ticks) × rate
+        Q = cover_horizon_ticks × rate  (if Q=None, computed per tick per pid)
+
+    The defining (s,Q) property: the order quantity does NOT depend on how
+    far below ``s`` the position fell — it is always the configured fixed
+    quantity (or the rate-derived default when ``Q=None``).
+
+    Additional kwargs beyond those on ``TextbookReorderPolicy``:
+
+        Q: int | None = None
+            Fixed reorder quantity.  When ``None`` (default), Q is computed
+            per tick as ``int(round(cover_horizon_ticks × rate))``, so each
+            cycle orders one cover-horizon's worth of demand.  Explicit
+            integer values are honoured verbatim.
+    """
+
+    def __init__(self, *, Q: int | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.Q = Q
+
+    def _trigger(self, pid: str, step: int, position: int, s: float) -> bool:
+        """Reorder when inventory position falls below s."""
+        return position < s
+
+    def _quantity(self, pid: str, position: int, s: float, S: float) -> int:
+        """Order a fixed quantity Q (or rate-derived default when Q is None)."""
+        if self.Q is not None:
+            return self.Q
+        # Rate-derived default: one cover-horizon's worth of demand.
+        # S - s = cover_horizon_ticks × rate (by construction in the base class).
+        return max(0, int(round(S - s)))

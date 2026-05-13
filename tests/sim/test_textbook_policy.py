@@ -401,3 +401,171 @@ def test_policy_exports():
     from src.sim.policy import OrderUpToPolicy, TextbookReorderPolicy
     assert OrderUpToPolicy is not None
     assert TextbookReorderPolicy is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ReorderPointPolicy (s,Q) tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_reorder_point_pilot_fires_on_tick_zero():
+    """With init_stock_pct=0.0, a pilot order is placed on tick 0."""
+    from src.sim.policy import ReorderPointPolicy
+
+    policy = ReorderPointPolicy(policy_seed=0, opening_budget_pct=0.5)
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=1_000,
+        balance=100_000.0,
+    )
+    log = _run_scenario(policy, n_steps=1, template=template)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    assert any(q > 0 for q in order_quantities), (
+        f"No pilot order fired. order_quantities={order_quantities}"
+    )
+
+
+def test_reorder_point_quantity_is_fixed_Q():
+    """When Q is set explicitly, every triggered order uses that fixed quantity.
+
+    We use opening_budget_pct=0.5 with a small balance so the pilot order
+    seeds ~50 units; after the pilot lands, demand=5/tick depletes stock below
+    s=(delivery_lag)*rate=15 and the policy should fire triggered orders of
+    exactly Q=50 units each time.
+    """
+    from src.sim.policy import ReorderPointPolicy
+
+    fixed_Q = 50
+    # pilot_qty = 0.5 * balance / K_active / cost = 0.5 * 1000 / 1 / 10 = 50
+    # After pilot (50 units) lands at tick DELIVERY_LAG, position depletes:
+    # rate≈5, s≈15 (delivery_lag=3, safety=0), trigger fires at position<15.
+    policy = ReorderPointPolicy(
+        policy_seed=0,
+        Q=fixed_Q,
+        opening_budget_pct=0.5,
+        safety_lead_ticks=0,
+        cover_horizon_ticks=10,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=5_000,
+        balance=1_000.0,  # small balance → pilot ≈ 50 units (not capacity-filling)
+        delivery_lag=DELIVERY_LAG,
+    )
+    log = _run_scenario(policy, n_steps=60, template=template, demand=5.0)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    # Skip index 0 (pre-decide baseline) and index 1 (which holds the pilot).
+    post_pilot = order_quantities[2:]
+    non_zero = [q for q in post_pilot if q > 0]
+    assert len(non_zero) > 0, (
+        f"No triggered orders after pilot. all order_quantities={order_quantities}"
+    )
+    for q in non_zero:
+        assert q == fixed_Q, (
+            f"Expected all triggered orders to be {fixed_Q}, got {q} in {non_zero}"
+        )
+
+
+def test_reorder_point_quantity_is_rate_derived_when_Q_is_None():
+    """When Q=None (default), quantity equals cover_horizon_ticks × rate.
+
+    Uses opening_budget_pct=0.5 with a small balance so the pilot order
+    seeds ~50 units; after the pilot lands and demand depletes stock below s,
+    the policy fires triggered orders of cover_horizon × rate units each.
+    """
+    from src.sim.policy import ReorderPointPolicy
+
+    cover_horizon = 10
+    demand = 5.0
+    expected_Q = int(round(cover_horizon * demand))  # 50
+
+    policy = ReorderPointPolicy(
+        policy_seed=0,
+        Q=None,
+        opening_budget_pct=0.5,
+        safety_lead_ticks=0,
+        cover_horizon_ticks=cover_horizon,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=5_000,
+        balance=1_000.0,  # small balance → pilot ≈ 50 units (not capacity-filling)
+        delivery_lag=DELIVERY_LAG,
+    )
+    log = _run_scenario(policy, n_steps=60, template=template, demand=demand)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    # Skip index 0 (pre-decide baseline) and index 1 (pilot order).
+    post_pilot = order_quantities[2:]
+    non_zero = [q for q in post_pilot if q > 0]
+    assert len(non_zero) > 0, (
+        f"No triggered orders after pilot. all order_quantities={order_quantities}"
+    )
+    for q in non_zero:
+        assert q == expected_Q, (
+            f"Expected rate-derived Q={expected_Q}, got {q} in {non_zero}"
+        )
+
+
+def test_reorder_point_no_order_when_position_above_s():
+    """No order fires while position stays above s."""
+    from src.sim.policy import ReorderPointPolicy
+
+    policy = ReorderPointPolicy(
+        policy_seed=0,
+        opening_budget_pct=0.0,  # disable pilot
+        safety_lead_ticks=2,
+        cover_horizon_ticks=10,
+    )
+    template = _mini_template(
+        init_stock_pct=1.0,
+        capacity=5_000,
+        balance=1_000_000.0,
+    )
+    log = _run_scenario(policy, n_steps=2, template=template, demand=1)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"][1:]
+    assert all(q == 0 for q in order_quantities), (
+        f"Unexpected orders when position >> s: {order_quantities}"
+    )
+
+
+def test_reorder_point_crn_self_consistency():
+    """Two ReorderPointPolicy instances on the same CRN seed produce bit-identical trajectories."""
+    import hashlib
+    import json
+
+    from src.sim.data_exporter import _jsonable
+    from src.sim.policy import ReorderPointPolicy
+
+    def _run_with_seed(world_seed: int, policy_seed: int = 0) -> dict:
+        policy = ReorderPointPolicy(policy_seed=policy_seed)
+        template = _mini_template(init_stock_pct=0.0)
+        scenario = Scenario(
+            catalog=_mini_catalog(),
+            market=_constant_market(demand=5.0),
+            disruption=_no_disruption(),
+            item_lifecycle=_no_lifecycle(),
+            stores=[StoreInstance(template=template, init_seed=1, policy=policy)],
+            n_steps=20,
+            start_date=datetime(2024, 1, 1),
+            world_seed=world_seed,
+        )
+        return Runner(scenario).run()
+
+    r1 = _run_with_seed(42, policy_seed=0)
+    r2 = _run_with_seed(42, policy_seed=0)
+
+    h1 = hashlib.sha256(
+        json.dumps(_jsonable(r1), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    h2 = hashlib.sha256(
+        json.dumps(_jsonable(r2), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert h1 == h2
