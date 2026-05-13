@@ -17,7 +17,7 @@ Notes on calibration for a 1000-item catalog:
 
 - ``target_active_count=80`` — a fashion store carries roughly 5-15 % of a
   large back-catalog at any moment; 8 % keeps the active set diverse
-  without overwhelming a single ``BaselinePolicy`` review pass.
+  without overwhelming a single ``HeuristicPolicy`` review pass.
 - The LLM-authored templates are sized for a generic fashion store and
   do not know the catalog size. We rescale ``capacity``, ``init_balance``
   and ``init_active_count`` so a flagship can hold the active set plus
@@ -56,7 +56,7 @@ from src.llm.openai_client import OpenAIClient
 from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import OrderUpToPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
@@ -110,60 +110,10 @@ _template = replace(
 )
 
 
-# Policy factory: ~20 kwargs tuned for the larger catalog. A *fresh*
-# instance per store is critical — ``BaselinePolicy`` keeps per-product
-# ``sales_log`` / ``stock_log`` / ``order_cd`` state on ``self``, and
-# sharing one instance across stores intermixes those streams (so e.g.
-# a sale in store 0 hides "slow mover" status of the same SKU in store 4,
-# and store 0 placing an order silently blocks stores 1-4 via the
-# cooldown dict). The fix is to build one ``BaselinePolicy`` per store.
-def _build_policy(seed: int) -> BaselinePolicy:
-    return BaselinePolicy(
-        policy_seed=seed,
-        # Skip trivial orders — the LLM-authored template carries a fixed
-        # ``order_fee=$175`` per non-zero order, which dominates the
-        # economics at this scale (5 stores × ~80 active SKUs × frequent
-        # reorders => the fixed fee eats every dollar of margin). A high
-        # ``min_qty`` plus the long ``order_cd_len`` below amortises that
-        # fee across a meaningful batch.
-        min_qty=30,
-        init_qty_factor=0.4,
-        review_interval=15,
-        target_active_count=_TARGET_ACTIVE,
-        # ``promo_threshold`` and ``stock_*_ratio`` are now interpreted
-        # against the *per-SKU slice* of capacity (``capacity / n_active``),
-        # not the whole store, so the 0.45 / 0.2 / 0.6 defaults are
-        # meaningful for a 1000-SKU catalog. The old absolute-capacity
-        # reading made the markdown branch unreachable for any single SKU.
-        promo_threshold=0.45,
-        promo_discount=0.7,
-        promo_len=Uniform(4, 8),
-        promo_cd_len=8,
-        slow_sales_limit=4,
-        history_window=10,
-        max_history=20,
-        reorder_factor=0.3,
-        # Order in big batches: target per-SKU inventory ≈ 2× the fair
-        # slice. Combined with the long order cooldown below, this turns
-        # many small reorders (each paying the $175 fixed fee) into a
-        # handful of larger ones, so the fee amortises across more units.
-        qty_factor=2.0,
-        order_cd_len=120,
-        order_cd_jitter=0.3,
-        stock_lo_ratio=0.2,
-        stock_hi_ratio=0.6,
-        # Gentler ratchet (1.04 / 0.93) — the old 1.08 / 0.92 compounded
-        # on the *current* price every tick, so a long string of positive
-        # trend draws could push prices to >10x the base before the
-        # markdown branch caught up. With the per-SKU slice fix, the
-        # markdown branch fires reliably, but the upward push is also
-        # easier to land in, so we soften it.
-        price_up_factor=1.04,
-        price_down_factor=0.93,
-        trend_threshold=0.05,
-        cross_price_adj=0.05,
-        inactive_price_factor=0.5,
-    )
+# Policy factory: one ``OrderUpToPolicy`` per store (fresh instance so
+# per-policy RNG state is independent across stores).
+def _build_policy(seed: int) -> OrderUpToPolicy:
+    return OrderUpToPolicy(policy_seed=seed)
 
 
 # Stage list kept as a module constant so the comprehension below stays readable.

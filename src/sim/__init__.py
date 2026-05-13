@@ -11,7 +11,7 @@ retail market simulation:
 - ``store``            — ``Store`` with full per-product accounting.
 - ``store_initializer``— pure ``init_store_state`` seam pinning the
                          bit-identity contract for step 0.
-- ``policy``           — ``Policy`` ABC + ``BaselinePolicy``.
+- ``policy``           — ``Policy`` ABC + ``HeuristicPolicy`` + textbook family.
 - ``market``           — regional demand/supply environment.
 - ``event_engine``     — stochastic disruption events + scheduled
                          delivery callbacks.

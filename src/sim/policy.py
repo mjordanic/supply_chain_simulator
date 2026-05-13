@@ -1,11 +1,11 @@
-"""Policy ABC + ``BaselinePolicy`` + textbook reorder-policy family.
+"""Policy ABC + ``HeuristicPolicy`` + textbook reorder-policy family.
 
 A ``Policy`` is the decision-making brain attached to a ``Store``. It
 receives an ``Observation`` dict each tick and returns an ``Action``
 dict with four required keys (``order``, ``price``, ``activate``,
 ``deactivate``) plus an optional ``promotions`` map. Post-promo
 cooldowns and the first-order flag are policy-internal state on
-``BaselinePolicy`` (``promo_cooldown`` / ``needs_init_order``) — they
+``HeuristicPolicy`` (``promo_cooldown`` / ``needs_init_order``) — they
 no longer round-trip through Store.
 
 Each ``Policy`` instance owns its own ``policy_rng`` seeded from
@@ -13,8 +13,8 @@ Each ``Policy`` instance owns its own ``policy_rng`` seeded from
 share an RNG, so swapping a policy on a Scenario does not perturb the
 world.
 
-``BaselinePolicy`` is the heuristic baseline ported verbatim from the
-deleted ``src/agents/policy.py``. The behaviour (cooldown gating,
+``HeuristicPolicy`` is the heuristic kitchen-sink demonstrator ported verbatim
+from the deleted ``src/agents/policy.py``. The behaviour (cooldown gating,
 capacity respect, price floors at unit cost, periodic catalog review)
 is preserved; what changed is the hyperparameter pathway. The old
 ``init_params`` / ``live_params`` broadcasting dicts (encoded across
@@ -82,8 +82,8 @@ def _maybe_sample(value: Any, rng: Random) -> Any:
     return value
 
 
-class BaselinePolicy(Policy):
-    """Heuristic baseline policy with kwargs hyperparameters.
+class HeuristicPolicy(Policy):
+    """Heuristic kitchen-sink demonstrator policy with kwargs hyperparameters.
 
     Observation contract (every step, supplied by ``Store.observe``):
 
@@ -633,7 +633,7 @@ class RLPolicy(Policy):
     ``policy_rng`` is never consumed — all stochasticity in the RL env
     flows through ``world_rng`` exactly as in ``Runner``.
 
-    Action dict format (same as ``BaselinePolicy``)::
+    Action dict format (same as ``HeuristicPolicy``)::
 
         {
             "order":      {pid: int},
@@ -676,7 +676,7 @@ class RLPolicy(Policy):
 __all__ = [
     "Policy",
     "NoopPolicy",
-    "BaselinePolicy",
+    "HeuristicPolicy",
     "RLPolicy",
     "TextbookReorderPolicy",
     "OrderUpToPolicy",

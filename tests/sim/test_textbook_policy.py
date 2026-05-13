@@ -392,14 +392,12 @@ def test_order_up_to_flagship_scale_is_profitable():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# No BaselinePolicy alias
+# Exports sanity
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_no_baseline_policy_alias():
-    """BaselinePolicy is still importable in this slice (additive only)."""
-    # This issue is ADDITIVE — BaselinePolicy is NOT removed here.
-    # This test simply confirms that OrderUpToPolicy is exported correctly.
+def test_policy_exports():
+    """Confirm that OrderUpToPolicy and TextbookReorderPolicy are exported."""
     from src.sim.policy import OrderUpToPolicy, TextbookReorderPolicy
     assert OrderUpToPolicy is not None
     assert TextbookReorderPolicy is not None

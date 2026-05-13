@@ -52,7 +52,7 @@ from src.rl.env import RLEnv
 from src.rl.episode_sampler import _default_disruption_params
 from src.rl.eval import build_eval_seeds, evaluate
 from src.sim.scenario import DisruptionParams, MarketParams, StoreTemplate, load_catalog
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import OrderUpToPolicy
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +245,7 @@ def _make_eval_fn(
             return action.squeeze(0).cpu().numpy()
 
         def _baseline_factory():
-            return BaselinePolicy()
+            return OrderUpToPolicy()
 
         metrics = evaluate(
             rl_policy_fn=_rl_policy,

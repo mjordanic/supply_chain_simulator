@@ -260,12 +260,12 @@ def test_make_stores_kway_three_policies_share_template_and_seed_step0_identity(
     """k=3 CRN comparison: triples sharing ``(template, init_seed)`` start
     bit-identical at step 0 regardless of attached policy.
     """
-    from src.sim.policy import BaselinePolicy
+    from src.sim.policy import OrderUpToPolicy
 
     template = _template()
-    pol_a = BaselinePolicy(policy_seed=1)
-    pol_b = BaselinePolicy(policy_seed=2)
-    pol_c = BaselinePolicy(policy_seed=3)
+    pol_a = OrderUpToPolicy(policy_seed=1)
+    pol_b = OrderUpToPolicy(policy_seed=2)
+    pol_c = OrderUpToPolicy(policy_seed=3)
 
     stores = make_stores(
         [

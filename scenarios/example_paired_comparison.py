@@ -33,7 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Normal, Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import HeuristicPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
@@ -160,17 +160,17 @@ _TEMPLATE = StoreTemplate(
 )
 
 
-# Two BaselinePolicy variants differing in how aggressively they discount
+# Two HeuristicPolicy variants differing in how aggressively they discount
 # slow-moving stock. Hyperparameters that don't matter for the contrast
 # stay at module-level defaults.
-_POLICY_AGGRESSIVE = BaselinePolicy(
+_POLICY_AGGRESSIVE = HeuristicPolicy(
     policy_seed=1001,
     promo_threshold=0.30,  # promote earlier
     promo_discount=0.6,    # bigger markdown
     review_interval=10,
 )
 
-_POLICY_CONSERVATIVE = BaselinePolicy(
+_POLICY_CONSERVATIVE = HeuristicPolicy(
     policy_seed=2002,
     promo_threshold=0.70,  # promote only when stock is heavy
     promo_discount=0.85,   # gentler markdown

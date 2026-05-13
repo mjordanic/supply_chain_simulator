@@ -87,7 +87,7 @@ class CatalogItem(BaseModel):
     category: str = Field(min_length=1)
     # Authoring sell price. Strictly > 0 (the validator below enforces > unit_cost).
     base_price: float = Field(gt=0)
-    # Unit cost (≥ 0). Used as the price floor inside ``BaselinePolicy``.
+    # Unit cost (≥ 0). Used as the price floor inside ``HeuristicPolicy``.
     unit_cost: float = Field(ge=0)
     # Seasonal pattern.
     seasonality: Seasonality

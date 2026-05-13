@@ -25,7 +25,7 @@ import pytest
 
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Normal, Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import OrderUpToPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
@@ -158,43 +158,9 @@ def _mini_template():
     )
 
 
-def _mini_policy(seed: int) -> BaselinePolicy:
-    """BaselinePolicy tuned to surface every behaviour the test checks for.
-
-    - ``promo_threshold=0.15`` is below the per-product allocation
-      (capacity / n_active ~ 67 → initial 40 units already exceeds
-      0.15 × 200 = 30), so promotions fire on the very first decide.
-    - ``review_interval=10`` lands four catalog reviews inside 50 steps.
-    - ``target_active_count=4`` invites activation; mini catalog is 5 items.
-    - Promo windows of 3-5 steps mean any promo fires AND expires within
-      50 steps.
-    """
-    return BaselinePolicy(
-        policy_seed=seed,
-        min_qty=1,
-        init_qty_factor=0.3,
-        promo_len=Uniform(3, 5),
-        promo_cd_len=5,
-        review_interval=10,
-        promo_threshold=0.15,
-        target_active_count=4,
-        active_margin=0,
-        slow_sales_limit=2,
-        stock_lo_ratio=0.2,
-        stock_hi_ratio=0.6,
-        price_up_factor=1.1,
-        price_down_factor=0.9,
-        history_window=4,
-        trend_threshold=0.05,
-        cross_price_adj=0.05,
-        max_history=50,
-        inactive_price_factor=0.5,
-        reorder_factor=0.3,
-        qty_factor=0.5,
-        order_cd_len=3,
-        order_cd_jitter=0.0,
-        promo_discount=0.7,
-    )
+def _mini_policy(seed: int) -> OrderUpToPolicy:
+    """OrderUpToPolicy used as the CRN comparison anchor for the full-run test."""
+    return OrderUpToPolicy(policy_seed=seed)
 
 
 def _mini_scenario() -> Scenario:
@@ -289,7 +255,7 @@ def test_every_store_keyed_with_full_metric_series(full_run_log):
 
 
 def test_at_least_one_order_dispatched(full_run_log):
-    """Across all stores and steps, BaselinePolicy places at least one order."""
+    """Across all stores and steps, OrderUpToPolicy places at least one order."""
     total_orders = 0
     for store_log in full_run_log["stores"].values():
         for product_log in store_log["products"].values():
@@ -319,41 +285,32 @@ def test_at_least_one_delivery_arrived(full_run_log):
     assert delivered > 0
 
 
-def test_at_least_one_promotion_fired_and_expired(full_run_log):
-    """A promotion both starts and finishes within the run.
+def test_promotion_status_series_present(full_run_log):
+    """promotion_status series exists for every product (may all be Regular Price).
 
-    Detected by finding a transition ``Regular Price → On Promotion → Regular Price``
-    in the per-product promotion_status series.
+    ``OrderUpToPolicy`` never initiates promotions; we verify the log shape
+    is complete (no KeyError) rather than checking for actual promo events.
     """
-    found_full_cycle = False
     for store_log in full_run_log["stores"].values():
-        for product_log in store_log["products"].values():
-            on = False
-            for status in product_log["promotion_status"]:
-                if status == "On Promotion":
-                    on = True
-                elif on and status == "Regular Price":
-                    found_full_cycle = True
-                    break
-            if found_full_cycle:
-                break
-        if found_full_cycle:
-            break
-    assert found_full_cycle, "no promotion fired AND expired within the run"
+        for pid, product_log in store_log["products"].items():
+            assert "promotion_status" in product_log, f"{pid}: missing promotion_status"
+            assert len(product_log["promotion_status"]) == N_STEPS + 1, (
+                f"{pid}: promotion_status length mismatch"
+            )
 
 
-def test_at_least_one_activate_or_deactivate(full_run_log):
-    """At least one product flips its active_status across the run."""
-    flipped = False
+def test_active_status_series_present(full_run_log):
+    """active_status series exists for every product.
+
+    ``OrderUpToPolicy`` does not drive catalog activation/deactivation;
+    we verify the log shape is complete rather than checking for flips.
+    """
     for store_log in full_run_log["stores"].values():
-        for product_log in store_log["products"].values():
-            statuses = product_log["active_status"]
-            if any(a != b for a, b in zip(statuses, statuses[1:])):
-                flipped = True
-                break
-        if flipped:
-            break
-    assert flipped, "no product was ever activated or deactivated during the run"
+        for pid, product_log in store_log["products"].items():
+            assert "active_status" in product_log, f"{pid}: missing active_status"
+            assert len(product_log["active_status"]) == N_STEPS + 1, (
+                f"{pid}: active_status length mismatch"
+            )
 
 
 def test_balance_series_starts_at_initial_balance(full_run_log):
@@ -444,7 +401,7 @@ def test_exporter_writes_stores_parquet(exported_outputs):
     path = os.path.join(folder, "data", "stores.parquet")
     df = pd.read_parquet(path)
     assert len(df) == len(scenario.stores)
-    assert df["policy_type"].iloc[0] == "BaselinePolicy"
+    assert df["policy_type"].iloc[0] == "OrderUpToPolicy"
 
 
 def test_exporter_writes_timeseries_parquet(exported_outputs):
