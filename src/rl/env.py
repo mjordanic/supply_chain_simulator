@@ -36,7 +36,13 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from src.rl.configs.default import RLConfig
-from src.rl.encoders import decode_action, encode_observation, observation_dim, action_dim
+from src.rl.encoders import (
+    compute_effective_rate,
+    decode_action,
+    encode_observation,
+    observation_dim,
+    action_dim,
+)
 from src.rl.episode_sampler import EpisodeSpec, sample_episode
 from src.sim.event_engine import EventEngine
 from src.sim.item_registry import ItemRegistry
@@ -153,6 +159,10 @@ class RLEnv(gym.Env):
         # Per-tick sales history for the rolling-mean feature in encoders.
         self._sales_history: dict[str, deque] = {}
 
+        # Market-derived demand prior for the cold-start tick.  Set by reset()
+        # from market.params.base_demand; positive float.
+        self._base_demand_prior: float = 1.0
+
         # Slot permutation for the current episode (set by reset).
         self._slot_perm: tuple[int, ...] = tuple(range(K))
 
@@ -244,6 +254,22 @@ class RLEnv(gym.Env):
         # Record opening balance for the cash-normalisation feature.
         self._initial_cash = float(self._store.balance)
 
+        # Derive the market-demand prior for cold-start ordering.
+        # scenario.market is a MarketParams; its base_demand field is always
+        # a Distribution (see MarketParams dataclass).  Sample it using a
+        # CRN-disjoint RNG stream (world_seed + 1) so the world RNG does not
+        # advance and market draws remain bit-identical to a Runner-based run.
+        from src.sim.distributions import Distribution
+
+        market_base_demand = getattr(scenario.market, "base_demand", None)
+        if isinstance(market_base_demand, Distribution):
+            prior_rng = Random(scenario.world_seed + 1)
+            self._base_demand_prior = float(market_base_demand.sample(prior_rng))
+        elif market_base_demand is not None:
+            self._base_demand_prior = float(market_base_demand)
+        else:
+            self._base_demand_prior = 1.0
+
         # Reset per-tick state.
         self._step_count = 0
         self._sales_history = {pid: deque(maxlen=100) for pid in [w.product_id for w in self.catalog]}
@@ -301,6 +327,12 @@ class RLEnv(gym.Env):
         item_registry.tick()
 
         # --- 4. Decode action and set it on the RLPolicy shim ---
+        # Compute effective rate once per tick; shared by decoder (and later
+        # the encoder once slice 5 lands — do NOT pass to encode_observation yet).
+        effective_rate = compute_effective_rate(
+            self._sales_history, self._base_demand_prior
+        )
+
         action_vec = np.asarray(action, dtype=np.float32)
         action_dict = decode_action(
             action_vec,
@@ -308,6 +340,10 @@ class RLEnv(gym.Env):
             store,
             self.config.K_active,
             store.base_prices,
+            effective_rate=effective_rate,
+            target_centre_lead_times=self.config.target_centre_lead_times,
+            target_half_span_lead_times=self.config.target_half_span_lead_times,
+            target_max_lead_times=self.config.target_max_lead_times,
         )
         # Freeze assortment and disable promotions for the episode.
         action_dict["activate"] = []

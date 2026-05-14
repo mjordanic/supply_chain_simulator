@@ -586,3 +586,268 @@ def test_fair_share_output_keys_match_requested_keys():
     per_sku_headroom = {"A": 50, "B": 50, "C": 50}
     result = fair_share_allocate(requested, per_sku_headroom, global_free_space=100)
     assert set(result.keys()) == set(requested.keys())
+
+
+# ---------------------------------------------------------------------------
+# decode_action — order-up-to decoder (issue 04)
+# ---------------------------------------------------------------------------
+
+
+def test_decode_action_zero_action_matches_periodic_order_up_to_formula():
+    """At action_vec=zeros, target_lt=15. With rate=10, inv=30, pending=0, qty=max(0,15*10-30)=120."""
+    K = 2
+    pids = ["P0000", "P0001"]
+    effective_rate = {pid: 10.0 for pid in pids}
+    inventory = {pid: 30 for pid in pids}
+    pending = {pid: 0 for pid in pids}
+    capacity = 5000.0  # large so headroom is non-binding
+    store = _make_store(
+        pids,
+        capacity=capacity,
+        inventory=inventory,
+        pending=pending,
+    )
+    base_prices = {pid: 18.0 for pid in pids}
+    slot_perm = list(range(K))
+    action_vec = np.zeros(2 * K, dtype=np.float32)
+
+    result = decode_action(
+        action_vec,
+        slot_perm,
+        store,
+        K,
+        base_prices,
+        effective_rate=effective_rate,
+        target_centre_lead_times=15,
+        target_half_span_lead_times=15,
+        target_max_lead_times=30,
+    )
+    # requested = max(0, 15*10 - (30+0)) = max(0, 150-30) = 120
+    for pid in pids:
+        assert result["order"][pid] == 120, f"{pid}: expected 120 got {result['order'][pid]}"
+
+
+def test_decode_action_position_at_target_returns_zero_qty():
+    """The max(0,...) floor: negative requests map to zero.
+
+    When position >= target_lt * rate (even for negative order_raw),
+    the requested quantity is floored at zero.
+
+    Specifically: position = target_max * rate means ALL actions give zero
+    (the highest possible target is target_max, so position >= target_lt always).
+    """
+    K = 2
+    pids = ["P0000", "P0001"]
+    rate = 8.0
+    target_max = 30
+    # Set position to target_max * rate so even the highest target can't exceed it.
+    position = int(target_max * rate)  # 240 units
+    effective_rate = {pid: rate for pid in pids}
+    inventory = {pid: position for pid in pids}
+    pending = {pid: 0 for pid in pids}
+    capacity = 5000.0
+    store = _make_store(pids, capacity=capacity, inventory=inventory, pending=pending)
+    base_prices = {pid: 18.0 for pid in pids}
+    slot_perm = list(range(K))
+
+    # With position at target_max * rate, ALL order_raw values give zero qty.
+    for order_raw in [-1.0, -0.5, 0.0, 0.5, 1.0]:
+        action_vec = np.array(
+            [0.0] * K + [order_raw] * K, dtype=np.float32
+        )
+        result = decode_action(
+            action_vec,
+            slot_perm,
+            store,
+            K,
+            base_prices,
+            effective_rate=effective_rate,
+            target_centre_lead_times=15,
+            target_half_span_lead_times=15,
+            target_max_lead_times=target_max,
+        )
+        for pid in pids:
+            assert result["order"][pid] == 0, (
+                f"order_raw={order_raw}, pid={pid}: expected 0 got {result['order'][pid]}"
+            )
+
+
+def test_decode_action_total_qty_respects_global_free_space():
+    """Property: sum(qty) <= capacity - total_inventory - total_pending."""
+    rng = Random(7)
+    K = 5
+    pids = [f"P{i:04d}" for i in range(K)]
+    slot_perm = list(range(K))
+    base_prices = {pid: 18.0 for pid in pids}
+
+    for _ in range(100):
+        capacity = rng.uniform(100, 1000)
+        inventory = {pid: rng.uniform(0, capacity / (K * 2)) for pid in pids}
+        pending = {pid: rng.uniform(0, capacity / (K * 2)) for pid in pids}
+        store = _make_store(pids, capacity=capacity, inventory=inventory, pending=pending)
+        effective_rate = {pid: rng.uniform(0.5, 20.0) for pid in pids}
+        action_vec = np.array(
+            [rng.uniform(-1, 1) for _ in range(2 * K)], dtype=np.float32
+        )
+        result = decode_action(
+            action_vec,
+            slot_perm,
+            store,
+            K,
+            base_prices,
+            effective_rate=effective_rate,
+        )
+        global_free_space = max(
+            0, capacity - sum(inventory.values()) - sum(pending.values())
+        )
+        total_qty = sum(result["order"].values())
+        assert total_qty <= global_free_space + 1, (
+            f"total_qty={total_qty} > global_free_space={global_free_space}"
+        )
+
+
+def test_decode_action_per_sku_qty_respects_per_sku_headroom():
+    """Property: qty[pid] <= capacity - inventory[pid] - pending[pid] for all pids."""
+    rng = Random(13)
+    K = 5
+    pids = [f"P{i:04d}" for i in range(K)]
+    slot_perm = list(range(K))
+    base_prices = {pid: 18.0 for pid in pids}
+
+    for _ in range(100):
+        capacity = rng.uniform(100, 1000)
+        inventory = {pid: rng.uniform(0, capacity / (K * 2)) for pid in pids}
+        pending = {pid: rng.uniform(0, capacity / (K * 2)) for pid in pids}
+        store = _make_store(pids, capacity=capacity, inventory=inventory, pending=pending)
+        effective_rate = {pid: rng.uniform(0.5, 20.0) for pid in pids}
+        action_vec = np.array(
+            [rng.uniform(-1, 1) for _ in range(2 * K)], dtype=np.float32
+        )
+        result = decode_action(
+            action_vec,
+            slot_perm,
+            store,
+            K,
+            base_prices,
+            effective_rate=effective_rate,
+        )
+        for pid in pids:
+            headroom = max(0, capacity - inventory[pid] - pending[pid])
+            qty = result["order"][pid]
+            assert qty <= headroom + 1, (
+                f"{pid}: qty={qty} > headroom={headroom}"
+            )
+
+
+def test_decode_action_price_half_unchanged():
+    """Price decoding: price_raw=0 → MSRP; +1 → 1.5*MSRP; -1 → 0.5*MSRP."""
+    K = 2
+    pids = ["P0000", "P0001"]
+    msrps = {"P0000": 20.0, "P0001": 30.0}
+    store = _make_store(pids, base_prices=msrps, capacity=5000.0)
+    slot_perm = list(range(K))
+
+    for price_raw, expected_mult in [(-1.0, 0.5), (0.0, 1.0), (1.0, 1.5)]:
+        action_vec = np.array(
+            [price_raw] * K + [0.0] * K, dtype=np.float32
+        )
+        result = decode_action(
+            action_vec,
+            slot_perm,
+            store,
+            K,
+            msrps,
+            effective_rate={pid: 5.0 for pid in pids},
+        )
+        for pid in pids:
+            expected_price = msrps[pid] * expected_mult
+            assert result["price"][pid] == pytest.approx(expected_price, abs=1e-5), (
+                f"price_raw={price_raw}, {pid}: expected {expected_price} got {result['price'][pid]}"
+            )
+
+
+def test_decode_action_uses_inventory_position_not_just_inventory():
+    """Pending in-transit nets against the target: inv=0, pending=50, rate=10, target_lt=15 → qty=100."""
+    K = 1
+    pids = ["P0000"]
+    effective_rate = {"P0000": 10.0}
+    inventory = {"P0000": 0}
+    pending = {"P0000": 50}
+    capacity = 5000.0
+    store = _make_store(pids, capacity=capacity, inventory=inventory, pending=pending)
+    base_prices = {"P0000": 18.0}
+    slot_perm = [0]
+    action_vec = np.zeros(2 * K, dtype=np.float32)
+
+    result = decode_action(
+        action_vec,
+        slot_perm,
+        store,
+        K,
+        base_prices,
+        effective_rate=effective_rate,
+        target_centre_lead_times=15,
+        target_half_span_lead_times=15,
+        target_max_lead_times=30,
+    )
+    # requested = max(0, 15*10 - (0 + 50)) = max(0, 150 - 50) = 100
+    assert result["order"]["P0000"] == 100
+
+
+def test_decode_action_cold_start_qty_scales_with_prior():
+    """Cold-start qty ratio scales 10x when base_demand_prior scales 10x (empty history)."""
+    K = 1
+    pids = ["P0000"]
+    store = _make_store(pids, capacity=50000.0, inventory={"P0000": 0}, pending={"P0000": 0})
+    base_prices = {"P0000": 18.0}
+    slot_perm = [0]
+    action_vec = np.zeros(2 * K, dtype=np.float32)
+
+    # Empty history → effective_rate == base_demand_prior
+    rate_low = {"P0000": 2.0}
+    rate_high = {"P0000": 20.0}
+
+    result_low = decode_action(
+        action_vec, slot_perm, store, K, base_prices,
+        effective_rate=rate_low,
+        target_centre_lead_times=15,
+        target_half_span_lead_times=15,
+        target_max_lead_times=30,
+    )
+    result_high = decode_action(
+        action_vec, slot_perm, store, K, base_prices,
+        effective_rate=rate_high,
+        target_centre_lead_times=15,
+        target_half_span_lead_times=15,
+        target_max_lead_times=30,
+    )
+    qty_low = result_low["order"]["P0000"]
+    qty_high = result_high["order"]["P0000"]
+    # At zero inventory+pending: qty = target_lt * rate; ratio should be 10x
+    # (integer truncation may cause small deviation; allow +-1)
+    assert abs(qty_high - qty_low * 10) <= 2, (
+        f"Expected 10x ratio: qty_low={qty_low}, qty_high={qty_high}"
+    )
+
+
+def test_decode_action_effective_rate_none_returns_zero_qty():
+    """effective_rate=None produces zero qty for every SKU (backward-compat branch)."""
+    K = 3
+    pids = [f"P{i:04d}" for i in range(K)]
+    store = _make_store(pids, capacity=5000.0, inventory={pid: 0 for pid in pids})
+    base_prices = {pid: 18.0 for pid in pids}
+    slot_perm = list(range(K))
+    action_vec = np.ones(2 * K, dtype=np.float32)  # max order_raw = +1
+
+    result = decode_action(
+        action_vec,
+        slot_perm,
+        store,
+        K,
+        base_prices,
+        effective_rate=None,
+    )
+    for pid in pids:
+        assert result["order"][pid] == 0, (
+            f"{pid}: expected 0 with effective_rate=None, got {result['order'][pid]}"
+        )

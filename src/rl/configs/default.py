@@ -158,6 +158,29 @@ class RLConfig:
     """Label used for the TensorBoard sub-directory and checkpoint prefix."""
 
     # ------------------------------------------------------------------
+    # Order-up-to decoder parameters
+    # ------------------------------------------------------------------
+    target_centre_lead_times: int = 15
+    """Order-up-to target (in lead-times) when ``order_raw = 0``.
+
+    Matches ``OrderUpToPolicy.S / rate`` at the default policy kwargs
+    (``delivery_lag + safety_lead_ticks + cover_horizon_ticks = 3 + 2 + 10``).
+    """
+
+    target_half_span_lead_times: int = 15
+    """Half-width of the action range around the centre (in lead-times).
+
+    The raw action ``order_raw ∈ [-1, 1]`` maps to a target of
+    ``target_centre ± target_half_span`` lead-times before clipping.
+    """
+
+    target_max_lead_times: int = 30
+    """Upper clip for the order-up-to target (in lead-times).
+
+    Prevents pathologically large target requests on extreme positive actions.
+    """
+
+    # ------------------------------------------------------------------
     # World
     # ------------------------------------------------------------------
     world_archetype: str = "rl_train"

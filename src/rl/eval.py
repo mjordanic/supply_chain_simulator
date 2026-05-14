@@ -37,7 +37,7 @@ from typing import Any, Callable
 import numpy as np
 
 from src.rl.configs.default import RLConfig
-from src.rl.encoders import decode_action, encode_observation
+from src.rl.encoders import compute_effective_rate, decode_action, encode_observation
 from src.rl.episode_sampler import EpisodeSpec, sample_episode
 from src.rl.metrics import RunSlice, aggregate_episode
 from src.sim.event_engine import EventEngine
@@ -324,6 +324,19 @@ def _run_rl(
     }
     slot_perm = spec.slot_permutation
 
+    # Derive market-demand prior for cold-start ordering (mirrors RLEnv.reset).
+    from random import Random as _Random
+    from src.sim.distributions import Distribution as _Distribution
+
+    market_base_demand = getattr(spec.scenario.market, "base_demand", None)
+    if isinstance(market_base_demand, _Distribution):
+        prior_rng = _Random(spec.scenario.world_seed + 1)
+        base_demand_prior = float(market_base_demand.sample(prior_rng))
+    elif market_base_demand is not None:
+        base_demand_prior = float(market_base_demand)
+    else:
+        base_demand_prior = 1.0
+
     run_slice = RunSlice(active_pids=list(spec.active_subset))
     episode_length = spec.scenario.n_steps
 
@@ -332,6 +345,9 @@ def _run_rl(
         market.tick()
         event_engine.tick(market)
         item_registry.tick()
+
+        # Compute effective rate once per tick.
+        effective_rate = compute_effective_rate(sales_history, base_demand_prior)
 
         # 4: encode obs, call rl_policy_fn, decode action
         obs = encode_observation(
@@ -351,6 +367,10 @@ def _run_rl(
             store,
             K,
             store.base_prices,
+            effective_rate=effective_rate,
+            target_centre_lead_times=config.target_centre_lead_times,
+            target_half_span_lead_times=config.target_half_span_lead_times,
+            target_max_lead_times=config.target_max_lead_times,
         )
         action_dict["activate"] = []
         action_dict["deactivate"] = []
