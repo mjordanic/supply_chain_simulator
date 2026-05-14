@@ -26,17 +26,25 @@ from src.sim.distributions import Distribution
 
 
 def _default_capacity_dist() -> Distribution:
-    """Return ``Uniform(150, 400)`` — default per-episode capacity distribution."""
-    from src.sim.distributions import Uniform
+    """Return ``LogUniform(100, 10_000)`` — default per-episode capacity distribution.
 
-    return Uniform(150, 400)
+    Log-uniform over two orders of magnitude so a single trained policy covers
+    small-store (corner-shop) and flagship deployments.  See ADR 0007.
+    """
+    from src.sim.distributions import LogUniform
+
+    return LogUniform(100, 10_000)
 
 
 def _default_balance_dist() -> Distribution:
-    """Return ``Uniform(15000, 40000)`` — default per-episode balance distribution."""
-    from src.sim.distributions import Uniform
+    """Return ``LogUniform(10_000, 1_000_000)`` — default per-episode balance distribution.
 
-    return Uniform(15000, 40000)
+    Log-uniform over two orders of magnitude, matched to the capacity range so
+    the per-SKU budget scales consistently across store sizes.  See ADR 0007.
+    """
+    from src.sim.distributions import LogUniform
+
+    return LogUniform(10_000, 1_000_000)
 
 
 @dataclass(frozen=True)

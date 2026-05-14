@@ -65,10 +65,19 @@ def _make_base_template() -> StoreTemplate:
 
 
 def _make_config(K_active: int = 5) -> RLConfig:
-    """RLConfig with Uniform distributions for easy range checking."""
+    """RLConfig with pinned Uniform distributions for deterministic range checks.
+
+    The default RLConfig uses LogUniform distributions; tests that assert exact
+    numeric bounds pin capacity_dist / balance_dist to a narrow Uniform so the
+    expected ranges are stable regardless of the production defaults.
+    """
+    from src.sim.distributions import Uniform
+
     return RLConfig(
         K_active=K_active,
         episode_length=5,  # short for speed in tests
+        capacity_dist=Uniform(150, 400),
+        balance_dist=Uniform(15_000, 40_000),
     )
 
 
