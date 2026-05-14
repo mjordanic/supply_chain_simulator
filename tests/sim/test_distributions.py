@@ -1,5 +1,6 @@
 """Tests for the Distribution ABC and concrete subclasses (T2)."""
 
+import math
 import random
 
 import pytest
@@ -8,6 +9,7 @@ from src.sim.distributions import (
     Choice,
     Constant,
     Distribution,
+    LogUniform,
     Normal,
     Uniform,
     distribution_from_dict,
@@ -172,3 +174,60 @@ def test_from_dict_rejects_missing_type():
 def test_distribution_is_abstract():
     with pytest.raises(TypeError):
         Distribution()  # type: ignore[abstract]
+
+
+# ---------- LogUniform tests ----------
+
+
+def test_log_uniform_sample_in_range():
+    """All samples from LogUniform(2, 8) lie in [2, 8]."""
+    rng = random.Random(42)
+    dist = LogUniform(low=2.0, high=8.0)
+    for _ in range(1000):
+        x = dist.sample(rng)
+        assert 2.0 <= x <= 8.0, f"sample {x} outside [2, 8]"
+
+
+def test_log_uniform_geometric_mean_property():
+    """Mean of N=10_000 samples from LogUniform(1, 100) falls between geometric mean (10)
+    and arithmetic mean (50.5) — confirming log-space distribution."""
+    rng = random.Random(0)
+    dist = LogUniform(low=1.0, high=100.0)
+    samples = [dist.sample(rng) for _ in range(10_000)]
+    mean = sum(samples) / len(samples)
+    geometric_mean = 10.0  # exp((log(1) + log(100)) / 2) = exp(log(10)) = 10
+    arithmetic_mean = 50.5  # (1 + 100) / 2
+    assert geometric_mean < mean < arithmetic_mean, (
+        f"mean {mean} not in ({geometric_mean}, {arithmetic_mean})"
+    )
+
+
+def test_log_uniform_determinism():
+    """Same Random seed produces the same sample on two calls."""
+    dist = LogUniform(low=5.0, high=50.0)
+    rng_a = random.Random(99)
+    rng_b = random.Random(99)
+    assert dist.sample(rng_a) == dist.sample(rng_b)
+
+
+def test_log_uniform_json_round_trip():
+    """distribution_from_dict(LogUniform(2, 8).to_dict()) reconstructs an equal LogUniform."""
+    dist = LogUniform(low=2.0, high=8.0)
+    rebuilt = distribution_from_dict(dist.to_dict())
+    assert rebuilt == dist
+
+
+def test_log_uniform_rejects_non_positive_low():
+    """LogUniform(0, 10) and LogUniform(-1, 10) raise ValueError."""
+    with pytest.raises(ValueError):
+        LogUniform(low=0.0, high=10.0)
+    with pytest.raises(ValueError):
+        LogUniform(low=-1.0, high=10.0)
+
+
+def test_log_uniform_rejects_inverted_range():
+    """LogUniform(10, 1) and LogUniform(5, 5) raise ValueError."""
+    with pytest.raises(ValueError):
+        LogUniform(low=10.0, high=1.0)
+    with pytest.raises(ValueError):
+        LogUniform(low=5.0, high=5.0)

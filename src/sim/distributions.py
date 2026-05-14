@@ -26,6 +26,7 @@ from __future__ import annotations
 # Pure-stdlib imports throughout — distributions are lightweight and
 # get imported by both the sim package and the LLM/world-builder, so
 # we avoid any heavy dependency at this layer.
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field  # noqa: F401  (kept for downstream re-export hygiene)
 from random import Random
@@ -178,6 +179,46 @@ class Constant(Distribution):
         return {"type": "constant", "value": self.value}
 
 
+@dataclass(frozen=True)
+class LogUniform(Distribution):
+    """Log-uniform distribution over ``[low, high]`` (inclusive).
+
+    Draws are uniform in log-space: ``sample(rng)`` returns
+    ``exp(rng.uniform(log(low), log(high)))``, yielding a value that
+    is uniform on a multiplicative scale rather than an additive one.
+
+    Typical use: domain-randomisation parameters that span orders of
+    magnitude, e.g. ``LogUniform(100, 10_000)`` for SKU capacity or
+    ``LogUniform(10_000, 1_000_000)`` for opening balance.
+
+    Requires ``low > 0`` and ``high > low`` — validated at construction
+    so a typo in a hand-edited scenario JSON fails loudly.
+    """
+
+    # Lower bound of the support (strictly positive).
+    low: float
+    # Upper bound of the support (strictly greater than ``low``).
+    high: float
+
+    def __post_init__(self) -> None:
+        if self.low <= 0:
+            raise ValueError(
+                f"LogUniform: low must be > 0, got low={self.low!r}"
+            )
+        if self.high <= self.low:
+            raise ValueError(
+                f"LogUniform: high must be > low, got low={self.low!r}, high={self.high!r}"
+            )
+
+    def sample(self, rng: Random) -> float:
+        """Draw one log-uniformly distributed float in ``[low, high]``."""
+        return math.exp(rng.uniform(math.log(self.low), math.log(self.high)))
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON shape: ``{type: 'log_uniform', low, high}``."""
+        return {"type": "log_uniform", "low": self.low, "high": self.high}
+
+
 # Discriminator registry consumed by ``distribution_from_dict`` and by
 # ``scenario._deserialize`` to decide whether a JSON dict should be
 # parsed as a ``Distribution`` or kept as a plain dict.
@@ -186,6 +227,7 @@ _REGISTRY: dict[str, type[Distribution]] = {
     "normal": Normal,
     "choice": Choice,
     "constant": Constant,
+    "log_uniform": LogUniform,
 }
 
 
