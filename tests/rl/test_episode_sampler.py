@@ -279,23 +279,9 @@ class TestScenarioValidity:
         for seed in [0, 1, 42, 999]:
             spec = sample_episode(catalog, template, config, episode_seed=seed)
             # Attach a simple pass-through policy so Runner can call decide().
-            from src.sim.policy import BaselinePolicy
-            from src.sim.distributions import Uniform as Uni
+            from src.sim.policy import OrderUpToPolicy
 
-            policy = BaselinePolicy(
-                policy_seed=seed,
-                min_qty=1,
-                init_qty_factor=0.3,
-                promo_len=Uni(3, 5),
-                promo_cd_len=5,
-                review_interval=10,
-                promo_threshold=0.4,
-                target_active_count=config.K_active,
-                slow_sales_limit=2,
-                history_window=4,
-                max_history=50,
-                promo_discount=0.7,
-            )
+            policy = OrderUpToPolicy(policy_seed=seed)
             spec.scenario.stores[0].policy = policy
             run_log = Runner(spec.scenario).run()
             # Basic sanity: run log has store 0 and n_steps+1 balance entries.

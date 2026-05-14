@@ -2,7 +2,7 @@
 
 A small wrapper around ``statsmodels`` ARIMA that fits a model on the
 supplied history and exposes ``predict`` / ``update`` for online use.
-Not currently wired into the main simulator loop (``BaselinePolicy``
+Not currently wired into the main simulator loop (``HeuristicPolicy``
 uses a simple rolling-mean trend instead). Kept available for
 downstream / notebook analysis or as a forecasting alternative to plug
 into a custom ``Policy``.

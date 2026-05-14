@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import HeuristicPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import Scenario
 
@@ -123,18 +123,18 @@ def test_paired_stores_share_step0_state(paired_module):
 
 
 def test_paired_policy_groups_attach_distinct_policies(paired_module):
-    """Both ``BaselinePolicy`` groups are present and distinguishable."""
+    """Both ``HeuristicPolicy`` groups are present and distinguishable."""
     stores = paired_module.scenario.stores
     policies_a = {id(stores[i].policy) for i in range(0, len(stores), 2)}
     policies_b = {id(stores[i].policy) for i in range(1, len(stores), 2)}
     assert len(policies_a) == 1, "all 'A' slots should share one policy object"
     assert len(policies_b) == 1, "all 'B' slots should share one policy object"
     assert policies_a.isdisjoint(policies_b)
-    # Both policies are BaselinePolicy instances by construction in the example.
+    # Both policies are HeuristicPolicy instances by construction in the example.
     a_policy = stores[0].policy
     b_policy = stores[1].policy
-    assert isinstance(a_policy, BaselinePolicy)
-    assert isinstance(b_policy, BaselinePolicy)
+    assert type(a_policy).__name__ == "HeuristicPolicy"
+    assert type(b_policy).__name__ == "HeuristicPolicy"
 
 
 # ----------------------------------------------------------------- main.py

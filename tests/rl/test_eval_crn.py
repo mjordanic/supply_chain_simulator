@@ -1,10 +1,10 @@
 """Tests for src/rl/eval.py (CRN-paired evaluation harness).
 
 Acceptance criteria:
-  - CRN self-eval: running BaselinePolicy against itself on the same
+  - CRN self-eval: running OrderUpToPolicy against itself on the same
     EpisodeSpec yields paired difference exactly 0 across all seeds.
   - Random vs baseline: running a random-action RLPolicy against
-    BaselinePolicy produces a non-zero paired uplift (almost certainly
+    OrderUpToPolicy produces a non-zero paired uplift (almost certainly
     negative), proving the comparison is wired up correctly.
   - Eval seed disjointness: build_eval_seeds returns seeds in the
     configured eval range and they do not overlap the training range.
@@ -19,7 +19,7 @@ import pytest
 from src.rl.configs.default import RLConfig
 from src.rl.eval import build_eval_seeds, evaluate
 from src.rl.episode_sampler import sample_episode
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import OrderUpToPolicy
 from src.sim.scenario import StoreTemplate, load_catalog
 
 
@@ -69,22 +69,9 @@ def _make_config(episode_length: int = 5, n_eval_seeds: int = 4) -> RLConfig:
 
 
 def _make_baseline_factory() -> callable:
-    """Return a factory that produces a fresh BaselinePolicy each call."""
+    """Return a factory that produces a fresh OrderUpToPolicy each call."""
     def factory():
-        return BaselinePolicy(
-            policy_seed=0,
-            min_qty=1,
-            init_qty_factor=0.3,
-            promo_len=5,
-            promo_cd_len=5,
-            review_interval=10,
-            promo_threshold=0.4,
-            target_active_count=5,
-            slow_sales_limit=2,
-            history_window=4,
-            max_history=50,
-            promo_discount=0.7,
-        )
+        return OrderUpToPolicy(policy_seed=0)
     return factory
 
 
@@ -160,7 +147,7 @@ class TestReturnedDictFormat:
 
 
 class TestCRNSelfEval:
-    """Running BaselinePolicy against itself on the same EpisodeSpec
+    """Running OrderUpToPolicy against itself on the same EpisodeSpec
     must yield paired return difference exactly 0 across all seeds."""
 
     def test_baseline_vs_itself_zero_uplift(self):
@@ -177,9 +164,9 @@ class TestCRNSelfEval:
         # For a true self-eval we need both runs to produce identical
         # net_profit.  The cleanest approach: make the RL "policy" a
         # wrapper that always returns the same zero action, and the
-        # baseline factory also use a fresh BaselinePolicy.  But the
-        # issue spec says "BaselinePolicy against itself", meaning both
-        # runs use BaselinePolicy (one via the RL path using encode/decode
+        # baseline factory also use a fresh OrderUpToPolicy.  But the
+        # issue spec says "OrderUpToPolicy against itself", meaning both
+        # runs use OrderUpToPolicy (one via the RL path using encode/decode
         # of a baseline-like action, one via the baseline path directly)
         # — in that case the CRN guarantee applies at the world level,
         # not at the action level.

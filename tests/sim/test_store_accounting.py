@@ -225,7 +225,7 @@ def test_init_state_independent_of_policy():
 def test_activate_and_deactivate_item():
     """activate adds to the active set; deactivate removes it.
 
-    The first-order flag has moved off Store onto ``BaselinePolicy``;
+    The first-order flag has moved off Store onto ``HeuristicPolicy``;
     Store-level activation no longer touches that flag.
     """
     s = _make_store()

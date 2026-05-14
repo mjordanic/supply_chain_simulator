@@ -34,7 +34,7 @@ from src.llm.openai_client import OpenAIClient
 from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import HeuristicPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
@@ -66,7 +66,7 @@ _template = next(iter(_world.store_templates.values()))
 
 
 # Author the policy here — never authored by the LLM.
-_policy = BaselinePolicy(
+_policy = HeuristicPolicy(
     policy_seed=1000,
     min_qty=1,
     init_qty_factor=0.3,

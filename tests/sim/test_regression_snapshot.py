@@ -10,7 +10,7 @@ The scenario is intentionally small (30 steps, 2 stores, 4-product
 catalog with cross-references, 1 region) so the test runs in well under
 a second on CI, while still exercising every subsystem: Market trend /
 seasonality / cross-demand, EventEngine spawn + duration, ItemRegistry
-lifecycle ticks, Store accounting, and BaselinePolicy decide.
+lifecycle ticks, Store accounting, and OrderUpToPolicy decide.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import pytest
 
 from src.sim.data_exporter import _jsonable
 from src.sim.distributions import Constant, Normal, Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import OrderUpToPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
@@ -38,7 +38,7 @@ from src.sim.scenario import (
 
 # Bump this constant when simulator numerics change intentionally. A
 # failing assertion prints the observed digest so it can be copied here.
-EXPECTED_HASH = "14fba10c157913c424d1e1ec3a00110d8a9b08d7384e684543d2aaf05308eab7"
+EXPECTED_HASH = "85b598757509890611d3b48fb18044b66e71eda43e75da0d70767b40df074cb3"
 
 
 N_STEPS = 30
@@ -152,32 +152,8 @@ def _canonical_template():
     )
 
 
-def _canonical_policy(seed: int) -> BaselinePolicy:
-    return BaselinePolicy(
-        policy_seed=seed,
-        min_qty=1,
-        init_qty_factor=0.3,
-        promo_len=Uniform(3, 5),
-        promo_cd_len=4,
-        review_interval=8,
-        promo_threshold=0.2,
-        target_active_count=3,
-        slow_sales_limit=2,
-        stock_lo_ratio=0.2,
-        stock_hi_ratio=0.6,
-        price_up_factor=1.1,
-        price_down_factor=0.9,
-        history_window=4,
-        trend_threshold=0.05,
-        cross_price_adj=0.05,
-        max_history=50,
-        inactive_price_factor=0.5,
-        reorder_factor=0.3,
-        qty_factor=0.5,
-        order_cd_len=3,
-        order_cd_jitter=0.0,
-        promo_discount=0.7,
-    )
+def _canonical_policy(seed: int) -> OrderUpToPolicy:
+    return OrderUpToPolicy(policy_seed=seed)
 
 
 def _canonical_scenario() -> Scenario:

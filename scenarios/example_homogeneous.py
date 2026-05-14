@@ -1,7 +1,7 @@
 """Example: a homogeneous fleet of stores running a single policy.
 
 Demonstrates ``make_stores(triples)`` with three triples that share one
-``StoreTemplate`` and one ``BaselinePolicy`` instance but vary
+``StoreTemplate`` and one ``HeuristicPolicy`` instance but vary
 ``init_seed`` so each store's step-0 active SKU set and stock allocation
 is distinct. The right starting point for evaluating one policy across
 several heterogeneous starting conditions (a "robustness sweep").
@@ -29,7 +29,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Normal, Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import HeuristicPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
@@ -166,10 +166,10 @@ _TEMPLATE = StoreTemplate(
 )
 
 
-# Single ``BaselinePolicy`` shared across all three stores. Sharing the
+# Single ``HeuristicPolicy`` shared across all three stores. Sharing the
 # instance also means a single ``policy_rng`` is consumed across all
 # three stores' decision streams.
-_POLICY = BaselinePolicy(
+_POLICY = HeuristicPolicy(
     policy_seed=1000,
     min_qty=1,
     init_qty_factor=0.3,

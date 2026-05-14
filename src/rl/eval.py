@@ -4,7 +4,7 @@
 objects from the configured eval-seed range (disjoint from the training range
 via ``config.eval_seed_offset``).
 
-``evaluate`` runs the RL policy and ``BaselinePolicy`` on bit-identical
+``evaluate`` runs the RL policy and ``OrderUpToPolicy`` on bit-identical
 ``EpisodeSpec`` tuples (Common Random Numbers), computes paired metrics, and
 returns a flat dict suitable for logging to TensorBoard under ``eval/*`` keys.
 
@@ -43,7 +43,7 @@ from src.rl.metrics import RunSlice, aggregate_episode
 from src.sim.event_engine import EventEngine
 from src.sim.item_registry import ItemRegistry
 from src.sim.market import Market
-from src.sim.policy import BaselinePolicy, Policy
+from src.sim.policy import OrderUpToPolicy, Policy
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
@@ -62,7 +62,7 @@ PolicyFn = Callable[[np.ndarray], np.ndarray]
 """RL policy callable: takes an obs tensor, returns an action vector."""
 
 BaselineFactory = Callable[[], Policy]
-"""Factory that returns a fresh Policy (e.g. BaselinePolicy) per seed."""
+"""Factory that returns a fresh Policy (e.g. OrderUpToPolicy) per seed."""
 
 
 # ---------------------------------------------------------------------------

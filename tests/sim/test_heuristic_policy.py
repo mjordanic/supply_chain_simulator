@@ -1,10 +1,10 @@
-"""T5: BaselinePolicy contract tests (issue 06).
+"""T5: HeuristicPolicy contract tests (issue 06).
 
 Each test constructs a synthetic observation and verifies one acceptance
 criterion from the issue. The full integration with the Runner / Store
 observation shape lands in issue 07; these tests target the policy in
 isolation against the observation contract documented in
-``BaselinePolicy.decide``.
+``HeuristicPolicy.decide``.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from src.sim.distributions import Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import HeuristicPolicy
 
 
 def _baseline_obs(
@@ -31,7 +31,7 @@ def _baseline_obs(
     sales: dict[str, int] | None = None,
     promotions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build the full observation shape BaselinePolicy.decide expects."""
+    """Build the full observation shape HeuristicPolicy.decide expects."""
     if inventory is None:
         inventory = {"P0000": 10, "P0001": 20, "P0002": 5}
     if pending is None:
@@ -63,8 +63,8 @@ def _baseline_obs(
     }
 
 
-def _policy(**overrides: Any) -> BaselinePolicy:
-    """BaselinePolicy with sane defaults that pass all four contract tests."""
+def _policy(**overrides: Any) -> HeuristicPolicy:
+    """HeuristicPolicy with sane defaults that pass all four contract tests."""
     defaults = dict(
         policy_seed=42,
         min_qty=5,
@@ -91,7 +91,7 @@ def _policy(**overrides: Any) -> BaselinePolicy:
         promo_discount=0.7,
     )
     defaults.update(overrides)
-    return BaselinePolicy(**defaults)
+    return HeuristicPolicy(**defaults)
 
 
 def test_no_order_during_product_cooldown():
@@ -258,7 +258,7 @@ def test_activate_deactivate_only_on_review_step(review_interval: int):
 def test_decide_consumes_only_policy_rng():
     """Two policies seeded identically produce identical action streams.
 
-    This is the "policy_rng only" half of the seeding contract: BaselinePolicy
+    This is the "policy_rng only" half of the seeding contract: HeuristicPolicy
     must not reach for the global ``random`` module or any other shared RNG.
     """
     inventory = {"P0000": 80, "P0001": 80}  # high stock triggers the promo path
@@ -296,12 +296,12 @@ def test_decide_returns_full_action_dict_shape():
 
 
 def test_kwargs_constructor_no_init_params_dict():
-    """BaselinePolicy must accept hyperparameters via plain kwargs.
+    """HeuristicPolicy must accept hyperparameters via plain kwargs.
 
     The old broadcasting-dict pathway (``init_params=…, live_params=…``)
     is gone; this test guards against its return.
     """
-    p = BaselinePolicy(
+    p = HeuristicPolicy(
         policy_seed=0,
         min_qty=10,
         init_qty_factor=0.3,
