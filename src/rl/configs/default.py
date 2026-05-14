@@ -181,6 +181,17 @@ class RLConfig:
     """
 
     # ------------------------------------------------------------------
+    # Encoder parameters
+    # ------------------------------------------------------------------
+    max_inventory_lt: float = 30.0
+    """Saturation point for the demand-units inventory feature (slot 13).
+
+    The slot-13 value is ``clip(inventory / effective_rate, 0, max_inventory_lt)
+    / max_inventory_lt``.  At ``max_inventory_lt`` lead-times of cover the
+    feature saturates at 1.0; above that it stays clamped.
+    """
+
+    # ------------------------------------------------------------------
     # World
     # ------------------------------------------------------------------
     world_archetype: str = "rl_train"

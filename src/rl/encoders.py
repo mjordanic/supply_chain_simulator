@@ -28,8 +28,9 @@ Per-SKU block (repeated K_active times, in slot_perm order):
   6-10  lifecycle stage one-hot (5 stages)           {0,1}
   11 ticks_since_activation: log1p(tau)/log1p(360)   [0, 1]  (clamped)
   12 in_season flag                                  {0,1}
+  13 clip(inv/rate, 0, max_lt) / max_lt              [0, 1]  demand-units inventory
 
-N_PER_SKU = 13
+N_PER_SKU = 14
 
 Global block (4 values, appended after all SKU blocks):
 
@@ -65,7 +66,7 @@ from src.sim.lifecycle_clock import CANONICAL_STAGES
 # Shape constants
 # ---------------------------------------------------------------------------
 
-N_PER_SKU: int = 13
+N_PER_SKU: int = 14
 """Number of features per active-SKU slot in the observation."""
 
 N_GLOBAL: int = 4
@@ -117,6 +118,8 @@ def encode_observation(
     *,
     initial_cash: float | None = None,
     sales_history: dict[str, deque] | None = None,
+    effective_rate: dict[str, float] | None = None,
+    max_inventory_lt: float = 30.0,
 ) -> np.ndarray:
     """Encode the current simulator state into a flat float32 observation.
 
@@ -148,6 +151,15 @@ def encode_observation(
         Optional dict mapping pid → deque of per-tick sales values.  The
         rolling-5-tick mean feature is computed from the last 5 entries.
         When None or the product has no history, the feature is 0.
+    effective_rate:
+        Per-pid demand rate dict, as returned by ``compute_effective_rate``.
+        When supplied, slot 13 of each SKU block is set to
+        ``clip(inventory / rate, 0, max_inventory_lt) / max_inventory_lt``.
+        When ``None``, slot 13 is 0.0 (backward-compat for test callers
+        that do not supply a rate).
+    max_inventory_lt:
+        Saturation point for the demand-units inventory feature (slot 13),
+        in lead-times of cover.  Default 30.0 matches ``RLConfig.max_inventory_lt``.
 
     Returns
     -------
@@ -248,6 +260,16 @@ def encode_observation(
         else:
             in_season = 1.0 if current_month in season_months.get(seasonality, []) else 0.0
         obs[base_offset + 12] = float(in_season)
+
+        # 13: demand-units inventory feature
+        # clip(inv / rate, 0, max_lt) / max_lt  →  [0, 1]
+        # Falls back to 0.0 when effective_rate is None (backward-compat).
+        if effective_rate is not None:
+            rate = float(effective_rate.get(pid, 0.0))
+            _epsilon = 1e-9  # belt-and-braces guard; compute_effective_rate floors at prior
+            inv_lt = float(np.clip(inv / max(rate, _epsilon), 0.0, max_inventory_lt))
+            obs[base_offset + 13] = inv_lt / max(max_inventory_lt, _epsilon)
+        # else: obs[base_offset + 13] remains 0.0 (initialised above)
 
     # ---------------------------------------------------------------------------
     # Global block (appended after all per-SKU blocks)

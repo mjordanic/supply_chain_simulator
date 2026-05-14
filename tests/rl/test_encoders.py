@@ -851,3 +851,137 @@ def test_decode_action_effective_rate_none_returns_zero_qty():
         assert result["order"][pid] == 0, (
             f"{pid}: expected 0 with effective_rate=None, got {result['order'][pid]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Slot-13 demand-units inventory feature (issue 05)
+# ---------------------------------------------------------------------------
+
+
+def test_observation_dim_increased_to_14_per_sku():
+    """observation_dim(K=5) == 5 * 14 + 4 == 74 (N_PER_SKU bumped from 13→14)."""
+    assert N_PER_SKU == 14, f"Expected N_PER_SKU=14, got {N_PER_SKU}"
+    assert observation_dim(5) == 74, f"Expected 74, got {observation_dim(5)}"
+    assert observation_dim(1) == 18
+    assert observation_dim(3) == 46
+
+
+def test_encoder_slot_13_matches_demand_units_formula():
+    """Slot 13 = clip(inv / (rate * max_lt), 0, 1).  Concrete: inv=100, rate=10, max_lt=30 → 1/3."""
+    K = 2
+    pids = ["P0000", "P0001"]
+    inventory = 100
+    effective_rate_val = 10.0
+    max_lt = 30.0
+    store = _make_store(
+        pids,
+        inventory={pid: inventory for pid in pids},
+        capacity=5000.0,
+    )
+    market = _make_market()
+    registry = _make_registry()
+    slot_perm = list(range(K))
+    eff_rate = {pid: effective_rate_val for pid in pids}
+
+    obs = encode_observation(
+        store, market, registry, step=0, slot_perm=slot_perm, K_active=K,
+        effective_rate=eff_rate, max_inventory_lt=max_lt,
+    )
+    expected = min(1.0, inventory / (effective_rate_val * max_lt))  # 100/300 ≈ 0.333
+    for slot_idx in range(K):
+        val = obs[slot_idx * N_PER_SKU + 13]
+        assert val == pytest.approx(expected, abs=1e-5), (
+            f"slot {slot_idx}: expected {expected}, got {val}"
+        )
+
+
+def test_encoder_slot_13_saturates_at_max_inventory_lt():
+    """With inv=10_000, rate=10, max_lt=30 → slot 13 == 1.0 (saturated)."""
+    K = 1
+    pids = ["P0000"]
+    store = _make_store(pids, inventory={"P0000": 10_000}, capacity=100_000.0)
+    market = _make_market()
+    registry = _make_registry()
+    slot_perm = [0]
+    eff_rate = {"P0000": 10.0}
+
+    obs = encode_observation(
+        store, market, registry, step=0, slot_perm=slot_perm, K_active=K,
+        effective_rate=eff_rate, max_inventory_lt=30.0,
+    )
+    assert obs[0 * N_PER_SKU + 13] == pytest.approx(1.0, abs=1e-6), (
+        f"Expected 1.0 (saturated), got {obs[0 * N_PER_SKU + 13]}"
+    )
+
+
+def test_encoder_slot_13_zero_when_effective_rate_is_none():
+    """When effective_rate=None, slot 13 is 0.0 for every active SKU."""
+    K = 3
+    pids = [f"P{i:04d}" for i in range(K)]
+    store = _make_store(pids, inventory={pid: 200 for pid in pids}, capacity=5000.0)
+    market = _make_market()
+    registry = _make_registry()
+    slot_perm = list(range(K))
+
+    obs = encode_observation(
+        store, market, registry, step=0, slot_perm=slot_perm, K_active=K,
+        effective_rate=None,
+    )
+    for slot_idx in range(K):
+        val = obs[slot_idx * N_PER_SKU + 13]
+        assert val == pytest.approx(0.0, abs=1e-9), (
+            f"slot {slot_idx}: expected 0.0 (effective_rate=None), got {val}"
+        )
+
+
+def test_encoder_slot_0_capacity_units_inventory_unchanged():
+    """Slot 0 still equals clip(inventory / per_sku_capacity, 0, 1) — regression guard."""
+    K = 3
+    pids = [f"P{i:04d}" for i in range(K)]
+    capacity = 300.0
+    inventory_val = 20
+    store = _make_store(
+        pids,
+        inventory={pid: inventory_val for pid in pids},
+        capacity=capacity,
+    )
+    market = _make_market()
+    registry = _make_registry()
+    slot_perm = list(range(K))
+    eff_rate = {pid: 5.0 for pid in pids}
+
+    obs = encode_observation(
+        store, market, registry, step=0, slot_perm=slot_perm, K_active=K,
+        effective_rate=eff_rate,
+    )
+    per_sku_cap = capacity / K  # 100.0
+    expected_slot0 = min(1.0, inventory_val / per_sku_cap)  # 20/100 = 0.2
+    for slot_idx in range(K):
+        val = obs[slot_idx * N_PER_SKU + 0]
+        assert val == pytest.approx(expected_slot0, abs=1e-5), (
+            f"slot {slot_idx} slot-0: expected {expected_slot0}, got {val}"
+        )
+
+
+def test_encoder_scale_invariance_of_slot_13():
+    """Same inventory/rate ratio at two different absolute capacities → same slot 13."""
+    # SKU has inventory=100, effective_rate=10 in both scenarios.
+    # Capacity differs (300 vs 10_000) — slot 13 should be identical because it uses demand units.
+    K = 1
+    pids = ["P0000"]
+    eff_rate = {"P0000": 10.0}
+    inventory_val = 100
+
+    for cap in [300.0, 10_000.0]:
+        store = _make_store(pids, inventory={"P0000": inventory_val}, capacity=cap)
+        market = _make_market()
+        registry = _make_registry()
+        obs = encode_observation(
+            store, market, registry, step=0, slot_perm=[0], K_active=K,
+            effective_rate=eff_rate, max_inventory_lt=30.0,
+        )
+        val = obs[0 * N_PER_SKU + 13]
+        expected = min(1.0, inventory_val / (10.0 * 30.0))  # 100/300 ≈ 0.333
+        assert val == pytest.approx(expected, abs=1e-5), (
+            f"capacity={cap}: expected {expected}, got {val}"
+        )

@@ -163,6 +163,10 @@ class RLEnv(gym.Env):
         # from market.params.base_demand; positive float.
         self._base_demand_prior: float = 1.0
 
+        # Effective demand rate per pid — computed once per tick (or at reset for
+        # the initial obs) and shared by both decode_action and encode_observation.
+        self._effective_rate: dict[str, float] = {}
+
         # Slot permutation for the current episode (set by reset).
         self._slot_perm: tuple[int, ...] = tuple(range(K))
 
@@ -274,6 +278,13 @@ class RLEnv(gym.Env):
         self._step_count = 0
         self._sales_history = {pid: deque(maxlen=100) for pid in [w.product_id for w in self.catalog]}
 
+        # Compute effective_rate for the initial observation.  At reset, all
+        # histories are empty so compute_effective_rate returns {pid: prior}
+        # for every catalog pid — identical to the cold-start decoder rate.
+        self._effective_rate = compute_effective_rate(
+            self._sales_history, self._base_demand_prior
+        )
+
         obs = self._build_observation()
         return obs, {}
 
@@ -327,9 +338,9 @@ class RLEnv(gym.Env):
         item_registry.tick()
 
         # --- 4. Decode action and set it on the RLPolicy shim ---
-        # Compute effective rate once per tick; shared by decoder (and later
-        # the encoder once slice 5 lands — do NOT pass to encode_observation yet).
-        effective_rate = compute_effective_rate(
+        # Compute effective rate once per tick; shared by both decode_action
+        # (order qty) and encode_observation (slot-13 demand-units feature).
+        self._effective_rate = compute_effective_rate(
             self._sales_history, self._base_demand_prior
         )
 
@@ -340,7 +351,7 @@ class RLEnv(gym.Env):
             store,
             self.config.K_active,
             store.base_prices,
-            effective_rate=effective_rate,
+            effective_rate=self._effective_rate,
             target_centre_lead_times=self.config.target_centre_lead_times,
             target_half_span_lead_times=self.config.target_half_span_lead_times,
             target_max_lead_times=self.config.target_max_lead_times,
@@ -415,6 +426,8 @@ class RLEnv(gym.Env):
             K_active=self.config.K_active,
             initial_cash=self._initial_cash,
             sales_history=self._sales_history,
+            effective_rate=self._effective_rate if self._effective_rate else None,
+            max_inventory_lt=self.config.max_inventory_lt,
         )
 
     def _dispatch_orders(self, store: Store, action: dict) -> None:
