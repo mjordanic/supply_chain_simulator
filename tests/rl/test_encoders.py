@@ -28,6 +28,7 @@ from src.rl.encoders import (
     compute_effective_rate,
     decode_action,
     encode_observation,
+    fair_share_allocate,
     observation_dim,
 )
 
@@ -493,3 +494,95 @@ def test_lifecycle_stage_one_hot():
         for j in range(5):
             if j != stage_idx:
                 assert one_hot[j] == pytest.approx(0.0), f"Stage {stage}: expected 0 at index {j}"
+
+
+# ---------------------------------------------------------------------------
+# fair_share_allocate tests
+# ---------------------------------------------------------------------------
+
+
+def test_fair_share_empty_input_returns_empty():
+    """Empty requested dict returns an empty dict."""
+    result = fair_share_allocate({}, {}, global_free_space=100)
+    assert result == {}
+
+
+def test_fair_share_sum_below_free_space_returns_capped_unchanged():
+    """When sum(min(requested, headroom)) <= global_free_space, no scaling fires."""
+    requested = {"P1": 10.0, "P2": 20.0}
+    per_sku_headroom = {"P1": 15, "P2": 25}
+    global_free_space = 100
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+    # capped = min(10,15)=10, min(20,25)=20; sum=30 <= 100 -> no scaling
+    assert result == {"P1": 10, "P2": 20}
+
+
+def test_fair_share_sum_above_free_space_scales_proportionally():
+    """When sum(requested) > global_free_space and headroom is non-binding, output sums to <= free_space."""
+    requested = {"P1": 60.0, "P2": 40.0}
+    per_sku_headroom = {"P1": 1000, "P2": 1000}  # headroom non-binding
+    global_free_space = 50
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+    # sum(capped) = 100 > 50 -> scale by 0.5: P1=30, P2=20
+    assert sum(result.values()) <= global_free_space
+    # Proportions preserved within +/-1 (truncation tolerance)
+    assert abs(result["P1"] - 30) <= 1
+    assert abs(result["P2"] - 20) <= 1
+
+
+def test_fair_share_per_sku_headroom_binds_tighter_than_global():
+    """P1 headroom of 10 caps P1 even when global free space is 200."""
+    requested = {"P1": 100.0, "P2": 100.0}
+    per_sku_headroom = {"P1": 10, "P2": 1000}
+    global_free_space = 200
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+    # P1 capped to 10 by headroom; P2 capped to min(100,1000)=100; sum=110 <= 200 -> no scaling
+    assert result["P1"] == 10
+    assert result["P2"] == 100
+
+
+def test_fair_share_zero_global_free_space_returns_all_zeros():
+    """global_free_space = 0 forces all outputs to 0."""
+    requested = {"P1": 50.0, "P2": 30.0}
+    per_sku_headroom = {"P1": 100, "P2": 100}
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space=0)
+    assert result == {"P1": 0, "P2": 0}
+
+
+def test_fair_share_total_never_exceeds_free_space():
+    """Property: sum(output) <= global_free_space across randomised inputs."""
+    rng = Random(42)
+    for _ in range(200):
+        n_skus = rng.randint(1, 10)
+        pids = [f"P{i:04d}" for i in range(n_skus)]
+        requested = {pid: rng.uniform(0, 500) for pid in pids}
+        per_sku_headroom = {pid: rng.randint(0, 300) for pid in pids}
+        global_free_space = rng.randint(0, 1000)
+        result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+        assert sum(result.values()) <= global_free_space, (
+            f"Sum {sum(result.values())} exceeds free space {global_free_space}"
+        )
+
+
+def test_fair_share_per_sku_never_exceeds_headroom():
+    """Property: output[pid] <= per_sku_headroom[pid] for all pids."""
+    rng = Random(99)
+    for _ in range(200):
+        n_skus = rng.randint(1, 10)
+        pids = [f"P{i:04d}" for i in range(n_skus)]
+        requested = {pid: rng.uniform(0, 500) for pid in pids}
+        per_sku_headroom = {pid: rng.randint(0, 300) for pid in pids}
+        global_free_space = rng.randint(0, 1000)
+        result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+        for pid in pids:
+            assert result[pid] <= per_sku_headroom[pid], (
+                f"{pid}: output {result[pid]} exceeds headroom {per_sku_headroom[pid]}"
+            )
+
+
+def test_fair_share_output_keys_match_requested_keys():
+    """Output contains exactly the keys in requested -- nothing more, nothing less."""
+    requested = {"A": 10.0, "B": 20.0, "C": 5.0}
+    per_sku_headroom = {"A": 50, "B": 50, "C": 50}
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space=100)
+    assert set(result.keys()) == set(requested.keys())

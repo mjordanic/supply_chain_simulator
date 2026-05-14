@@ -387,12 +387,69 @@ def compute_effective_rate(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Capacity allocator
+# ---------------------------------------------------------------------------
+
+
+def fair_share_allocate(
+    requested: dict[str, float],
+    per_sku_headroom: dict[str, int],
+    global_free_space: int,
+) -> dict[str, int]:
+    """Two-pass capacity allocator.
+
+    Pass 1: cap each request at the per-SKU physical headroom
+            (capped[pid] = min(requested[pid], per_sku_headroom[pid])).
+    Pass 2: if sum(capped) > global_free_space, scale every capped
+            value proportionally by global_free_space / sum(capped).
+    Return integer quantities (truncate, do not round up — under-allocation
+    is safer than over-allocation against a hard capacity constraint).
+
+    Parameters
+    ----------
+    requested:
+        Dict mapping pid → desired float quantity for each SKU.
+    per_sku_headroom:
+        Dict mapping pid → per-SKU physical headroom (hard ceiling per SKU).
+    global_free_space:
+        Total capacity available across all SKUs combined.
+
+    Returns
+    -------
+    dict[str, int]
+        One entry per key in ``requested`` with integer allocated quantities.
+        Guaranteed: ``output[pid] <= per_sku_headroom[pid]`` and
+        ``sum(output.values()) <= global_free_space``.
+    """
+    if not requested:
+        return {}
+
+    # Pass 1: cap each request at per-SKU headroom.
+    capped: dict[str, float] = {
+        pid: min(float(qty), float(per_sku_headroom.get(pid, 0)))
+        for pid, qty in requested.items()
+    }
+
+    # Pass 2: if total capped exceeds global free space, scale proportionally.
+    total_capped = sum(capped.values())
+    if total_capped > global_free_space:
+        if total_capped <= 0:
+            scale = 0.0
+        else:
+            scale = global_free_space / total_capped
+        return {pid: int(v * scale) for pid, v in capped.items()}
+
+    return {pid: int(v) for pid, v in capped.items()}
+
+
 __all__ = [
     "encode_observation",
     "decode_action",
     "observation_dim",
     "action_dim",
     "compute_effective_rate",
+    "fair_share_allocate",
     "N_PER_SKU",
     "N_GLOBAL",
 ]
