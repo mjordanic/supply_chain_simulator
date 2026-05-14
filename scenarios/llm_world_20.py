@@ -99,21 +99,26 @@ _template = replace(
     init_balance=_FLAGSHIP_BALANCE,
     init_active_count=_INIT_ACTIVE_COUNT,
     init_freshness="baseline",
-    # The LLM-authored template carries ``order_fee=$175`` per non-zero
-    # order. At a 1000-SKU / 5-store scale that fixed fee dominates the
-    # economics — even a well-tuned policy can pay $9-12k/step in fees
-    # alone. Uncomment the line below to override it to a more realistic
-    # per-shipment fee and the run becomes meaningfully profitable; the
-    # policy kwargs below (long order_cd, high min_qty) are the
-    # *policy-only* mitigation for the unrealistic default.
+    init_stock_pct=0.0,
     order_fee=10.0,
 )
+
+
+# Cover the same horizon as the store's delivery lead time. The template's
+# ``delivery_lag`` is a scalar in this world; if it were a ``Distribution``
+# we'd need to sample it (with the store's ``init_seed``) instead.
+_COVER_HORIZON_TICKS = int(_template.delivery_lag)
 
 
 # Policy factory: one ``OrderUpToPolicy`` per store (fresh instance so
 # per-policy RNG state is independent across stores).
 def _build_policy(seed: int) -> OrderUpToPolicy:
-    return OrderUpToPolicy(policy_seed=seed)
+    return OrderUpToPolicy(policy_seed=seed,
+        cover_horizon_ticks=_COVER_HORIZON_TICKS,
+        safety_lead_ticks=int(_COVER_HORIZON_TICKS*1),
+        opening_budget_pct=0.50,
+        stockout_safety_bonus_ticks=int(_COVER_HORIZON_TICKS*1),
+        min_qty=0)
 
 
 # Stage list kept as a module constant so the comprehension below stays readable.

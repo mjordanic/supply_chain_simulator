@@ -234,6 +234,32 @@ def test_order_up_to_pilot_fires_on_tick_zero():
     )
 
 
+def test_order_up_to_no_pilot_when_inventory_present():
+    """With init_stock_pct=1.0, the pilot is suppressed even at the default
+    opening_budget_pct=0.5 — the stock already lets demand surface through
+    natural sales, so no probe is needed.
+    """
+    # Default opening_budget_pct=0.5 (the value that previously fired
+    # regardless of stock). With the inventory gate in place, no order
+    # should fire on tick 0.
+    policy = OrderUpToPolicy(policy_seed=0, opening_budget_pct=0.5)
+    template = _mini_template(
+        init_stock_pct=1.0,
+        capacity=5_000,
+        balance=1_000_000.0,
+    )
+    # Tiny demand so position stays well above s on tick 1 — isolates the
+    # pilot-suppression behavior from the steady-state trigger.
+    log = _run_scenario(policy, n_steps=1, template=template, demand=1.0)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    # The first decide call (tick 1) must not place a pilot order.
+    assert all(q == 0 for q in order_quantities), (
+        f"Pilot fired despite full initial stock. order_quantities={order_quantities}"
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # No order when position > s
 # ─────────────────────────────────────────────────────────────────────────────
@@ -755,6 +781,208 @@ def test_periodic_order_up_to_crn_self_consistency():
 
     def _run_with_seed(world_seed: int, policy_seed: int = 0) -> dict:
         policy = PeriodicOrderUpToPolicy(policy_seed=policy_seed)
+        template = _mini_template(init_stock_pct=0.0)
+        scenario = Scenario(
+            catalog=_mini_catalog(),
+            market=_constant_market(demand=5.0),
+            disruption=_no_disruption(),
+            item_lifecycle=_no_lifecycle(),
+            stores=[StoreInstance(template=template, init_seed=1, policy=policy)],
+            n_steps=20,
+            start_date=datetime(2024, 1, 1),
+            world_seed=world_seed,
+        )
+        return Runner(scenario).run()
+
+    r1 = _run_with_seed(42, policy_seed=0)
+    r2 = _run_with_seed(42, policy_seed=0)
+
+    h1 = hashlib.sha256(
+        json.dumps(_jsonable(r1), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    h2 = hashlib.sha256(
+        json.dumps(_jsonable(r2), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert h1 == h2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PeriodicReorderPolicy (R,s,S) tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_periodic_reorder_pilot_fires_on_tick_zero():
+    """Pilot order fires on tick 0 regardless of review_interval and position."""
+    from src.sim.policy import PeriodicReorderPolicy
+
+    policy = PeriodicReorderPolicy(
+        policy_seed=0,
+        review_interval=7,
+        opening_budget_pct=0.5,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=1_000,
+        balance=100_000.0,
+    )
+    log = _run_scenario(policy, n_steps=1, template=template)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    assert any(q > 0 for q in order_quantities), (
+        f"No pilot order fired. order_quantities={order_quantities}"
+    )
+
+
+def test_periodic_reorder_no_order_on_non_review_tick():
+    """Even when position < s, no order fires on non-review ticks.
+
+    Uses a small balance so the pilot seeds only ~25 units (below S).
+    After the pilot, demand depletes stock below s.  But non-review ticks
+    must remain at qty == 0.
+    """
+    from src.sim.policy import PeriodicReorderPolicy
+
+    review_interval = 7
+    n_steps = 4 * review_interval  # 28 ticks
+    policy = PeriodicReorderPolicy(
+        policy_seed=0,
+        review_interval=review_interval,
+        opening_budget_pct=0.5,
+        safety_lead_ticks=SAFETY_LEAD,
+        cover_horizon_ticks=COVER_HORIZON,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=50_000,
+        balance=500.0,  # pilot ≈ 25 units (0.5*500/1/10)
+        delivery_lag=DELIVERY_LAG,
+    )
+    log = _run_scenario(policy, n_steps=n_steps, template=template, demand=5.0)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+
+    # Skip t=0 (pre-decide baseline) and t=1 (pilot order, bypasses trigger loop).
+    for t, qty in enumerate(order_quantities):
+        if t <= 1:
+            continue
+        if t % review_interval == 0:
+            pass  # Review tick — gate may or may not allow order.
+        else:
+            assert qty == 0, (
+                f"Unexpected order {qty} on non-review tick t={t} "
+                f"(review_interval={review_interval}). "
+                f"All quantities: {order_quantities}"
+            )
+
+
+def test_periodic_reorder_no_order_on_review_tick_when_above_s():
+    """On a review tick with position >= s, no order fires."""
+    from src.sim.policy import PeriodicReorderPolicy
+
+    review_interval = 3
+    policy = PeriodicReorderPolicy(
+        policy_seed=0,
+        review_interval=review_interval,
+        opening_budget_pct=0.5,  # pilot fills capacity to ensure position >> s
+        safety_lead_ticks=SAFETY_LEAD,
+        cover_horizon_ticks=COVER_HORIZON,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=5_000,
+        balance=100_000.0,  # large balance → large pilot → position >> s
+        delivery_lag=DELIVERY_LAG,
+    )
+    # Run just a few ticks; with a full store, position >> s on review ticks.
+    log = _run_scenario(policy, n_steps=9, template=template, demand=5.0)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+
+    # The pilot fires on t=1.  Review ticks thereafter: 3, 6, 9 (step%3==0).
+    # With 5000 capacity and demand=5, position stays >> s for at least 9 ticks.
+    # So review ticks after the pilot should not place orders.
+    for t in [3, 6, 9]:
+        if t < len(order_quantities):
+            assert order_quantities[t] == 0, (
+                f"Unexpected order {order_quantities[t]} on review tick t={t} "
+                f"when position should be >> s. order_quantities={order_quantities}"
+            )
+
+
+def test_periodic_reorder_fires_when_both_conditions_met():
+    """An order fires when step % review_interval == 0 AND position < s."""
+    from src.sim.policy import PeriodicReorderPolicy
+
+    review_interval = 5
+    demand = 5.0
+    safety_lead = SAFETY_LEAD
+    cover_horizon = COVER_HORIZON
+    delivery_lag = DELIVERY_LAG
+
+    policy = PeriodicReorderPolicy(
+        policy_seed=0,
+        review_interval=review_interval,
+        opening_budget_pct=0.5,
+        safety_lead_ticks=safety_lead,
+        cover_horizon_ticks=cover_horizon,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=50_000,
+        balance=500.0,  # pilot ≈ 25 units; depletes below s within a few ticks
+        delivery_lag=delivery_lag,
+    )
+    n_steps = 60
+    log = _run_scenario(policy, n_steps=n_steps, template=template, demand=demand)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    inv_series = store_log["products"][pid]["inventory"]
+    pending_series = store_log["products"][pid]["outstanding_orders"]
+
+    # Nominal S with rate≈demand.
+    rate = demand
+    nominal_S = (delivery_lag + safety_lead + cover_horizon) * rate  # = 75
+    S_tol = nominal_S * 0.20
+
+    # Find review ticks (after warmup) where an order fired.
+    warmup = 10
+    checked = 0
+    for t in range(warmup, n_steps + 1):
+        if t % review_interval != 0:
+            continue
+        if t >= len(order_quantities):
+            break
+        qty = order_quantities[t]
+        if qty > 0:
+            pos_before = inv_series[t] + pending_series[t] - qty
+            pos_after = pos_before + qty
+            # The order should have brought position close to S.
+            assert pos_after <= nominal_S + S_tol, (
+                f"At t={t}: pos_after={pos_after} exceeds S+tol={nominal_S + S_tol:.1f} "
+                f"(pos_before={pos_before}, qty={qty}, nominal_S={nominal_S})"
+            )
+            checked += 1
+
+    assert checked >= 2, (
+        f"Expected at least 2 review-tick orders after warmup but got {checked}. "
+        f"order_quantities={order_quantities}"
+    )
+
+
+def test_periodic_reorder_crn_self_consistency():
+    """Two PeriodicReorderPolicy instances on the same CRN seed produce bit-identical trajectories."""
+    import hashlib
+    import json
+
+    from src.sim.data_exporter import _jsonable
+    from src.sim.policy import PeriodicReorderPolicy
+
+    def _run_with_seed(world_seed: int, policy_seed: int = 0) -> dict:
+        policy = PeriodicReorderPolicy(policy_seed=policy_seed)
         template = _mini_template(init_stock_pct=0.0)
         scenario = Scenario(
             catalog=_mini_catalog(),

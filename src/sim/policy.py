@@ -24,19 +24,41 @@ choices (``randint`` for promo duration / order-cooldown jitter,
 ``promo_discount`` sampling) all flow through ``self.policy_rng`` —
 never the global ``random`` module and never ``world_rng``.
 
-Textbook reorder-policy family (issue 01):
+Textbook reorder-policy family:
 
 - ``TextbookReorderPolicy`` — abstract base. Implements the shared
   observe→pilot→trigger→allocate pipeline via a ``decide`` method.
-  Subclasses implement ``_trigger`` and ``_quantity`` hooks.
+  Subclasses implement ``_trigger`` and ``_quantity`` hooks (or, when the
+  trigger needs side-channel information like the periodic schedule,
+  ``_trigger_with_safety`` / ``_quantity_with_levels`` directly).
 - ``OrderUpToPolicy`` — (s,S) continuous review. Becomes the canonical
   CRN comparison anchor for RL.
+- ``ReorderPointPolicy`` — (s,Q) continuous review with a fixed (or
+  rate-derived) order quantity.
+- ``PeriodicOrderUpToPolicy`` — (R,S) periodic review.
+- ``PeriodicReorderPolicy`` — (R,s,S) periodic review with a
+  reorder-point gate.
 
-Two private module-level helpers extracted for unit-testability:
+All four concrete policies share a single demand-units framing so the
+reorder formulas are scale-invariant in capacity:
 
-- ``_estimate_rate`` — censored-sales rate estimator.
+    s = (delivery_lag + safety_lead_ticks) × rate
+    S = s + cover_horizon_ticks × rate
+
+where ``rate`` is the censored-sales rate estimate over the recent
+``demand_window = max(1, delivery_lag)`` ticks.
+
+Three private module-level helpers extracted for unit-testability:
+
+- ``_estimate_rate`` — censored-sales rate estimator (windowed mean of
+  realised sales; censoring detection lives in ``_has_stockout`` and is
+  applied by the caller via ``stockout_safety_bonus_ticks``).
+- ``_has_stockout`` — detects whether a pid had any stockout tick in
+  the recent window (sales > 0 AND sales == inv-before-settle).
 - ``_allocate_two_pass_fair_share`` — two-pass fair-share + water-fill
-  + integer mop-up allocator.
+  + integer mop-up allocator. Splits a shared capacity / cash pool
+  across multiple SKUs in an iteration-order-independent way, then
+  applies a per-non-pilot ``min_qty`` floor.
 """
 
 from __future__ import annotations
@@ -682,6 +704,7 @@ __all__ = [
     "OrderUpToPolicy",
     "ReorderPointPolicy",
     "PeriodicOrderUpToPolicy",
+    "PeriodicReorderPolicy",
 ]
 
 
@@ -698,21 +721,29 @@ def _estimate_rate(
 ) -> dict[str, float]:
     """Estimate the per-pid demand rate from censored sales history.
 
+    The estimate is the plain arithmetic mean of realised sales over the
+    most recent ``demand_window`` ticks. Sales are *censored* by inventory
+    — on a stockout tick the realised qty is at most the on-hand stock,
+    so the true demand can be strictly larger. This function intentionally
+    does NOT attempt to uncensor; the response to censoring is to extend
+    the safety horizon (``stockout_safety_bonus_ticks``) at the caller
+    site, which is the textbook practice.
+
     Args:
         sales_log: per-pid list of historical sales quantities (most
             recent last). May be shorter than ``demand_window``.
         demand_window: number of recent ticks to average over. If the
             log is shorter, uses the full log.
         inv_before_settle: per-pid list of inventory *before* demand was
-            settled (= post-settle inventory + sales). Used only when
-            ``stockout_safety_bonus_ticks > 0`` to detect censored ticks.
-            Must have the same length as the corresponding ``sales_log``
-            entry when supplied.
-        stockout_safety_bonus_ticks: when > 0, the returned rate for a
-            pid that had at least one stockout tick in the window is
-            stored unchanged but ``_has_stockout`` context is tracked by
-            the caller. The estimator itself returns the plain censored
-            mean; bonus application is the caller's responsibility.
+            settled (= post-settle inventory + sales). Currently unused
+            by this function but kept in the signature so the helper can
+            grow an uncensoring step later without a call-site churn.
+            Stockout detection lives in ``_has_stockout`` and is applied
+            by the caller.
+        stockout_safety_bonus_ticks: vestigial in this function — the
+            estimator always returns the plain censored mean. Caller is
+            responsible for bumping the safety horizon when
+            ``_has_stockout`` reports a censored window.
 
     Returns:
         dict mapping each pid to its estimated rate (float). Pids absent
@@ -721,9 +752,16 @@ def _estimate_rate(
     """
     result: dict[str, float] = {}
     for pid, log in sales_log.items():
+        # Empty log ⇒ no signal ⇒ rate 0.0. The cold-start pilot pass in
+        # ``TextbookReorderPolicy.decide`` handles never-seen pids before
+        # ``_estimate_rate`` is ever called for them, so rate 0.0 here is
+        # really only reachable when a pid was passed in deliberately empty.
         if not log:
             result[pid] = 0.0
             continue
+        # Tail slice: take up to the last ``demand_window`` entries.
+        # When the log is shorter than the window we use everything we
+        # have — better a noisy estimate than no estimate.
         window = log[-demand_window:] if demand_window < len(log) else log
         result[pid] = sum(window) / len(window)
     return result
@@ -737,15 +775,32 @@ def _has_stockout(
 ) -> bool:
     """Return True if the pid had at least one stockout tick in the window.
 
-    A stockout tick is one where sales[pid] == inv_before_settle[pid]
-    AND sales[pid] > 0 (meaning all inventory was exhausted by demand).
+    A stockout tick is one where ``sales[pid] == inv_before_settle[pid]``
+    AND ``sales[pid] > 0`` — i.e. all available inventory was exhausted
+    by demand on that tick. The ``> 0`` guard is essential: a tick with
+    zero sales AND zero pre-settle inventory trivially satisfies the
+    equality but is *not* censorship — there was nothing to sell.
+
+    Args:
+        pid: product ID to check.
+        sales_log: per-pid history of realised sales.
+        inv_before_settle: per-pid history of inventory measured *before*
+            demand settlement (= post-settle inventory + sales).
+        demand_window: only look at the most recent ``demand_window``
+            ticks; anything older is ignored.
+
+    Returns:
+        True iff any tick in the window was a stockout.
     """
     sales = sales_log.get(pid, [])
     inv_bs = inv_before_settle.get(pid, [])
     if not sales or not inv_bs:
         return False
+    # Guard against ragged logs — pid might have been added to one log
+    # before the other on a partial first observation.
     n = min(len(sales), len(inv_bs), demand_window)
     for s, inv in zip(sales[-n:], inv_bs[-n:]):
+        # Stockout iff demand met supply exactly AND there was demand.
         if s > 0 and s == inv:
             return True
     return False
@@ -761,68 +816,109 @@ def _allocate_two_pass_fair_share(
 ) -> dict[str, int]:
     """Two-pass fair-share + water-fill + mop-up capacity/cash allocator.
 
+    The allocator turns each SKU's *desired* qty into a *feasible* qty
+    subject to two shared pools — capacity headroom (``free_space``) and
+    purchasing budget (``cash``). It is designed to be:
+
+    1. **Iteration-order-independent in pass 1.** Two pids that desire
+       the same qty receive the same allocation regardless of dict
+       traversal order. (Pass 2 / mop-up break ties order-dependently
+       only when the pool shrinks below the fair-share grain.)
+    2. **Conserving.** Sum of allocations is ≤ ``free_space`` and dollar
+       cost is ≤ ``cash``, by construction.
+    3. **Pilot-aware.** Cold-start pilot pids bypass the ``min_qty``
+       floor so a probe of 3 units doesn't get folded to zero.
+
     Pass 1 (fair-share):
         Each active SKU is allocated ``min(desired, space_block,
         cash_block_in_qty)`` where the pools are divided equally per SKU.
-        Iteration-order-independent within pass 1.
+        Equal slicing across SKUs → result depends only on the *set* of
+        active pids, not the order in which they were inserted.
 
     Pass 2 (water-fill):
-        Leftover space/cash is redistributed to SKUs with remaining
-        shortfall (desired > allocated). Bounded to ≤ K rounds.
+        Leftover space / cash is redistributed to SKUs with remaining
+        shortfall (desired > allocated). Bounded to ≤ K rounds so we
+        always terminate; a round with zero net gain also breaks out.
 
     Mop-up:
-        A greedy pass over remaining shortfalls collects the integer-
-        rounding tail (≤ K-1 units).
+        After integerising the float allocations we lose up to ``K - 1``
+        units to floor(). A single greedy pass over shortfalls reclaims
+        those leftover whole units one at a time.
 
     min_qty floor:
         Applied only to non-pilot allocations after both passes. Pilot
-        pids bypass it.
+        pids bypass it so cold-start probes (deliberately small) survive.
 
     Args:
         desired: requested qty per pid. Zero entries are kept in the
-            output as 0.
-        unit_costs: per-pid unit cost (for cash accounting).
+            output as 0 (so the action dict has a stable set of keys).
+        unit_costs: per-pid unit cost (for cash accounting). Missing
+            entries default to 1.0; non-positive costs are treated as
+            "no cash constraint" for that SKU.
         free_space: total units of capacity headroom across all SKUs.
-        cash: available cash for purchasing.
+        cash: available cash for purchasing (in currency units).
         min_qty: minimum order quantity for non-pilot SKUs. An allocation
-            below this floor is set to 0 (textbook-pure: no trivial orders).
-        pilot_pids: PIDs exempt from the min_qty floor (cold-start probes).
+            strictly between 0 and ``min_qty`` is set to 0
+            (textbook-pure: no trivial orders).
+        pilot_pids: PIDs exempt from the ``min_qty`` floor (cold-start
+            probes).
 
     Returns:
-        dict mapping every pid in ``desired`` to its allocated qty (int ≥ 0).
+        dict mapping every pid in ``desired`` to its allocated qty
+        (``int ≥ 0``). Pids absent from ``desired`` are absent from the
+        result.
     """
+    # ``K`` = SKU count; used as the upper bound on water-fill rounds.
+    # Each round either fills at least one shortfall or breaks early via
+    # the ``progress`` flag, so K rounds is a safe ceiling.
     K = len(desired)
     if K == 0:
         return {}
 
-    # Work in floats internally; convert to int at the end.
+    # Work in floats internally; convert to int at the end (mop-up
+    # reclaims the lost fractional units).
     pids = list(desired.keys())
+    # ``allocated`` is the running per-pid allocation, in float units.
     allocated: dict[str, float] = {pid: 0.0 for pid in pids}
+    # Running pool counters — decremented as allocations consume them.
     remaining_space = float(free_space)
     remaining_cash = float(cash)
 
     def _cash_qty(pid: str, qty: float) -> float:
-        """Convert desired qty to max qty affordable given remaining cash."""
+        """Convert desired qty to max qty affordable given remaining cash.
+
+        Not used in the hot path (pass 1 / pass 2 inline the same logic
+        with the per-SKU cash *slice* instead of the whole pool), but
+        retained as a small reusable building block.
+        """
         cost = unit_costs.get(pid, 1.0)
         if cost <= 0:
             return qty
         return min(qty, remaining_cash / cost)
 
     # ── Pass 1: fair-share ────────────────────────────────────────────────
+    # ``active`` = SKUs that actually want > 0 units. SKUs with desired 0
+    # carry through to the output as 0 with no further work.
     active = [pid for pid in pids if desired[pid] > 0]
     n_active = len(active)
 
     if n_active > 0:
+        # Equal capacity slice per active SKU — the "fair-share grain".
         space_per_sku = remaining_space / n_active
-        # Compute each SKU's pass-1 allocation independently of order.
+        # Compute each SKU's pass-1 allocation in a staging dict first,
+        # then commit. Decoupling write-from-read keeps the result
+        # independent of iteration order on ``active``.
         pass1: dict[str, float] = {}
         for pid in active:
             want = float(desired[pid])
             from_space = min(want, space_per_sku)
             cost = unit_costs.get(pid, 1.0)
+            # Cash slice in *qty* units. A 0-cost SKU is treated as
+            # cash-unconstrained (``from_space`` becomes the binding cap).
             cash_cap = (remaining_cash / n_active) / cost if cost > 0 else from_space
             pass1[pid] = min(from_space, cash_cap)
 
+        # Commit pass-1 allocations and debit the shared pools.
         for pid in active:
             allocated[pid] = pass1[pid]
         remaining_space -= sum(pass1.values())
@@ -831,14 +927,24 @@ def _allocate_two_pass_fair_share(
         )
 
     # ── Pass 2: water-fill ───────────────────────────────────────────────
+    # Up to K rounds — far more than ever needed in practice (most cases
+    # converge in 1–2 rounds). The ``progress`` guard breaks out early
+    # when a round can't deliver any gain (e.g. remaining capacity is
+    # too small for any SKU to absorb at the current granularity).
     for _ in range(K):
+        # Shortfall = SKUs that still want more than they got in pass 1.
         shortfall_pids = [
             pid for pid in pids if allocated[pid] < desired[pid]
         ]
         if not shortfall_pids or remaining_space <= 0 or remaining_cash <= 0:
             break
         n_sf = len(shortfall_pids)
+        # Fair-share grain for this round, computed off the *remaining*
+        # pool. Successive rounds use a finer grain over a smaller
+        # shortfall set, so leftover capacity flows toward the SKUs
+        # that need it most.
         space_per_sku = remaining_space / n_sf
+        # Did any SKU absorb anything this round? If not, break out.
         progress = False
         round_alloc: dict[str, float] = {}
         for pid in shortfall_pids:
@@ -850,16 +956,21 @@ def _allocate_two_pass_fair_share(
             if gain > 0:
                 round_alloc[pid] = gain
                 progress = True
+        # Commit this round's gains (again decoupled from iteration order).
         for pid, gain in round_alloc.items():
             allocated[pid] += gain
         remaining_space -= sum(round_alloc.values())
         remaining_cash -= sum(
             gain * unit_costs.get(pid, 1.0) for pid, gain in round_alloc.items()
         )
+        # No SKU could absorb anything ⇒ stop (further rounds would be
+        # identical no-ops).
         if not progress:
             break
 
     # ── Integer conversion ────────────────────────────────────────────────
+    # floor() loses up to ``K - 1`` units in aggregate. Track the
+    # leftover so the mop-up pass can hand it back as whole units.
     int_alloc: dict[str, int] = {pid: int(allocated[pid]) for pid in pids}
     remaining_space_int = free_space - sum(int_alloc.values())
     remaining_cash_float = cash - sum(
@@ -867,6 +978,10 @@ def _allocate_two_pass_fair_share(
     )
 
     # ── Mop-up: greedy over shortfalls ───────────────────────────────────
+    # Reclaim the integer-rounding tail (one unit per shortfall pid at
+    # most). This pass IS iteration-order-dependent at the tie-breaking
+    # level, but it only ever distributes ≤ K-1 units so the impact on
+    # the final action is bounded and small.
     mop_shortfalls = [
         pid for pid in pids if int_alloc[pid] < desired[pid]
     ]
@@ -874,6 +989,7 @@ def _allocate_two_pass_fair_share(
         if remaining_space_int <= 0:
             break
         cost = unit_costs.get(pid, 1.0)
+        # Skip SKUs we can no longer afford at unit granularity.
         if cost > 0 and remaining_cash_float < cost:
             continue
         gain = 1
@@ -882,6 +998,9 @@ def _allocate_two_pass_fair_share(
         remaining_cash_float -= cost
 
     # ── min_qty floor ─────────────────────────────────────────────────────
+    # Applied LAST so pass 1 / pass 2 / mop-up don't waste capacity on
+    # a SKU that will end up zeroed anyway. Pilot pids bypass this floor
+    # — a 3-unit cold-start probe is the whole point of a pilot.
     for pid in pids:
         if pid not in pilot_pids and 0 < int_alloc[pid] < min_qty:
             int_alloc[pid] = 0
@@ -897,25 +1016,49 @@ def _allocate_two_pass_fair_share(
 class TextbookReorderPolicy(Policy):
     """Abstract base for the textbook reorder-policy family.
 
-    Subclasses implement two hooks:
+    Subclasses provide two decision hooks:
 
-    - ``_trigger(pid, step, position, rate) -> bool``: should this SKU
+    - ``_trigger(pid, step, position, s) -> bool``: should this SKU
       reorder this tick?
-    - ``_quantity(pid, position, rate) -> int``: if triggered, how many
-      units to order?
+    - ``_quantity(pid, position, s, S) -> int``: if triggered, how many
+      units to order (before allocator clamping)?
+
+    The trigger may need information beyond ``(position, s)`` — for the
+    periodic-review variants it needs the tick number and the review
+    cadence. Such subclasses override ``_trigger_with_safety`` /
+    ``_quantity_with_levels`` directly, bypassing the simple hooks.
 
     ``decide`` implements the shared pipeline:
 
-    1. Read ``obs["active_products"]`` as the universe.
-    2. Pilot pass: for any active pid never observed (no row in
-       ``sales_log``), schedule a pilot qty sized from
+    1. Read ``obs["active_products"]`` as the universe of SKUs.
+    2. **Pilot pass.** For any active pid never observed before (no row
+       in ``sales_log`` *before* this tick's log update) AND with zero
+       on-hand + in-transit stock, schedule a pilot qty sized from
        ``opening_budget_pct × balance / K_active / unit_cost[pid]``,
-       clamped to free space. Pilot pids bypass ``min_qty``.
-    3. For every active pid: compute ``position`` and ``rate``.
-    4. For non-pilot active pids: call ``_trigger``; if True, set
-       ``desired[pid] = max(0, _quantity(pid, position, rate))``.
-    5. Run ``_allocate_two_pass_fair_share`` for a feasible allocation.
-    6. Emit the action dict (flat prices, no dynamic pricing/promotions).
+       clamped to free space. Pilot pids bypass the ``min_qty`` floor
+       at the allocator. Existing stock suppresses the pilot — demand
+       surfaces through natural sales, no probe needed.
+    3. For every known active pid: compute ``position`` (on-hand +
+       in-transit) and ``rate`` (censored-sales mean over the last
+       ``demand_window`` ticks).
+    4. If ``stockout_safety_bonus_ticks > 0`` and the recent window
+       contains any stockout tick, extend the safety horizon for this
+       tick by the bonus.
+    5. Call ``_trigger_with_safety`` → ``_quantity_with_levels`` to get
+       the per-pid desired qty.
+    6. Run ``_allocate_two_pass_fair_share`` for a feasible allocation
+       across the shared capacity + cash pools.
+    7. Emit the action dict (flat ``base_prices``; no dynamic pricing,
+       no promotions, no catalog churn).
+
+    Demand-units framing of the levels:
+
+        s = (delivery_lag + effective_safety) × rate
+        S = s + cover_horizon_ticks × rate
+
+    Both are recomputed every tick from the latest rate estimate, so
+    they self-adjust as demand drifts and are scale-invariant in
+    capacity by construction.
     """
 
     def __init__(
@@ -929,14 +1072,40 @@ class TextbookReorderPolicy(Policy):
         min_qty: int = 0,
     ) -> None:
         super().__init__(policy_seed=policy_seed)
+
+        # Cycle length in ticks. Drives ``S - s`` for the order-up-to
+        # quantity and ``Q`` for the rate-derived (s,Q) default. Bigger
+        # horizon ⇒ fewer-larger orders (good when ordering cost is high
+        # relative to holding cost).
         self.cover_horizon_ticks = cover_horizon_ticks
+        # Extra safety-stock horizon beyond the delivery lag, in ticks.
+        # Translates to ``safety_lead_ticks × rate`` extra units of
+        # protection against demand variability during the lead time.
         self.safety_lead_ticks = safety_lead_ticks
+        # Fraction of cash to spend on the very first order for each
+        # newly-observed pid. Sized as
+        # ``opening_budget_pct × balance / K_active / unit_cost[pid]``
+        # so the pilot scales with the active catalog size — a 100-SKU
+        # store doesn't blow the budget on the first tick.
         self.opening_budget_pct = opening_budget_pct
+        # When > 0, a stockout in the recent ``demand_window`` extends
+        # the effective safety horizon by this many ticks for this tick
+        # only. Stays off (0) by default — purely opt-in adaptiveness.
         self.stockout_safety_bonus_ticks = stockout_safety_bonus_ticks
+        # Allocator floor on non-pilot orders: an allocation strictly
+        # between 0 and ``min_qty`` gets folded to 0. Set to 0 (default)
+        # to stay textbook-pure (no minimum order quantity).
         self.min_qty = min_qty
-        # Per-pid rolling sales history (most recent last).
+
+        # Per-pid rolling sales history (most recent last). Appended to
+        # every tick by ``_update_logs``; consumed by ``_estimate_rate``.
+        # Unbounded by design — textbook policies do not require a
+        # window cap, and the simulator's episode lengths keep growth
+        # bounded in practice.
         self.sales_log: dict[str, list[int]] = {}
-        # Per-pid rolling inventory-before-settle history for stockout detection.
+        # Per-pid rolling inventory-before-settle history. ``inv_before_settle``
+        # for a tick = post-settle inventory + sales that tick. Used by
+        # ``_has_stockout`` to detect censored demand windows.
         self.inv_before_settle_log: dict[str, list[int]] = {}
 
     @abstractmethod
@@ -947,7 +1116,7 @@ class TextbookReorderPolicy(Policy):
             pid: product ID.
             step: current simulation step.
             position: inventory position (on-hand + in-transit).
-            s: the reorder point (delivery_lag + effective_safety) × rate,
+            s: the reorder point ``(delivery_lag + effective_safety) × rate``,
                already computed by the base class.
         """
 
@@ -959,83 +1128,147 @@ class TextbookReorderPolicy(Policy):
             pid: product ID.
             position: inventory position (on-hand + in-transit).
             s: the reorder point.
-            S: the order-up-to level (s + cover_horizon × rate).
+            S: the order-up-to level ``s + cover_horizon × rate``.
         """
 
     def _update_logs(self, observation: Mapping[str, Any]) -> None:
-        """Append current-tick sales and inv_before_settle to per-pid logs."""
+        """Append current-tick sales and inv_before_settle to per-pid logs.
+
+        Run as the first non-snapshot step in ``decide`` so the rate
+        estimate and stockout detection see the freshest tick.
+        """
         inventory = observation["inventory"]
         sales = observation["sales"]
         for pid in inventory:
-            # inv_before_settle = post-settle inventory + sales this tick
+            # inv_before_settle = post-settle inventory + sales this tick.
+            # Why this formula: by the time the policy observes the world,
+            # demand has already drained inventory. To recover what was on
+            # the shelf *before* demand hit, we add the sales back in.
             inv_bs = inventory.get(pid, 0) + sales.get(pid, 0)
             self.inv_before_settle_log.setdefault(pid, []).append(inv_bs)
             self.sales_log.setdefault(pid, []).append(sales.get(pid, 0))
 
     def _get_delivery_lag(self, pid: str, observation: Mapping[str, Any]) -> float:
-        """Return the delivery lag for ``pid`` from the observation."""
-        # Store.observe() populates ``delivery_lags`` as of issue 01.
+        """Return the delivery lag (in ticks) for ``pid`` from the observation."""
+        # Per-pid delivery lags as of issue 01 — ``Store.observe()``
+        # populates this map for every active pid.
         delivery_lags = observation.get("delivery_lags", {})
         if pid in delivery_lags:
             return float(delivery_lags[pid])
-        # Fallback: store-level scalar (older observations without per-pid lags).
+        # Fallback path for older observations that lack the per-pid
+        # map: a single store-level scalar, or 2 if even that is missing.
         return float(observation.get("delivery_lag", 2))
 
     def _free_space(self, observation: Mapping[str, Any]) -> int:
-        """Remaining capacity headroom = capacity - (on-hand + in-transit)."""
+        """Remaining capacity headroom = capacity - (on-hand + in-transit).
+
+        Clamped at 0 because at the upper limit the store can technically
+        hold ``capacity`` units exactly; negative headroom is meaningless.
+        """
         inv = observation["inventory"]
         pending = observation.get("outstanding_orders", {})
         capacity = observation["max_capacity"]
         return max(0, int(capacity - sum(inv.values()) - sum(pending.values())))
 
     def decide(self, observation: Mapping[str, Any]) -> dict[str, Any]:
-        """Build one action dict for the given observation."""
+        """Build one action dict for the given observation.
+
+        See the class-level docstring for the pipeline. Side effects:
+        ``_update_logs`` mutates ``self.sales_log`` and
+        ``self.inv_before_settle_log`` in place every tick.
+        """
         # Snapshot which pids are "already known" BEFORE updating logs.
-        # A pid is cold-start if we have never completed a decide call for it.
+        # A pid is cold-start if we have never completed a decide call
+        # for it, i.e. its sales_log row didn't exist at entry to this
+        # tick. Without this snapshot the pilot branch would never fire
+        # — by the time we'd check, _update_logs would have already
+        # written this tick's first entry for that pid.
         known_pids: set[str] = set(self.sales_log.keys())
 
-        # Update rolling logs with current-tick data so rate estimates and
-        # stockout detection use the freshest observation.
+        # Update rolling logs with current-tick data so rate estimates
+        # and stockout detection use the freshest observation.
         self._update_logs(observation)
 
+        # Active assortment for this tick. Pulled out as a list so the
+        # K_active count is stable through the for-loop below.
         active_pids: list[str] = list(observation["active_products"])
+        # K_active = #active SKUs, used as the divisor for the per-SKU
+        # pilot budget slice. ``max(1, …)`` guards a zero-active edge
+        # case (no division-by-zero on empty catalogs).
         K_active = max(1, len(active_pids))
+        # Current simulation tick — needed by the periodic-review
+        # subclasses' trigger.
         step: int = observation["current_sim_step"]
+        # On-hand units per pid.
         inventory: Mapping[str, int] = observation["inventory"]
+        # In-transit units per pid (orders placed but not yet delivered).
         pending: Mapping[str, int] = observation.get("outstanding_orders", {})
+        # Cash balance — used by the pilot sizing and the allocator's
+        # cash pool.
         balance: float = observation["balance"]
+        # Per-pid unit cost. Pilot qty and allocator cash accounting both
+        # consume this.
         unit_costs: Mapping[str, float] = observation["unit_costs"]
+        # Reference MSRP per pid for the emitted flat-price decision.
+        # Falls back to the realised ``product_prices`` for older
+        # observations that pre-date the ``base_prices`` field.
         base_prices: Mapping[str, float] = observation.get(
             "base_prices", observation.get("product_prices", {})
         )
+        # Capacity headroom — the upper bound on the sum of allocations.
         free_space = self._free_space(observation)
 
+        # ``desired`` accumulates the per-pid pre-allocation request.
         desired: dict[str, int] = {}
+        # ``pilot_pids`` tracks which pids are cold-start probes; the
+        # allocator skips the ``min_qty`` floor for these.
         pilot_pids: set[str] = set()
 
         for pid in active_pids:
             cost = unit_costs.get(pid, 1.0)
+            # Inventory position drives both the reorder trigger and the
+            # order-up-to quantity. Includes in-transit so a SKU mid-
+            # shipment doesn't double-order.
             position = inventory.get(pid, 0) + pending.get(pid, 0)
             delivery_lag = self._get_delivery_lag(pid, observation)
 
-            # Pilot pass: cold-start probe for never-previously-observed pids.
-            # We use ``known_pids`` (snapshot before this tick's log update) so
-            # that the very first decide call for a pid triggers the pilot even
-            # though the log now has one entry (from the current tick's update).
+            # ── Pilot pass ────────────────────────────────────────────
+            # Cold-start branch for never-previously-observed pids. We
+            # check the SNAPSHOT (``known_pids``) taken before
+            # _update_logs ran, so the very first decide call for a pid
+            # enters this branch even though the log now has one entry
+            # (from this tick's update). Unknown pids always skip the
+            # steady-state path — a single-tick rate estimate is too
+            # noisy to drive an (s,S) decision.
+            #
+            # The pilot probe itself only fires when the SKU also has no
+            # stock to observe demand against (``position == 0``). With
+            # existing stock, demand surfaces through natural sales and
+            # no probe is needed.
             if pid not in known_pids:
-                if self.opening_budget_pct > 0 and cost > 0:
+                if (
+                    position == 0
+                    and self.opening_budget_pct > 0
+                    and cost > 0
+                ):
+                    # Per-pid pilot budget: a fraction of balance,
+                    # divided across the active catalog, converted to qty.
                     pilot_qty = int(
                         self.opening_budget_pct * balance / K_active / cost
                     )
-                    # Clamp to free space (shared pool — will be further
-                    # adjusted by the allocator).
+                    # Cap at free space (shared pool — the allocator
+                    # later distributes it more carefully when multiple
+                    # pilots compete).
                     pilot_qty = min(pilot_qty, free_space)
                     if pilot_qty > 0:
                         desired[pid] = pilot_qty
                         pilot_pids.add(pid)
                 continue
 
-            # Rate estimate for steady-state pids.
+            # ── Steady-state pids ─────────────────────────────────────
+            # Demand window = max(1, delivery_lag). Sized to the lead
+            # time so the estimate averages over roughly one ordering
+            # cycle; never 0 (would zero out the rate).
             demand_window = max(1, int(delivery_lag))
             rates = _estimate_rate(
                 sales_log={pid: self.sales_log[pid]},
@@ -1043,9 +1276,15 @@ class TextbookReorderPolicy(Policy):
                 inv_before_settle={pid: self.inv_before_settle_log.get(pid, [])},
                 stockout_safety_bonus_ticks=self.stockout_safety_bonus_ticks,
             )
+            # ``rate`` is the censored-sales mean. May undershoot true
+            # demand on a recently stocked-out pid — handled by the
+            # safety-bonus branch below.
             rate = rates.get(pid, 0.0)
 
-            # Stockout-adaptive safety bump (opt-in).
+            # Stockout-adaptive safety bump (opt-in). Extends the safety
+            # horizon for this tick only — does not persist into future
+            # ticks. The textbook response to censored demand: don't
+            # uncensor the rate, widen the buffer.
             effective_safety = self.safety_lead_ticks
             if self.stockout_safety_bonus_ticks > 0 and _has_stockout(
                 pid,
@@ -1055,7 +1294,10 @@ class TextbookReorderPolicy(Policy):
             ):
                 effective_safety += self.stockout_safety_bonus_ticks
 
-            # Trigger and quantity hooks — override in subclass.
+            # Trigger and quantity hooks — subclasses override either
+            # ``_trigger`` / ``_quantity`` (simple) or
+            # ``_trigger_with_safety`` / ``_quantity_with_levels``
+            # (when the decision needs raw rate / lag).
             if self._trigger_with_safety(
                 pid, step, position, rate, delivery_lag, effective_safety
             ):
@@ -1065,7 +1307,7 @@ class TextbookReorderPolicy(Policy):
                 if qty > 0:
                     desired[pid] = qty
 
-        # Allocate subject to capacity and cash pools.
+        # Allocate subject to the shared capacity and cash pools.
         allocation = _allocate_two_pass_fair_share(
             desired=desired,
             unit_costs=dict(unit_costs),
@@ -1075,12 +1317,15 @@ class TextbookReorderPolicy(Policy):
             pilot_pids=pilot_pids,
         )
 
-        # Emit flat prices for all active pids.
+        # Emit flat prices for all active pids (no dynamic pricing in
+        # the textbook policies — pricing is a separate dimension).
         price_out: dict[str, float] = {}
         for pid in active_pids:
             price_out[pid] = float(base_prices.get(pid, 0.0))
 
         return {
+            # Strip zero-qty entries from the action dict so the Store
+            # doesn't book trivial orders.
             "order": {pid: qty for pid, qty in allocation.items() if qty > 0},
             "price": price_out,
             "activate": [],
@@ -1088,8 +1333,12 @@ class TextbookReorderPolicy(Policy):
             "promotions": {},
         }
 
-    # Delegation helpers so subclasses override the simple (_trigger, _quantity)
-    # hooks without needing to know about delivery_lag or effective_safety.
+    # ── Delegation helpers ──────────────────────────────────────────────
+    # These wrap the (s, S) computation so simple subclasses (OrderUpToPolicy,
+    # ReorderPointPolicy) can override the bare ``_trigger`` / ``_quantity``
+    # hooks without ever touching ``delivery_lag`` or ``effective_safety``.
+    # Periodic subclasses that need extra context (the tick number, the review
+    # cadence) override ``_trigger_with_safety`` directly to bypass the wrap.
 
     def _trigger_with_safety(
         self,
@@ -1101,6 +1350,8 @@ class TextbookReorderPolicy(Policy):
         effective_safety: int,
     ) -> bool:
         """Compute s and delegate to subclass ``_trigger``."""
+        # Reorder point in demand units: cover the lead time plus the
+        # safety horizon at the current rate estimate.
         s = (delivery_lag + effective_safety) * rate
         return self._trigger(pid, step, position, s)
 
@@ -1113,7 +1364,13 @@ class TextbookReorderPolicy(Policy):
         effective_safety: int,
     ) -> int:
         """Compute s, S and delegate to subclass ``_quantity``."""
+        # ``s`` recomputed here matches the trigger's value exactly —
+        # the duplication is intentional so neither method has to thread
+        # ``s`` through the call graph.
         s = (delivery_lag + effective_safety) * rate
+        # Order-up-to level: reorder point + a full cover horizon's
+        # worth of demand. ``S - s = cover_horizon_ticks × rate`` by
+        # construction (subclasses rely on this identity).
         S = s + self.cover_horizon_ticks * rate
         return self._quantity(pid, position, s, S)
 
@@ -1126,7 +1383,10 @@ class TextbookReorderPolicy(Policy):
 class OrderUpToPolicy(TextbookReorderPolicy):
     """(s,S) continuous-review policy.
 
-    Reorders whenever ``position < s`` and brings position up to ``S``.
+    The canonical textbook policy: review every tick (continuous review),
+    reorder whenever ``position < s``, and on each reorder bring the
+    position up to ``S``. The order quantity is therefore ``S - position``,
+    which varies with how far position has fallen below ``s``.
 
     Reorder levels (demand-units framing):
 
@@ -1137,15 +1397,25 @@ class OrderUpToPolicy(TextbookReorderPolicy):
     the per-pid delivery lag read from the observation, so they are
     scale-invariant in capacity by construction.
 
+    Used as the canonical CRN comparison anchor for RL — the RL agent's
+    performance is measured against this policy on paired episodes.
+
     No additional kwargs beyond those on ``TextbookReorderPolicy``.
     """
 
     def _trigger(self, pid: str, step: int, position: int, s: float) -> bool:
-        """Reorder when inventory position falls below s."""
+        """Reorder when inventory position falls below ``s``."""
         return position < s
 
     def _quantity(self, pid: str, position: int, s: float, S: float) -> int:
-        """Order up to S — current position."""
+        """Order ``S - position`` units, clamped at 0 and rounded to int.
+
+        The ``max(0, …)`` clamp is defensive — the trigger already
+        guarantees ``position < s < S`` so the gap is strictly positive,
+        but a rate spike between trigger and quantity computation could
+        in principle push ``S`` below ``position`` (rate is shared but
+        re-read; no concurrency, but float jitter exists).
+        """
         return max(0, int(round(S - position)))
 
 
@@ -1157,16 +1427,22 @@ class OrderUpToPolicy(TextbookReorderPolicy):
 class ReorderPointPolicy(TextbookReorderPolicy):
     """(s,Q) continuous-review policy.
 
-    Reorders whenever ``position < s`` and places a fixed quantity ``Q``.
+    Like ``OrderUpToPolicy``, this policy reviews every tick and reorders
+    when ``position < s``. The difference is what it orders: a *fixed*
+    quantity ``Q`` (or a rate-derived default), independent of how deep
+    the position is below ``s``.
 
     Reorder levels (demand-units framing):
 
         s = (delivery_lag + safety_lead_ticks) × rate
-        Q = cover_horizon_ticks × rate  (if Q=None, computed per tick per pid)
+        Q = cover_horizon_ticks × rate    when Q=None (default)
+        Q = self.Q                         when Q is an explicit int
 
     The defining (s,Q) property: the order quantity does NOT depend on how
     far below ``s`` the position fell — it is always the configured fixed
-    quantity (or the rate-derived default when ``Q=None``).
+    quantity (or the rate-derived default). This makes (s,Q) attractive
+    when ordering is constrained to multiples of a pack size or truck
+    load; the cost is occasional double-orders right around ``s``.
 
     Additional kwargs beyond those on ``TextbookReorderPolicy``:
 
@@ -1179,18 +1455,24 @@ class ReorderPointPolicy(TextbookReorderPolicy):
 
     def __init__(self, *, Q: int | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
+        # Fixed reorder quantity (or ``None`` to use the per-tick
+        # rate-derived default — see ``_quantity``).
         self.Q = Q
 
     def _trigger(self, pid: str, step: int, position: int, s: float) -> bool:
-        """Reorder when inventory position falls below s."""
+        """Reorder when inventory position falls below ``s``."""
         return position < s
 
     def _quantity(self, pid: str, position: int, s: float, S: float) -> int:
-        """Order a fixed quantity Q (or rate-derived default when Q is None)."""
+        """Order a fixed quantity ``Q`` (or the rate-derived default)."""
         if self.Q is not None:
+            # Explicit configured quantity — honoured verbatim, no clamp
+            # (caller is responsible for passing a sensible value).
             return self.Q
         # Rate-derived default: one cover-horizon's worth of demand.
-        # S - s = cover_horizon_ticks × rate (by construction in the base class).
+        # ``S - s = cover_horizon_ticks × rate`` by construction in the
+        # base class, so this is exactly the "one cycle" quantity
+        # without needing to re-read ``cover_horizon_ticks`` here.
         return max(0, int(round(S - s)))
 
 
@@ -1203,20 +1485,28 @@ class PeriodicOrderUpToPolicy(TextbookReorderPolicy):
     """(R,S) periodic-review policy.
 
     Reviews inventory only every ``review_interval`` ticks; on review ticks
-    it orders enough to bring position up to ``S``.  On non-review ticks no
-    order fires regardless of position.
+    it orders enough to bring position up to ``S``. On non-review ticks no
+    order fires regardless of position — this is the defining property of
+    "periodic review" and the source of (R,S)'s lower decision cost
+    relative to continuous-review variants.
 
     Reorder level (demand-units framing):
 
         S = (delivery_lag + safety_lead_ticks + cover_horizon_ticks) × rate
+
+    Note this is the "effective S" that ``_quantity_with_levels``
+    computes as ``s + cover_horizon_ticks × rate``, which expands to the
+    formula above. The reorder point ``s`` is computed for symmetry with
+    the other policies but is not used by the trigger here.
 
     Additional kwargs beyond those on ``TextbookReorderPolicy``:
 
         review_interval: int | None = None
             Review cadence in ticks.  When ``None`` (default),
             ``review_interval`` equals the per-pid ``delivery_lag`` read from
-            the observation (review at lead-time cadence).  Explicit positive
-            integers are honoured verbatim.
+            the observation (review at lead-time cadence — a common
+            textbook default).  Explicit positive integers are honoured
+            verbatim.
 
     Note: the ``max(0, …)`` clamp on the quantity is essential here because
     the trigger fires unconditionally on review ticks — position may already
@@ -1226,6 +1516,9 @@ class PeriodicOrderUpToPolicy(TextbookReorderPolicy):
 
     def __init__(self, *, review_interval: int | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
+        # Review cadence in ticks. ``None`` ⇒ use per-pid delivery_lag
+        # at trigger time (read inside ``_trigger_with_safety`` because
+        # the value isn't available at construction).
         self.review_interval = review_interval
 
     def _trigger_with_safety(
@@ -1237,15 +1530,115 @@ class PeriodicOrderUpToPolicy(TextbookReorderPolicy):
         delivery_lag: float,
         effective_safety: int,
     ) -> bool:
-        """Fire on periodic schedule, ignoring position."""
+        """Fire on the periodic schedule, ignoring inventory position.
+
+        Overrides the base ``_trigger_with_safety`` directly so we can
+        consult ``delivery_lag`` for the default review cadence without
+        touching the (position, s) signature of the simple hook.
+        """
+        # Resolve the review interval at trigger time so the per-pid
+        # delivery_lag from the observation is in scope. ``max(1, …)``
+        # guards a zero-lag edge case (would cause ``step % 0``).
         ri = self.review_interval if self.review_interval is not None else max(1, int(delivery_lag))
+        # Purely schedule-based: position is intentionally ignored —
+        # that's what makes this (R,S) and not (R,s,S).
         return step % ri == 0
 
     def _trigger(self, pid: str, step: int, position: int, s: float) -> bool:
-        """Not used — _trigger_with_safety is overridden directly."""
-        # Required by abstract base; _trigger_with_safety overrides the call path.
+        """Not used — ``_trigger_with_safety`` is overridden directly."""
+        # Required by abstract base; ``_trigger_with_safety`` overrides
+        # the call path so this stub is never reached.
         return False  # pragma: no cover
 
     def _quantity(self, pid: str, position: int, s: float, S: float) -> int:
-        """Order up to S, clamped to zero (position may exceed S on review tick)."""
+        """Order up to ``S`` from current position; clamp at 0.
+
+        The clamp matters because the trigger fires unconditionally on
+        review ticks. Immediately after a pilot order, ``position`` can
+        exceed ``S``, and we must not emit a negative qty.
+        """
         return max(0, int(round(S - position)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PeriodicReorderPolicy — (R,s,S) periodic review with reorder-point gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class PeriodicReorderPolicy(TextbookReorderPolicy):
+    """(R,s,S) periodic-review policy with a reorder-point gate.
+
+    Hybrid of (R,S) periodic review and (s,S) reorder-point gating.
+    Orders fire only when BOTH conditions hold:
+
+    1. ``step % review_interval == 0``  (periodic schedule)
+    2. ``position < s``                 (reorder-point gate)
+
+    When both are true, the order brings position up to ``S``. The
+    intuition: review on a fixed cadence (cheap operationally) but
+    skip the order when there's nothing to do (don't burn ordering
+    cost on a partly-full shelf just because the calendar says so).
+
+    Reorder levels (demand-units framing):
+
+        s = (delivery_lag + safety_lead_ticks) × rate
+        S = s + cover_horizon_ticks × rate
+
+    Additional kwargs beyond those on ``TextbookReorderPolicy``:
+
+        review_interval: int | None = None
+            Review cadence in ticks.  When ``None`` (default),
+            ``review_interval`` equals the per-pid ``delivery_lag`` read from
+            the observation.  Explicit positive integers are honoured verbatim.
+            Same semantics as ``PeriodicOrderUpToPolicy``.
+
+    No ``max(0, …)`` clamp is needed on the quantity because the trigger
+    requires ``position < s < S``, guaranteeing ``S - position > 0`` —
+    contrast with ``PeriodicOrderUpToPolicy``, where the trigger fires
+    regardless of position and the clamp is essential.
+    """
+
+    def __init__(self, *, review_interval: int | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        # Review cadence in ticks. ``None`` ⇒ resolved per-pid from
+        # ``delivery_lag`` at trigger time (same semantics as
+        # ``PeriodicOrderUpToPolicy``).
+        self.review_interval = review_interval
+
+    def _trigger_with_safety(
+        self,
+        pid: str,
+        step: int,
+        position: int,
+        rate: float,
+        delivery_lag: float,
+        effective_safety: int,
+    ) -> bool:
+        """Fire on review ticks AND only when ``position < s``.
+
+        Overrides ``_trigger_with_safety`` directly so we can apply both
+        gates (schedule + position) in one place. We recompute ``s``
+        locally — the base class' delegation helper would have done so
+        too, so the duplicate compute costs nothing.
+        """
+        # Resolve review cadence (same fallback rule as (R,S)).
+        ri = self.review_interval if self.review_interval is not None else max(1, int(delivery_lag))
+        # Reorder point in demand units. Recomputed inline to keep the
+        # trigger self-contained; matches ``_quantity_with_levels`` exactly.
+        s = (delivery_lag + effective_safety) * rate
+        return step % ri == 0 and position < s
+
+    def _trigger(self, pid: str, step: int, position: int, s: float) -> bool:
+        """Not used — ``_trigger_with_safety`` is overridden directly."""
+        # Required by abstract base; ``_trigger_with_safety`` overrides
+        # the call path so this stub is never reached.
+        return False  # pragma: no cover
+
+    def _quantity(self, pid: str, position: int, s: float, S: float) -> int:
+        """Order up to ``S`` from current position.
+
+        No ``max(0, …)`` clamp — the trigger guaranteed ``position < s < S``,
+        so the gap is provably positive. The ``int(round(...))`` only
+        applies float-to-int conversion.
+        """
+        return int(round(S - position))
