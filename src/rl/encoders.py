@@ -345,11 +345,54 @@ def decode_action(
     }
 
 
+# ---------------------------------------------------------------------------
+# Rate primitive
+# ---------------------------------------------------------------------------
+
+
+def compute_effective_rate(
+    sales_history: dict[str, deque],
+    base_demand_prior: float,
+) -> dict[str, float]:
+    """Return effective rate per pid: max(rolling-5-mean of sales[pid], prior).
+
+    Empty or missing history for a pid contributes a value equal to the prior.
+    Partial windows (1-4 entries) use the partial-window mean, still clamped
+    to the prior as a floor.
+
+    Parameters
+    ----------
+    sales_history:
+        Dict mapping pid → deque of per-tick sales values.  The env populates
+        this with every catalog pid at reset (see RLEnv.reset).
+    base_demand_prior:
+        Floor rate applied when the empirical rolling mean falls below it.
+        Set to 0.0 to disable the floor.
+
+    Returns
+    -------
+    dict[str, float]
+        One entry per key in ``sales_history``.
+    """
+    result: dict[str, float] = {}
+    for pid, hist in sales_history.items():
+        if not hist:
+            # Empty history — prior is the only signal.
+            result[pid] = base_demand_prior
+        else:
+            # Use the last 5 entries (partial window is fine).
+            recent = list(hist)[-5:]
+            empirical = sum(recent) / len(recent)
+            result[pid] = max(empirical, base_demand_prior)
+    return result
+
+
 __all__ = [
     "encode_observation",
     "decode_action",
     "observation_dim",
     "action_dim",
+    "compute_effective_rate",
     "N_PER_SKU",
     "N_GLOBAL",
 ]

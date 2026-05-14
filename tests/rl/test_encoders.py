@@ -25,6 +25,7 @@ from src.rl.encoders import (
     N_GLOBAL,
     N_PER_SKU,
     action_dim,
+    compute_effective_rate,
     decode_action,
     encode_observation,
     observation_dim,
@@ -416,6 +417,59 @@ def test_sales_history_feature():
     per_sku_cap = 200.0 / K
     assert obs[0 * N_PER_SKU + 1] == pytest.approx(10.0 / per_sku_cap, abs=1e-5)
     assert obs[1 * N_PER_SKU + 1] == pytest.approx(0.0, abs=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# compute_effective_rate tests
+# ---------------------------------------------------------------------------
+
+
+def test_effective_rate_empty_history_returns_prior():
+    """Empty deques for each pid return the prior for every pid."""
+    history = {"P0001": deque(), "P0002": deque()}
+    result = compute_effective_rate(history, base_demand_prior=3.0)
+    assert result == {"P0001": 3.0, "P0002": 3.0}
+
+
+def test_effective_rate_partial_window_uses_partial_mean():
+    """History of [10, 12] (length 2) with prior 3.0 returns 11.0."""
+    history = {"P0001": deque([10, 12], maxlen=100)}
+    result = compute_effective_rate(history, base_demand_prior=3.0)
+    assert result["P0001"] == pytest.approx(11.0)
+
+
+def test_effective_rate_full_window_uses_rolling_5_mean():
+    """History of length 10 uses only the last 5 entries."""
+    # last 5 entries are 100, 100, 100, 100, 100 → mean = 100.0
+    hist = deque([10, 12, 14, 8, 6, 100, 100, 100, 100, 100], maxlen=100)
+    history = {"P0001": hist}
+    result = compute_effective_rate(history, base_demand_prior=3.0)
+    assert result["P0001"] == pytest.approx(100.0)
+
+
+def test_effective_rate_prior_floors_low_history():
+    """History of [0, 0, 0, 0, 0] with prior 2.5 returns 2.5."""
+    history = {"P0001": deque([0, 0, 0, 0, 0], maxlen=100)}
+    result = compute_effective_rate(history, base_demand_prior=2.5)
+    assert result["P0001"] == pytest.approx(2.5)
+
+
+def test_effective_rate_output_keys_match_input():
+    """Every key in sales_history appears in the output; nothing else does."""
+    history = {
+        "P0001": deque([5, 5], maxlen=100),
+        "P0002": deque([], maxlen=100),
+        "P0003": deque([1, 2, 3, 4, 5], maxlen=100),
+    }
+    result = compute_effective_rate(history, base_demand_prior=1.0)
+    assert set(result.keys()) == set(history.keys())
+
+
+def test_effective_rate_zero_prior_allows_zero_output():
+    """History [0, 0] with prior 0.0 returns 0.0 — no implicit extra floor."""
+    history = {"P0001": deque([0, 0], maxlen=100)}
+    result = compute_effective_rate(history, base_demand_prior=0.0)
+    assert result["P0001"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
