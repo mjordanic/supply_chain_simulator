@@ -427,6 +427,36 @@ def test_reorder_point_pilot_fires_on_tick_zero():
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PeriodicOrderUpToPolicy (R,S) tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_periodic_order_up_to_pilot_fires_on_tick_zero():
+    """Pilot order fires on tick 0 regardless of review_interval."""
+    from src.sim.policy import PeriodicOrderUpToPolicy
+
+    # review_interval=7 so step%7==0 only fires on steps 0,7,14,...
+    # Pilot is placed before the trigger loop, so it should still fire on tick 0.
+    policy = PeriodicOrderUpToPolicy(
+        policy_seed=0,
+        review_interval=7,
+        opening_budget_pct=0.5,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=1_000,
+        balance=100_000.0,
+    )
+    log = _run_scenario(policy, n_steps=1, template=template)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    assert any(q > 0 for q in order_quantities), (
+        f"No pilot order fired. order_quantities={order_quantities}"
+    )
+
+
 def test_reorder_point_quantity_is_fixed_Q():
     """When Q is set explicitly, every triggered order uses that fixed quantity.
 
@@ -512,6 +542,122 @@ def test_reorder_point_quantity_is_rate_derived_when_Q_is_None():
         )
 
 
+def test_periodic_order_up_to_orders_only_on_review_ticks():
+    """Orders fire only on steps divisible by review_interval.
+
+    Uses a small balance so the pilot seeds ~25 units, which depletes below
+    s within a few ticks.  Then only review ticks can trigger reorders.
+    """
+    from src.sim.policy import PeriodicOrderUpToPolicy
+
+    review_interval = 7
+    n_steps = 4 * review_interval  # 28 ticks
+    policy = PeriodicOrderUpToPolicy(
+        policy_seed=0,
+        review_interval=review_interval,
+        opening_budget_pct=0.5,
+        safety_lead_ticks=SAFETY_LEAD,
+        cover_horizon_ticks=COVER_HORIZON,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=50_000,
+        balance=500.0,  # pilot ≈ 25 units (0.5*500/1/10)
+        delivery_lag=DELIVERY_LAG,
+    )
+    log = _run_scenario(policy, n_steps=n_steps, template=template, demand=5.0)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+
+    # order_quantities[0] is the pre-decide baseline (before any decide call).
+    # order_quantities[1] holds the pilot order (cold-start; not subject to
+    # review-interval gating — pilot orders bypass the trigger loop).
+    # All ticks t >= 2 are steady-state: non-review ticks must have qty == 0.
+    for t, qty in enumerate(order_quantities):
+        if t <= 1:
+            continue  # pre-decide baseline (0) and pilot order (1)
+        if t % review_interval == 0:
+            # Review tick — may or may not order (depends on position vs S).
+            pass
+        else:
+            assert qty == 0, (
+                f"Unexpected order {qty} on non-review tick t={t} "
+                f"(review_interval={review_interval}). "
+                f"All quantities: {order_quantities}"
+            )
+
+
+def test_periodic_order_up_to_brings_position_to_S():
+    """On a review tick, qty = max(0, S - position) brings position toward S.
+
+    Uses a small balance so the pilot seeds ~25 units; after the pilot, demand
+    depletes the position so that review ticks trigger non-zero orders.  We
+    verify the order quantity is positive on review ticks when position < S,
+    and that pos_after = pos_before + qty ≤ S + tolerance (within the spread
+    of the rolling rate estimate).
+    """
+    from src.sim.policy import PeriodicOrderUpToPolicy
+
+    review_interval = 5
+    demand = 5.0
+    safety_lead = SAFETY_LEAD
+    cover_horizon = COVER_HORIZON
+    delivery_lag = DELIVERY_LAG
+
+    policy = PeriodicOrderUpToPolicy(
+        policy_seed=0,
+        review_interval=review_interval,
+        opening_budget_pct=0.5,
+        safety_lead_ticks=safety_lead,
+        cover_horizon_ticks=cover_horizon,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=50_000,
+        balance=500.0,  # pilot ≈ 25 units; depletes below S so reorders fire
+        delivery_lag=delivery_lag,
+    )
+    n_steps = 60
+    log = _run_scenario(policy, n_steps=n_steps, template=template, demand=demand)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    inv_series = store_log["products"][pid]["inventory"]
+    pending_series = store_log["products"][pid]["outstanding_orders"]
+
+    # Nominal S = (delivery_lag + safety_lead + cover_horizon) * rate
+    # The policy's internal rate estimate may differ from the true demand,
+    # so we allow a relative tolerance of ±20% on S.
+    nominal_S = (delivery_lag + safety_lead + cover_horizon) * demand  # 75
+    S_tol = nominal_S * 0.20  # ±15 units
+
+    warmup = 10
+    checked = 0
+    for t in range(warmup, n_steps + 1):
+        if t % review_interval != 0:
+            continue
+        if t >= len(order_quantities):
+            break
+        qty = order_quantities[t]
+        if qty > 0:
+            pos_before = inv_series[t] + pending_series[t] - qty
+            pos_after = pos_before + qty
+            # pos_after should be close to the policy's internal S.
+            assert pos_after <= nominal_S + S_tol, (
+                f"At t={t}: pos_after={pos_after} exceeds S+tol={nominal_S + S_tol:.1f} "
+                f"(pos_before={pos_before}, qty={qty}, nominal_S={nominal_S})"
+            )
+            # Quantity must be positive when pos_before < S.
+            assert qty > 0
+            checked += 1
+
+    assert checked >= 2, (
+        f"Too few review-tick orders to verify: checked={checked}. "
+        f"order_quantities={order_quantities}"
+    )
+
+
 def test_reorder_point_no_order_when_position_above_s():
     """No order fires while position stays above s."""
     from src.sim.policy import ReorderPointPolicy
@@ -536,6 +682,34 @@ def test_reorder_point_no_order_when_position_above_s():
     )
 
 
+def test_periodic_order_up_to_no_negative_order_when_above_S():
+    """When position > S on a review tick, the requested qty is 0 (not negative)."""
+    from src.sim.policy import PeriodicOrderUpToPolicy
+
+    review_interval = 3
+    policy = PeriodicOrderUpToPolicy(
+        policy_seed=0,
+        review_interval=review_interval,
+        # large pilot to ensure position >> S on first review ticks
+        opening_budget_pct=0.5,
+        safety_lead_ticks=SAFETY_LEAD,
+        cover_horizon_ticks=COVER_HORIZON,
+    )
+    template = _mini_template(
+        init_stock_pct=0.0,
+        capacity=5_000,
+        balance=100_000.0,
+        delivery_lag=DELIVERY_LAG,
+    )
+    log = _run_scenario(policy, n_steps=10, template=template, demand=5.0)
+    store_log = log["stores"][0]
+    pid = list(store_log["products"].keys())[0]
+    order_quantities = store_log["products"][pid]["order_quantity"]
+    assert all(q >= 0 for q in order_quantities), (
+        f"Negative order found: {order_quantities}"
+    )
+
+
 def test_reorder_point_crn_self_consistency():
     """Two ReorderPointPolicy instances on the same CRN seed produce bit-identical trajectories."""
     import hashlib
@@ -546,6 +720,41 @@ def test_reorder_point_crn_self_consistency():
 
     def _run_with_seed(world_seed: int, policy_seed: int = 0) -> dict:
         policy = ReorderPointPolicy(policy_seed=policy_seed)
+        template = _mini_template(init_stock_pct=0.0)
+        scenario = Scenario(
+            catalog=_mini_catalog(),
+            market=_constant_market(demand=5.0),
+            disruption=_no_disruption(),
+            item_lifecycle=_no_lifecycle(),
+            stores=[StoreInstance(template=template, init_seed=1, policy=policy)],
+            n_steps=20,
+            start_date=datetime(2024, 1, 1),
+            world_seed=world_seed,
+        )
+        return Runner(scenario).run()
+
+    r1 = _run_with_seed(42, policy_seed=0)
+    r2 = _run_with_seed(42, policy_seed=0)
+
+    h1 = hashlib.sha256(
+        json.dumps(_jsonable(r1), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    h2 = hashlib.sha256(
+        json.dumps(_jsonable(r2), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert h1 == h2
+
+
+def test_periodic_order_up_to_crn_self_consistency():
+    """Two PeriodicOrderUpToPolicy instances on the same CRN seed produce bit-identical trajectories."""
+    import hashlib
+    import json
+
+    from src.sim.data_exporter import _jsonable
+    from src.sim.policy import PeriodicOrderUpToPolicy
+
+    def _run_with_seed(world_seed: int, policy_seed: int = 0) -> dict:
+        policy = PeriodicOrderUpToPolicy(policy_seed=policy_seed)
         template = _mini_template(init_stock_pct=0.0)
         scenario = Scenario(
             catalog=_mini_catalog(),

@@ -681,6 +681,7 @@ __all__ = [
     "TextbookReorderPolicy",
     "OrderUpToPolicy",
     "ReorderPointPolicy",
+    "PeriodicOrderUpToPolicy",
 ]
 
 
@@ -1191,3 +1192,60 @@ class ReorderPointPolicy(TextbookReorderPolicy):
         # Rate-derived default: one cover-horizon's worth of demand.
         # S - s = cover_horizon_ticks × rate (by construction in the base class).
         return max(0, int(round(S - s)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PeriodicOrderUpToPolicy — (R,S) periodic review
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class PeriodicOrderUpToPolicy(TextbookReorderPolicy):
+    """(R,S) periodic-review policy.
+
+    Reviews inventory only every ``review_interval`` ticks; on review ticks
+    it orders enough to bring position up to ``S``.  On non-review ticks no
+    order fires regardless of position.
+
+    Reorder level (demand-units framing):
+
+        S = (delivery_lag + safety_lead_ticks + cover_horizon_ticks) × rate
+
+    Additional kwargs beyond those on ``TextbookReorderPolicy``:
+
+        review_interval: int | None = None
+            Review cadence in ticks.  When ``None`` (default),
+            ``review_interval`` equals the per-pid ``delivery_lag`` read from
+            the observation (review at lead-time cadence).  Explicit positive
+            integers are honoured verbatim.
+
+    Note: the ``max(0, …)`` clamp on the quantity is essential here because
+    the trigger fires unconditionally on review ticks — position may already
+    exceed ``S`` (e.g. immediately after a pilot order) and we must not emit
+    a negative order.
+    """
+
+    def __init__(self, *, review_interval: int | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.review_interval = review_interval
+
+    def _trigger_with_safety(
+        self,
+        pid: str,
+        step: int,
+        position: int,
+        rate: float,
+        delivery_lag: float,
+        effective_safety: int,
+    ) -> bool:
+        """Fire on periodic schedule, ignoring position."""
+        ri = self.review_interval if self.review_interval is not None else max(1, int(delivery_lag))
+        return step % ri == 0
+
+    def _trigger(self, pid: str, step: int, position: int, s: float) -> bool:
+        """Not used — _trigger_with_safety is overridden directly."""
+        # Required by abstract base; _trigger_with_safety overrides the call path.
+        return False  # pragma: no cover
+
+    def _quantity(self, pid: str, position: int, s: float, S: float) -> int:
+        """Order up to S, clamped to zero (position may exceed S on review tick)."""
+        return max(0, int(round(S - position)))
