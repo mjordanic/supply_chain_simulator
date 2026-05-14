@@ -5,8 +5,11 @@
 **Store** (`Store`, `src/sim/store.py`)
 A retail store agent. Tracks inventory per SKU, cash balance, pending shipments, active assortment, prices, promotions, and an `activation_tick` map (per-SKU last-activation timestamp that drives the **freshness curve**). Delegates every decision to an attached Policy. Construction consumes only the per-instance `init_rng` (seeded from `StoreInstance.init_seed`), so two stores built from the same `(template, init_seed)` start step 0 bit-identical regardless of which Policy is later attached.
 
-**Policy** (`Policy` ABC, `BaselinePolicy`, `src/sim/policy.py`)
-Decision logic attached to a Store. Each tick it receives an Observation and returns an Action dict with four keys: `order`, `price`, `activate`, `deactivate`. Each Policy instance owns a private `policy_rng` seeded from its `policy_seed` kwarg, kept disjoint from `world_rng` so policy choice never perturbs world stochasticity. Currently one implementation: `BaselinePolicy` — threshold-driven reorder, dynamic pricing, and catalog rotation, configured entirely by kwargs hyperparameters.
+**Policy** (`Policy` ABC, `src/sim/policy.py`)
+Decision logic attached to a Store. Each tick it receives an Observation and returns an Action dict with four keys: `order`, `price`, `activate`, `deactivate`. Each Policy instance owns a private `policy_rng` seeded from its `policy_seed` kwarg, kept disjoint from `world_rng` so policy choice never perturbs world stochasticity. Two implementation families: (a) `HeuristicPolicy` — the 20+ kwarg rule-based showcase that drives every knob the policy framework exposes (dynamic pricing, promotions, slow-mover deactivation, periodic catalog review); retained only for `scenarios/example_*` parameter-demo purposes. (b) The **TextbookReorderPolicy** family — `OrderUpToPolicy` (s,S), `ReorderPointPolicy` (s,Q), `PeriodicOrderUpToPolicy` (R,S), `PeriodicReorderPolicy` (R,s,S) — pure textbook inventory rules with flat pricing and no catalog rotation. `OrderUpToPolicy` is the canonical CRN comparison anchor for RL evaluation. See ADR 0006.
+
+**TextbookReorderPolicy family** (`TextbookReorderPolicy` abstract base + 4 concrete classes, `src/sim/policy.py`)
+Family of four reorder policies sharing one base class. The shared machinery: censored-sales rate estimator over a `delivery_lag`-length rolling window, two-pass fair-share allocator across the capacity and cash pools, cash-budget "pilot order" cold-start (default `opening_budget_pct=0.50` of opening cash, split evenly across the K active SKUs, fired once per never-observed SKU), and an opt-in adaptive safety stock that bumps `safety_lead_ticks` while the recent window contains stockout ticks (default off via `stockout_safety_bonus_ticks=0`). Levels are expressed in demand-units: `s = (delivery_lag + safety_lead_ticks) × rate`, `S = (delivery_lag + safety_lead_ticks + cover_horizon_ticks) × rate`. Scale-invariance in capacity is a structural property — the same defaults work across store sizes from corner shop to flagship, mirroring the demand-relative action decoder change in ADR 0005. All four variants emit `activate=[]` / `deactivate=[]` / `promotions={}` and `price[pid] = base_price[pid]` (no cost floor); the policies are pure inventory rules with exogenous pricing. See ADR 0006.
 
 **Market**
 Regional economic environment shared across Stores. Holds per-region demand/supply state, seasonal cycle, and trend drift. Drives per-SKU demand via `sample_demand()`. One Market per simulation run.
@@ -35,8 +38,14 @@ A dict of visible state handed to a Policy each tick. Contains inventory, prices
 **Action**
 A dict returned by a Policy each tick. Keys: `order` (qty per SKU), `price` (price per SKU), `activate` (SKU list), `deactivate` (SKU list).
 
+**Active subset**
+The K (default 5) product ids drawn uniformly without replacement per episode from the catalog universe; the only SKUs the RL agent makes pricing and ordering decisions for during that episode. The assortment is frozen for the episode's duration — activate/deactivate decisions are disabled. Distinct from the store's full inventory, which includes all catalog products (demand is sampled for every catalog product each tick to preserve CRN cleanliness; see ADR 0003). Varies independently across episodes via the episode RNG.
+
 **Run Log**
 Nested dict accumulating all state across the simulation run. Top-level keys: `global` (market/event/lifecycle time-series), `stores` (per-store per-product metrics), `actions`, `observations`. Produced by `Runner.run()` (`src/sim/runner.py`) and consumed by `DataExporter`.
+
+**CRN-paired eval**
+Evaluation protocol where the RL policy and `OrderUpToPolicy` (the (s,S) textbook reorder policy) are run on bit-identical `(world_seed, init_seed, capacity, balance, active subset, slot permutation)` tuples — Common Random Numbers. Uplift is computed paired per seed (RL return minus baseline return on the same world trajectory) and averaged across a fixed held-out set of 32 seeds disjoint from the training seed space. Paired comparison is more powerful than comparing independent runs because world variance cancels; any observed difference is attributable to the policy alone. See ADR 0003 for the CRN demand-sampling guarantee that makes this property hold within a single simulation run; see ADR 0006 for why (s,S) is the canonical comparison anchor over the previous heuristic baseline.
 
 **Run model — "policies attached to stores"**
 Each Store has its own Policy. A run binds an explicit list of `(StoreTemplate, init_seed, Policy)` triples and executes them in one shared world. There is one authoring helper, `make_stores(triples)`; no `homogeneous` / `paired` regime split. Use patterns the triple list expresses:
@@ -47,8 +56,17 @@ Each Store has its own Policy. A run binds an explicit list of `(StoreTemplate, 
 **Store Template**
 A reusable, deterministic store specification: profile (capacity, balance, lead time, holding rate), region, `init_active_count` and optional explicit `init_active_products` list, and an `init_freshness` mode (`"baseline"` for established stores — initial active SKUs skip the hype window; `"fresh"` for grand-opening scenarios — initial active SKUs start at `τ = 0` with full hype). The `init_seed` is *not* on the template; it lives on `StoreInstance`, so one template can spawn multiple replicates with distinct seeds (noise sweep) or shared seeds (CRN duplicates). Two stores instantiated from the same `(template, init_seed)` are bit-identical at step 0 regardless of which Policy is attached.
 
+**RL Env**
+Gymnasium-compatible environment wrapping the simulator's `Market` / `EventEngine` / `ItemRegistry` / `Store` subsystems in step-by-step semantics. Each `reset()` produces a fresh `Scenario` via the episode sampler, building a single store with a freshly sampled active subset, capacity, opening balance, and slot permutation. Each `step(action)` advances one tick using the same sequence as `Runner.run()`, with the action injected through an `RLPolicy` shim. Distinct from `Runner`, which remains the batch-run entry point and is not modified. See ADR 0004.
+
+**RL Episode**
+One `reset()`-to-terminated pass through the RL Env. Fixed at 180 ticks (half-year at daily resolution). Distinct from "Scenario" in the batch-runner sense — an RL episode is disposable and re-sampled from scratch on every `reset()`, whereas a Scenario is an authored experiment artifact. Episode return equals the sum of per-tick balance deltas over all 180 ticks.
+
 **Scenario**
 The reproducible inputs to a run. Includes the catalog, market init/cycle parameters, disruption parameters, the list of (Store Template, Policy) pairings, and a `world_seed` that determines all market and event stochasticity. The same Scenario replayed twice yields the same world trajectory; only the policies' divergent actions create different per-store outcomes.
+
+**Slot-shuffled observation**
+Observation tensor where the K active SKUs occupy K slots, with the slot-to-SKU mapping permuted per episode. The permutation is drawn from the episode RNG at reset time and is fixed for the episode. The encoder places the SKU at `active_subset[slot_perm[i]]` into slot `i`; the decoder applies the inverse permutation to map action slot `i` back to the corresponding product id. This prevents the agent from associating slot position with product identity, forcing it to learn from features rather than position. See ADR 0004.
 
 ---
 
@@ -80,3 +98,6 @@ Worlds are persisted to `data/worlds/<name>/world.json`. The JSON payload includ
 - [ADR 0001](docs/adr/0001-two-layer-lifecycle.md) — Lifecycle is two-layer: global PLC × per-store freshness curve.
 - [ADR 0002](docs/adr/0002-per-stage-transitions-and-dead-stage.md) — Per-stage transition probabilities and a `dead` stage with terminal-by-default cycle.
 - [ADR 0003](docs/adr/0003-crn-demand-for-all-products.md) — Demand is sampled for every catalog product each tick, even when inactive (CRN cleanliness).
+- [ADR 0004](docs/adr/0004-rl-training-env.md) — RL training env: randomised assortment, slot-shuffled observations, hidden market state, frozen assortment within episode.
+- [ADR 0005](docs/adr/0005-demand-relative-action-decoding.md) — Action decoder expresses order quantity in lead-times-of-demand, not fraction-of-shelf-space.
+- [ADR 0006](docs/adr/0006-textbook-reorder-policy-family.md) — Textbook reorder-policy family replaces the heuristic baseline as the RL comparison anchor.

@@ -25,6 +25,8 @@ dependencies = [
     "plotly>=6.7.0",
     "nbformat>=5.10.4",
     "ipympl>=0.10.0",
+    "gymnasium>=0.29",
+    "tensorboard",
 ]
 
 [dependency-groups]
@@ -71,6 +73,7 @@ pytest = "^8.0.0"
 testpaths = ["tests"]
 markers = [
     "live: tests that hit the real OpenAI API (skipped when OPENAI_API_KEY is unset)",
+    "slow: tests that run a full training loop and take >10s (excluded from default fast run)",
 ]
 
 [build-system]

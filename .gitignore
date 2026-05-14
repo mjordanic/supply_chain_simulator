@@ -21,6 +21,9 @@ data/
 simulation_output.log
 retailers.pkl
 
+# RL training output (TensorBoard event files, checkpoints)
+runs/
+
 # Local Cursor/editor artifacts
 .cursor/debug-*.log
 

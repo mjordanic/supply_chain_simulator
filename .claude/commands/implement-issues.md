@@ -4,6 +4,8 @@ Orchestrate dependency-ordered implementation of `ready-for-agent` issues in a `
 
 **Question window**: the user is available only during Phases 0–1 (preflight + planning). The moment Phase 2 starts (resume reconcile + wave dispatch), the run is fully unattended — anomalies are recorded in the report and the run continues; nothing blocks for human input. Use the planning phase to surface anything ambiguous up front so dispatch can run cleanly.
 
+**Permissions contract**: this skill and its `wave-runner` / `issue-implementer` subagents issue a fixed vocabulary of *local* git and filesystem commands (full list in the **Required Bash patterns** appendix at the bottom of this file). The deny list (anything that touches a remote — `git push/pull/fetch/remote/clone/ls-remote/submodule`, `gh`, `hub`) is enforced separately and is not affected by this skill. Phase 0's permission audit surfaces any missing allows once, before dispatch — the orchestration phase itself never prompts for tool permissions. If the audit can't bring the allow list into alignment (e.g., the harness hard-blocks edits to `.claude/settings.local.json`), it prints a copy-pasteable JSON block and asks the user to apply it manually, then aborts. Re-run the skill once settings are in place.
+
 The wave-runner indirection is a context firewall: per-wave git activity, worktree management, and per-issue subagent transcripts stay inside the wave-runner's context. The orchestrator only sees a small return summary per wave, so its context stays roughly constant regardless of how many issues or waves are involved.
 
 ## Inputs
@@ -20,6 +22,7 @@ Run FIRST, every invocation. **This is one of the two phases where you may ask t
 3. **`uv` available** — `uv --version` succeeds. If not, ask.
 4. **Feature folder** — if no argument was given and inference returns multiple candidates modified within 60s of each other, ask the user which one. If the user-supplied argument doesn't exist, ask.
 5. **PRD exists** — `<feature>/PRD.md` is present. If not, ask.
+6. **Permission audit** — read `.claude/settings.local.json` and compute which entries from the **Required Bash patterns** appendix are missing from the `permissions.allow` list. If any are missing, bundle the diff into Phase 1's wave-plan question as a single "apply these permission additions to `.claude/settings.local.json`?" prompt. If the user approves and the harness allows the edit, write the additions back atomically. If the harness hard-blocks the edit (settings files are commonly self-modification-protected), print the JSON patch as a copy-paste block, ask the user to apply it manually, and abort preflight; re-running the skill after the user updates settings will pass the audit. The orchestration phase never re-checks — it assumes the contract is in place once Phase 1 ends.
 
 Record `BASE_BRANCH`, started-at, and parallelism cap in the report header so resume runs can verify the same branch.
 
@@ -98,3 +101,73 @@ When all waves are dispatched (or an early-exit preflight happened):
 - Do **NOT** auto-resolve cherry-pick conflicts (in the salvage sweep). Abort, mark `failed`, log files.
 - Do **NOT** cascade-fail. A failed issue does not stop the wave; a failed wave does not stop the run.
 - A killed session is recoverable: re-run the skill with the same feature path. Phase 2 reconciles from disk + git.
+
+## Required Bash patterns (appendix)
+
+The Phase 0 permission audit checks `.claude/settings.local.json`'s `permissions.allow` list against this set. Add any missing entries to silence runtime prompts during waves. The deny list at the bottom of this appendix is enforced independently — keep it intact so that no remote-touching command can slip through even if the allow list grows.
+
+```jsonc
+// permissions.allow — minimum set for unattended dispatch
+"Bash(uv run *)",
+"Bash(MPLBACKEND=* uv run *)",
+
+// Local git verbs (no remote interaction)
+"Bash(git status*)",
+"Bash(git log*)",
+"Bash(git diff*)",
+"Bash(git show*)",
+"Bash(git symbolic-ref*)",
+"Bash(git rev-parse*)",
+"Bash(git branch*)",
+"Bash(git checkout*)",
+"Bash(git switch*)",
+"Bash(git restore*)",
+"Bash(git add*)",
+"Bash(git rm*)",
+"Bash(git mv*)",
+"Bash(git commit*)",
+"Bash(git cherry-pick*)",
+"Bash(git apply*)",
+"Bash(git worktree*)",
+"Bash(git reflog*)",
+"Bash(git cat-file*)",
+"Bash(git ls-tree*)",
+"Bash(git ls-files*)",
+"Bash(git check-ignore*)",
+"Bash(git -C *)",
+
+// Worktree filesystem (both standard locations the wave-runner may pick)
+"Bash(mkdir -p /tmp/*)",
+"Bash(mkdir -p .claude/worktrees/*)",
+"Bash(rm -rf /tmp/worktrees/*)",
+"Bash(rm -rf .claude/worktrees/*)",
+"Bash(ls /tmp/worktrees*)",
+"Bash(ls .claude/worktrees*)",
+"Bash(find /tmp/worktrees *)",
+"Bash(find .claude/worktrees *)",
+"Bash(cd /tmp/worktrees/*)",
+"Bash(cd .claude/worktrees/*)",
+
+// Small utilities used by report writes and reconcile
+"Bash(date*)",
+"Bash(pwd)"
+```
+
+```jsonc
+// permissions.deny — keep these as the safety floor regardless of allow-list growth
+"Bash(git push*)",
+"Bash(git pull*)",
+"Bash(git fetch*)",
+"Bash(git remote*)",
+"Bash(git clone*)",
+"Bash(git ls-remote*)",
+"Bash(git submodule*)",
+"Bash(gh *)", "Bash(gh)",
+"Bash(hub *)", "Bash(hub)"
+```
+
+Notes on scope:
+- `git worktree*` covers `add`, `remove --force`, `list`, `prune` — used by the wave-runner.
+- `rm -rf /tmp/worktrees/*` and `rm -rf .claude/worktrees/*` are scoped to worktree paths only, not a general `rm -rf *` grant.
+- `MPLBACKEND=* uv run *` is needed for headless notebook re-execution (`jupyter nbconvert`); without it, env-var-prefixed `uv run` calls trip a separate permission check than plain `uv run *`.
+- The wave-runner may stage worktrees under either `.claude/worktrees/<feature-slug>-issue-*` or `/tmp/worktrees/issue-*` depending on its agent definition. Both are covered above; the audit treats them as one set.

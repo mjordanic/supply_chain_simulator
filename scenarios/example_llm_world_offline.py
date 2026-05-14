@@ -53,7 +53,7 @@ from src.llm.schemas import (
 from src.llm.world_builder import WorldBuilder
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import HeuristicPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
@@ -251,7 +251,7 @@ _world = _builder.build(n_items=len(_CATALOG.items))
 _template = _world.store_templates["standard"]
 
 
-_policy = BaselinePolicy(
+_policy = HeuristicPolicy(
     policy_seed=1000,
     min_qty=1,
     init_qty_factor=0.3,

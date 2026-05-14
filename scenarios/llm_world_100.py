@@ -28,7 +28,7 @@ from src.llm.openai_client import OpenAIClient
 from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Uniform
-from src.sim.policy import BaselinePolicy
+from src.sim.policy import OrderUpToPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
@@ -58,20 +58,7 @@ _template = next(iter(_world.store_templates.values()))
 
 
 # Author the policy.
-_policy = BaselinePolicy(
-    policy_seed=1000,
-    min_qty=1,
-    init_qty_factor=0.3,
-    promo_len=Uniform(3, 5),
-    promo_cd_len=5,
-    review_interval=10,
-    promo_threshold=0.4,
-    target_active_count=4,
-    slow_sales_limit=2,
-    history_window=4,
-    max_history=50,
-    promo_discount=0.7,
-)
+_policy = OrderUpToPolicy(policy_seed=1000)
 
 
 # Wire LLM-derived catalog/market into a complete Scenario.

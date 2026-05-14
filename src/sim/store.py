@@ -250,7 +250,7 @@ class Store:
         every (re-)activation. ``deactivate_item`` deliberately leaves
         the entry alone — the next activation overwrites it.
 
-        The first-order flag used by ``BaselinePolicy`` for opportunistic
+        The first-order flag used by ``HeuristicPolicy`` for opportunistic
         initial replenishment is set inside the policy when it emits
         the ``activate`` decision, so this method no longer touches it.
         """
@@ -301,9 +301,9 @@ class Store:
         step: int,
         registry: ItemRegistry | None = None,
     ) -> dict[str, Any]:
-        """Build the full observation payload consumed by ``BaselinePolicy.decide``.
+        """Build the full observation payload consumed by ``HeuristicPolicy.decide``.
 
-        Field set is the contract documented inline on ``BaselinePolicy.decide``.
+        Field set is the contract documented inline on ``HeuristicPolicy.decide``.
         ``registry`` is required when the attached policy uses cross-product
         relationships; pass ``None`` (default) for skeleton flows where the
         related-products graph is not consulted.
@@ -340,6 +340,9 @@ class Store:
             "balance": self.balance,
             "sales": dict(self.sales),
             "promotions": dict(self.promotions),
+            # Per-product delivery lag (issue 01: TextbookReorderPolicy reads
+            # this to compute demand-units reorder levels scale-invariantly).
+            "delivery_lags": dict(self.delivery_lags),
         }
 
     def decide(self, observation: Mapping[str, Any]) -> dict[str, Any]:
