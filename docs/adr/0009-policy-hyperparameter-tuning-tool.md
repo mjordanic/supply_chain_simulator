@@ -1,0 +1,63 @@
+# Policy hyperparameter tuning tool (Optuna-based)
+
+ADR 0006 ships `OrderUpToPolicy` with four published defaults (`cover_horizon_ticks=10`, `safety_lead_pct_of_lag=2/3`, `opening_budget_pct=0.50`, `stockout_safety_bonus_pct_of_lag=0`) chosen by hand from textbook references and confirmed to produce a profitable trajectory at the standard CLI scale. ADR 0006 also *explicitly rejected* tuning the previous heuristic baseline per world (alternative (a)) because "tuning-per-world is the exact failure mode we want to eliminate from the comparison." Those two facts are in tension once anyone asks the obvious follow-up: how much headroom exists above the published defaults? The current answer is "we don't know" — there is no tool, and the manual exploration that produced the defaults is not reproducible from the repo.
+
+A second motivation: future custom policies (the user's stated long-term goal is "a tool for tuning hyperparameters of policies", plural — not just (s,S)) will have their own tunables. A one-off tuning script targeted at `OrderUpToPolicy` is the wrong artifact; the codebase needs a tuning *module* with a stable interface that works for `OrderUpToPolicy` today and for any future `Policy` subclass tomorrow.
+
+Reconciling the tension with ADR 0006 is a framing question. Three framings exist; only the first preserves the ADR 0006 commitments cleanly:
+
+- **Framing 1 — "headroom over published defaults".** The tool finds a single best set of kwargs across the same log-uniform domain randomisation the RL training sees. The canonical RL baseline (`OrderUpToPolicy()` with published defaults) is unchanged. The tool is a measurement instrument: it answers "how much profit are we leaving on the table by shipping the textbook defaults?" without changing what the textbook defaults are.
+- **Framing 2 — "tune per world".** The tool produces world-specific kwargs for `llm_world_100`, `llm_world_250`, etc. ADR 0006(a) directly rejects this for the canonical baseline. Could ship as a separate "production tuning" capability with loud framing, but is not what this ADR scopes.
+- **Framing 3 — "tune per scale".** The tool produces small-store vs flagship kwargs. Tests scale-invariance empirically but breaks the "one kwargs set across scales" property of the textbook family.
+
+**Decision — Build `src/tuning/`, an Optuna-based hyperparameter tuner scoped to framing 1.**
+
+Six-part package:
+
+(a) **Module layout in `src/tuning/`.** Four files: `config.py` (`TuningConfig` dataclass), `evaluator.py` (single-policy CRN evaluator returning normalised return + KPI dict), `study.py` (`run_study()` and `confirm_top_k()` entry points + artifact serialisation), `search_spaces.py` (four bundled trial-callback factories — one per textbook policy variant). Lives at the same altitude as `src/sim` and `src/rl` because it consumes from both (`src/sim.policy` for the policy classes; `src/rl.episode_sampler` and `src/rl.eval._build_world` for the simulation harness) and depends on neither one's internals being RL-specific.
+
+(b) **API surface: Pattern A (trial-callback).** The public `run_study()` accepts a `policy_space: Callable[[optuna.Trial], Policy]` callable. The user writes (or imports a bundled factory):
+
+```python
+def order_up_to_space(trial: optuna.Trial) -> Policy:
+    return OrderUpToPolicy(
+        cover_horizon_ticks=trial.suggest_int("cover_horizon_ticks", 1, 30),
+        safety_lead_pct_of_lag=trial.suggest_float("safety_lead_pct_of_lag", 0.0, 3.0),
+        opening_budget_pct=trial.suggest_float("opening_budget_pct", 0.05, 0.95),
+        stockout_safety_bonus_pct_of_lag=trial.suggest_float("stockout_safety_bonus_pct_of_lag", 0.0, 2.0),
+    )
+```
+
+This is idiomatic Optuna, supports conditional spaces trivially, and the bundled `order_up_to_space` / `reorder_point_space` / `periodic_order_up_to_space` / `periodic_reorder_space` factories cover the four-variant textbook family. A future custom-policy author writes their own factory inline. The alternative — a declarative `dict[name, distribution]` spec — duplicates the Optuna distribution API and limits expressiveness for no observable gain.
+
+(c) **Objective: mean normalised return over a fixed CRN seed set.** Per trial, the policy is rolled out on `n_search_seeds` (default 16) episodes sampled via `src.rl.episode_sampler.sample_episode` against a fixed `seed_offset` (default `config.eval_seed_offset + 2_000_000`, disjoint from training and from the two-scale eval ranges). Each episode is 365 ticks (annual, longer than the 180-tick RL episode — `(s,S)` does not depend on episode length and the longer rollout damps coefficient-of-variation). The per-seed metric is `net_profit / initial_cash`, dimensionless and scale-comparable; the trial returns the mean across the 16 seeds. The full KPI dict per seed (un-normalised net profit, service level, stockout rate, turnover, revenue, mean-price-pct-of-MSRP, plus the seed's capacity and initial cash) is stashed in `trial.user_attrs` so the notebook can reconstruct Pareto fronts, parameter sensitivity curves, and per-scale slicing post-hoc.
+
+(d) **Log-uniform domain randomisation, not fixed scale.** The same `LogUniform(100, 10_000)` capacity and `LogUniform(10_000, 1_000_000)` balance the RL training sees (ADR 0007). Per ADR 0006 the textbook family is *committed* to one kwargs set across scales; tuning under the same distribution is the faithful test. The normalisation in (c) collapses the two-orders-of-magnitude per-seed return variance from scale alone, leaving only policy-quality variance for TPE to see.
+
+(e) **Optuna mechanics.** `TPESampler(seed=config.sampler_seed)` (Optuna default, well-suited to 4-D mostly-integer spaces in the 100-trial range). No pruner in v1 — pruning needs intermediate-value reporting per seed inside a trial, which restructures the eval loop, and ~150 trials × 16 seeds × 365 ticks is well under an hour on a single core. Sequential trials in v1 (`n_jobs=1`) — within-trial seed parallelism is the more leveraged place to add concurrency later (embarrassingly parallel, same RNG-isolation contract as the existing eval). No trial timeout; `catch=()` so trial exceptions surface loudly instead of corrupting the TPE posterior with silent `None` outcomes.
+
+(f) **File artifacts under `runs/tuning/<study_name>/`, no SQLite.** The study runs in-memory during `run_study()` execution; on completion we flatten the Optuna trials into three files: `trials.parquet` (one row per trial: trial id, state, params, mean normalised return, mean KPIs, duration), `per_seed.parquet` (one row per (trial, seed): seed, capacity, initial cash, un-normalised net profit, all KPIs — for Pareto / scale-slicing), and `study.json` (metadata + provenance: study name, n_trials, n_search_seeds, episode_length, sampler_seed, search-space signature, best trial id, best params, started_at / finished_at, git sha). `confirm_top_k()` writes a separate `holdout.parquet` plus `holdout_summary.json` containing the headline "tuned vs published default" comparison on a 32-seed held-out set disjoint from the 16 search seeds.
+
+Considered alternatives:
+
+(a) **No tuning tool — keep ADR 0006's "tuning rejected as methodology" stance strict.** The cleanest interpretation of ADR 0006 is that the textbook policy ships once and is never tuned. Rejected because ADR 0006(a) specifically rejected tuning the *previous heuristic* as the comparison anchor (because per-world tuning of an unprincipled policy is fragile); it does not preclude a measurement instrument that asks how good the published defaults are. The framing-1 framing keeps the anchor unchanged and uses the tuner as a diagnostic, not a baseline-construction tool.
+
+(b) **Grid search over a hand-picked product space.** Simpler, no Optuna dependency, no TPE machinery to explain. Rejected because the 4-D space at reasonable granularity (5 × 5 × 5 × 5) is 625 points, four times the proposed Optuna budget for strictly worse coverage near the optimum. TPE concentrates samples in the high-value region; grid does not. The dependency cost (Optuna + scipy + sqlalchemy via Optuna's transitive deps) is real but small.
+
+(c) **`scipy.optimize` (Nelder-Mead, differential evolution).** Possible for the continuous part; awkward for integer `cover_horizon_ticks`. Optuna handles mixed-integer-continuous spaces natively with TPE. The Pareto reconstruction in the notebook is also free with Optuna's per-trial recording — scipy would need a custom logger.
+
+(d) **Ray Tune / Hyperopt / Sherpa.** All heavier dependencies; Ray Tune especially pulls in a large runtime. Optuna is single-process, single-dependency, idiomatic in the Python ML ecosystem, and well-aligned to the sub-hour study scale here.
+
+(e) **In-memory only, no persisted artifacts.** Forces a re-run on every notebook reload. Rejected: file artifacts cost ~ms to write and unlock the "executed-and-saved notebook" workflow.
+
+(f) **SQLite-backed Optuna study (`storage="sqlite:///…"`).** Idiomatic Optuna; supports `optuna-dashboard` and mid-study resume. Rejected for this scope: resume-from-crash on a sub-hour study is solved by "just re-run"; concurrent writers do not exist in v1; the project's existing artifact pattern is Parquet + JSON under `runs/` (see `DataExporter` in ADR 0006), not a SQL database. If we ever need resume or dashboarding, swapping in SQLite is a one-line change at the `optuna.create_study()` call site.
+
+(g) **Bundle the full 150-trial study artifact in the repo so the notebook works out-of-the-box.** Rejected per user direction: `runs/` is gitignored; the user prefers that any reader who wants the real numbers runs the full study themselves. The notebook ships with a small inline demo (~10 trials, ~1–2 min) that demonstrates the API; the headline analysis cells display informative empty / placeholder messages and explain the command to populate `runs/tuning/order_up_to_v1/` first. The shipped notebook's executed-output cells (committed via `nbformat`) will reflect whatever artifacts existed when the developer who built the notebook ran the study locally.
+
+(h) **Use `evaluate()` from `src/rl/eval.py` directly as the trial objective.** `evaluate()` is paired (RL + baseline together); for hyperparameter tuning we are running a single policy. Extracting a single-policy variant in `src/tuning/evaluator.py` and *reusing* the world-construction machinery from `_build_world()` (the lower-level helper inside `src/rl/eval.py`) is the right factoring; the public `evaluate()` continues to mean "paired CRN" and is unchanged. The single-policy evaluator is also the natural unit-testable seam for the tuning module.
+
+**Migration / new code surface.** New module `src/tuning/` with four files. New dependency `optuna` added via `uv add optuna` — pulls in `alembic`, `colorlog`, `packaging`, `PyYAML`, `scipy`, `sqlalchemy`, `tqdm` transitively (all small). New notebook `notebooks/08-tune_textbook_policy.ipynb`. New test directory `tests/tuning/`. `CONTEXT.md` adds a new "Policy tuning study" glossary entry; the "CRN-paired eval" entry gets a one-sentence note that the tuning tool reuses the single-policy half of the eval machinery with a normalised-return objective. No edits to `src/sim/*` or `src/rl/eval.py` are needed for this ADR (ADR 0008's renames are a separate concern that lands first).
+
+**Relationship to ADR 0006 and ADR 0008.** ADR 0006 establishes the textbook family and the "scale-invariant by construction" framing. ADR 0008 fixes a per-SKU correctness bug in that framing (safety horizons as ratios of lead time rather than absolute ticks). ADR 0009 (this) builds the diagnostic instrument that can *measure* how good the resulting defaults are. The three ADRs land in order: 0008 must precede 0009 because the tuning search space is defined in terms of the post-0008 kwarg names. Tuning v1 targets `OrderUpToPolicy` because it is the RL CRN anchor; the same machinery covers the other three textbook variants via the bundled factories on day one.
+
+**Out of scope for the v1 ADR.** Per-world tuning (framing 2), per-scale tuning (framing 3), multi-objective optimisation (Pareto reconstruction happens *post-hoc* in the notebook from the recorded user_attrs but is not the optimiser's objective), pruning, parallel trials, SQLite storage, automatic ADR updates if the tuned defaults beat the published defaults by a large margin. Any of these can be added as follow-up work without invalidating the v1 surface.
