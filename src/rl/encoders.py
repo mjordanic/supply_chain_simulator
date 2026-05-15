@@ -28,8 +28,9 @@ Per-SKU block (repeated K_active times, in slot_perm order):
   6-10  lifecycle stage one-hot (5 stages)           {0,1}
   11 ticks_since_activation: log1p(tau)/log1p(360)   [0, 1]  (clamped)
   12 in_season flag                                  {0,1}
+  13 clip(inv/rate, 0, max_lt) / max_lt              [0, 1]  demand-units inventory
 
-N_PER_SKU = 13
+N_PER_SKU = 14
 
 Global block (4 values, appended after all SKU blocks):
 
@@ -65,7 +66,7 @@ from src.sim.lifecycle_clock import CANONICAL_STAGES
 # Shape constants
 # ---------------------------------------------------------------------------
 
-N_PER_SKU: int = 13
+N_PER_SKU: int = 14
 """Number of features per active-SKU slot in the observation."""
 
 N_GLOBAL: int = 4
@@ -117,6 +118,8 @@ def encode_observation(
     *,
     initial_cash: float | None = None,
     sales_history: dict[str, deque] | None = None,
+    effective_rate: dict[str, float] | None = None,
+    max_inventory_lt: float = 30.0,
 ) -> np.ndarray:
     """Encode the current simulator state into a flat float32 observation.
 
@@ -148,6 +151,15 @@ def encode_observation(
         Optional dict mapping pid → deque of per-tick sales values.  The
         rolling-5-tick mean feature is computed from the last 5 entries.
         When None or the product has no history, the feature is 0.
+    effective_rate:
+        Per-pid demand rate dict, as returned by ``compute_effective_rate``.
+        When supplied, slot 13 of each SKU block is set to
+        ``clip(inventory / rate, 0, max_inventory_lt) / max_inventory_lt``.
+        When ``None``, slot 13 is 0.0 (backward-compat for test callers
+        that do not supply a rate).
+    max_inventory_lt:
+        Saturation point for the demand-units inventory feature (slot 13),
+        in lead-times of cover.  Default 30.0 matches ``RLConfig.max_inventory_lt``.
 
     Returns
     -------
@@ -249,6 +261,16 @@ def encode_observation(
             in_season = 1.0 if current_month in season_months.get(seasonality, []) else 0.0
         obs[base_offset + 12] = float(in_season)
 
+        # 13: demand-units inventory feature
+        # clip(inv / rate, 0, max_lt) / max_lt  →  [0, 1]
+        # Falls back to 0.0 when effective_rate is None (backward-compat).
+        if effective_rate is not None:
+            rate = float(effective_rate.get(pid, 0.0))
+            _epsilon = 1e-9  # belt-and-braces guard; compute_effective_rate floors at prior
+            inv_lt = float(np.clip(inv / max(rate, _epsilon), 0.0, max_inventory_lt))
+            obs[base_offset + 13] = inv_lt / max(max_inventory_lt, _epsilon)
+        # else: obs[base_offset + 13] remains 0.0 (initialised above)
+
     # ---------------------------------------------------------------------------
     # Global block (appended after all per-SKU blocks)
     # ---------------------------------------------------------------------------
@@ -273,14 +295,34 @@ def decode_action(
     store: Any,
     K_active: int,
     base_prices: dict[str, float],
+    *,
+    effective_rate: dict[str, float] | None = None,
+    target_centre_lead_times: int = 15,
+    target_half_span_lead_times: int = 15,
+    target_max_lead_times: int = 30,
 ) -> dict[str, Any]:
     """Decode a continuous action vector into the simulator's action dict.
+
+    Order-up-to decoder: the order half of the action vector selects an
+    inventory target expressed in lead-times of expected demand.  The
+    final quantity per SKU is:
+
+        target_lt = clip(target_centre + order_raw * target_half_span,
+                         0, target_max)
+        requested  = max(0, target_lt * effective_rate[pid]
+                            − (inventory[pid] + pending[pid]))
+        qty        = fair_share_allocate(requested, per_sku_headroom,
+                                         global_free_space)[pid]
+
+    When ``effective_rate is None`` (backward-compat path for unit tests
+    that don't supply a rate), every active SKU contributes zero requested
+    quantity.
 
     Parameters
     ----------
     action_vec:
         Numpy array of shape ``(2*K_active,)`` with values in ``[-1, 1]``.
-        First K_active → price multipliers.  Second K_active → order fractions.
+        First K_active → price multipliers.  Second K_active → order scalars.
     slot_perm:
         Slot index → position in ``store.active_items`` mapping (same as
         used in encode_observation).
@@ -292,6 +334,15 @@ def decode_action(
     base_prices:
         Dict mapping pid → MSRP.  Price decisions are applied as a
         multiplier on these base prices.
+    effective_rate:
+        Per-pid demand rate used to compute the order-up-to target.
+        When ``None``, all order quantities are forced to zero.
+    target_centre_lead_times:
+        Inventory target (in lead-times) at ``order_raw = 0``.
+    target_half_span_lead_times:
+        Width of the action range around the centre.
+    target_max_lead_times:
+        Upper clip for the target.
 
     Returns
     -------
@@ -303,16 +354,16 @@ def decode_action(
     n_active = len(active_items)
     capacity: float = float(store.capacity)
 
-    # Compute free space for order fraction decoding.
-    total_inv = sum(store.inventory.values())
-    total_pending = sum(store.pending.values())
-    free_space = max(0.0, capacity - total_inv - total_pending)
+    total_inv: float = sum(float(v) for v in store.inventory.values())
+    total_pending: float = sum(float(v) for v in store.pending.values())
+    global_free_space: int = max(0, int(capacity - total_inv - total_pending))
 
-    # Build inverse permutation: slot_idx → position in active_items.
-    # slot_perm[slot_idx] = item_pos (same as encoding).
-    # We need: for slot slot_idx, which pid is it?
     order_dict: dict[str, int] = {}
     price_dict: dict[str, float] = {}
+
+    # Accumulate per-SKU requested quantities (float) before allocation.
+    requested: dict[str, float] = {}
+    per_sku_headroom: dict[str, int] = {}
 
     for slot_idx in range(K_active):
         item_pos = slot_perm[slot_idx] if slot_idx < len(slot_perm) else slot_idx
@@ -321,20 +372,40 @@ def decode_action(
         pid = active_items[item_pos]
         msrp = float(base_prices.get(pid, 1.0))
 
-        # Price: linear map [-1,1] → [0.5, 1.5] multiplier on MSRP.
-        price_raw = float(action_vec[slot_idx])
-        price_raw = float(np.clip(price_raw, -1.0, 1.0))
+        # Price half: linear map [-1,1] → [0.5, 1.5] multiplier on MSRP.
+        price_raw = float(np.clip(float(action_vec[slot_idx]), -1.0, 1.0))
         price_mult = 0.5 + (price_raw + 1.0) * 0.5  # maps to [0.5, 1.5]
         price_dict[pid] = msrp * price_mult
 
-        # Order: linear map [-1,1] → [0,1] fraction of free space.
-        order_raw = float(action_vec[K_active + slot_idx])
-        order_raw = float(np.clip(order_raw, -1.0, 1.0))
-        order_frac = (order_raw + 1.0) / 2.0  # maps to [0, 1]
-        # Per-SKU free space allocation: divide free_space equally.
-        per_sku_free = free_space / max(1, K_active)
-        qty = int(order_frac * per_sku_free)
-        order_dict[pid] = max(0, qty)
+        # Per-SKU shelf headroom (physical capacity available per SKU).
+        inv = float(store.inventory.get(pid, 0))
+        pend = float(store.pending.get(pid, 0))
+        headroom = max(0, int(capacity - inv - pend))
+        per_sku_headroom[pid] = headroom
+
+        if effective_rate is None:
+            # Backward-compat: no rate signal → zero order.
+            requested[pid] = 0.0
+        else:
+            # Order half: clip(centre + raw*span, 0, max) lead-times.
+            order_raw = float(np.clip(float(action_vec[K_active + slot_idx]), -1.0, 1.0))
+            target_lt = float(
+                np.clip(
+                    target_centre_lead_times + order_raw * target_half_span_lead_times,
+                    0.0,
+                    float(target_max_lead_times),
+                )
+            )
+            rate = float(effective_rate.get(pid, 0.0))
+            position = inv + pend
+            req = max(0.0, target_lt * rate - position)
+            requested[pid] = req
+
+    # Two-pass fair-share allocation.
+    allocated = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+
+    for pid in requested:
+        order_dict[pid] = allocated.get(pid, 0)
 
     return {
         "order": order_dict,
@@ -345,11 +416,111 @@ def decode_action(
     }
 
 
+# ---------------------------------------------------------------------------
+# Rate primitive
+# ---------------------------------------------------------------------------
+
+
+def compute_effective_rate(
+    sales_history: dict[str, deque],
+    base_demand_prior: float,
+) -> dict[str, float]:
+    """Return effective rate per pid: max(rolling-5-mean of sales[pid], prior).
+
+    Empty or missing history for a pid contributes a value equal to the prior.
+    Partial windows (1-4 entries) use the partial-window mean, still clamped
+    to the prior as a floor.
+
+    Parameters
+    ----------
+    sales_history:
+        Dict mapping pid → deque of per-tick sales values.  The env populates
+        this with every catalog pid at reset (see RLEnv.reset).
+    base_demand_prior:
+        Floor rate applied when the empirical rolling mean falls below it.
+        Set to 0.0 to disable the floor.
+
+    Returns
+    -------
+    dict[str, float]
+        One entry per key in ``sales_history``.
+    """
+    result: dict[str, float] = {}
+    for pid, hist in sales_history.items():
+        if not hist:
+            # Empty history — prior is the only signal.
+            result[pid] = base_demand_prior
+        else:
+            # Use the last 5 entries (partial window is fine).
+            recent = list(hist)[-5:]
+            empirical = sum(recent) / len(recent)
+            result[pid] = max(empirical, base_demand_prior)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Capacity allocator
+# ---------------------------------------------------------------------------
+
+
+def fair_share_allocate(
+    requested: dict[str, float],
+    per_sku_headroom: dict[str, int],
+    global_free_space: int,
+) -> dict[str, int]:
+    """Two-pass capacity allocator.
+
+    Pass 1: cap each request at the per-SKU physical headroom
+            (capped[pid] = min(requested[pid], per_sku_headroom[pid])).
+    Pass 2: if sum(capped) > global_free_space, scale every capped
+            value proportionally by global_free_space / sum(capped).
+    Return integer quantities (truncate, do not round up — under-allocation
+    is safer than over-allocation against a hard capacity constraint).
+
+    Parameters
+    ----------
+    requested:
+        Dict mapping pid → desired float quantity for each SKU.
+    per_sku_headroom:
+        Dict mapping pid → per-SKU physical headroom (hard ceiling per SKU).
+    global_free_space:
+        Total capacity available across all SKUs combined.
+
+    Returns
+    -------
+    dict[str, int]
+        One entry per key in ``requested`` with integer allocated quantities.
+        Guaranteed: ``output[pid] <= per_sku_headroom[pid]`` and
+        ``sum(output.values()) <= global_free_space``.
+    """
+    if not requested:
+        return {}
+
+    # Pass 1: cap each request at per-SKU headroom.
+    capped: dict[str, float] = {
+        pid: min(float(qty), float(per_sku_headroom.get(pid, 0)))
+        for pid, qty in requested.items()
+    }
+
+    # Pass 2: if total capped exceeds global free space, scale proportionally.
+    total_capped = sum(capped.values())
+    if total_capped > global_free_space:
+        if total_capped <= 0:
+            scale = 0.0
+        else:
+            scale = global_free_space / total_capped
+        return {pid: int(v * scale) for pid, v in capped.items()}
+
+    return {pid: int(v) for pid, v in capped.items()}
+
+
 __all__ = [
     "encode_observation",
     "decode_action",
     "observation_dim",
     "action_dim",
+    "compute_effective_rate",
+    "fair_share_allocate",
     "N_PER_SKU",
     "N_GLOBAL",
 ]

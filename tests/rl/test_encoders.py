@@ -25,8 +25,10 @@ from src.rl.encoders import (
     N_GLOBAL,
     N_PER_SKU,
     action_dim,
+    compute_effective_rate,
     decode_action,
     encode_observation,
+    fair_share_allocate,
     observation_dim,
 )
 
@@ -419,6 +421,59 @@ def test_sales_history_feature():
 
 
 # ---------------------------------------------------------------------------
+# compute_effective_rate tests
+# ---------------------------------------------------------------------------
+
+
+def test_effective_rate_empty_history_returns_prior():
+    """Empty deques for each pid return the prior for every pid."""
+    history = {"P0001": deque(), "P0002": deque()}
+    result = compute_effective_rate(history, base_demand_prior=3.0)
+    assert result == {"P0001": 3.0, "P0002": 3.0}
+
+
+def test_effective_rate_partial_window_uses_partial_mean():
+    """History of [10, 12] (length 2) with prior 3.0 returns 11.0."""
+    history = {"P0001": deque([10, 12], maxlen=100)}
+    result = compute_effective_rate(history, base_demand_prior=3.0)
+    assert result["P0001"] == pytest.approx(11.0)
+
+
+def test_effective_rate_full_window_uses_rolling_5_mean():
+    """History of length 10 uses only the last 5 entries."""
+    # last 5 entries are 100, 100, 100, 100, 100 → mean = 100.0
+    hist = deque([10, 12, 14, 8, 6, 100, 100, 100, 100, 100], maxlen=100)
+    history = {"P0001": hist}
+    result = compute_effective_rate(history, base_demand_prior=3.0)
+    assert result["P0001"] == pytest.approx(100.0)
+
+
+def test_effective_rate_prior_floors_low_history():
+    """History of [0, 0, 0, 0, 0] with prior 2.5 returns 2.5."""
+    history = {"P0001": deque([0, 0, 0, 0, 0], maxlen=100)}
+    result = compute_effective_rate(history, base_demand_prior=2.5)
+    assert result["P0001"] == pytest.approx(2.5)
+
+
+def test_effective_rate_output_keys_match_input():
+    """Every key in sales_history appears in the output; nothing else does."""
+    history = {
+        "P0001": deque([5, 5], maxlen=100),
+        "P0002": deque([], maxlen=100),
+        "P0003": deque([1, 2, 3, 4, 5], maxlen=100),
+    }
+    result = compute_effective_rate(history, base_demand_prior=1.0)
+    assert set(result.keys()) == set(history.keys())
+
+
+def test_effective_rate_zero_prior_allows_zero_output():
+    """History [0, 0] with prior 0.0 returns 0.0 — no implicit extra floor."""
+    history = {"P0001": deque([0, 0], maxlen=100)}
+    result = compute_effective_rate(history, base_demand_prior=0.0)
+    assert result["P0001"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle stage one-hot correctness
 # ---------------------------------------------------------------------------
 
@@ -439,3 +494,494 @@ def test_lifecycle_stage_one_hot():
         for j in range(5):
             if j != stage_idx:
                 assert one_hot[j] == pytest.approx(0.0), f"Stage {stage}: expected 0 at index {j}"
+
+
+# ---------------------------------------------------------------------------
+# fair_share_allocate tests
+# ---------------------------------------------------------------------------
+
+
+def test_fair_share_empty_input_returns_empty():
+    """Empty requested dict returns an empty dict."""
+    result = fair_share_allocate({}, {}, global_free_space=100)
+    assert result == {}
+
+
+def test_fair_share_sum_below_free_space_returns_capped_unchanged():
+    """When sum(min(requested, headroom)) <= global_free_space, no scaling fires."""
+    requested = {"P1": 10.0, "P2": 20.0}
+    per_sku_headroom = {"P1": 15, "P2": 25}
+    global_free_space = 100
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+    # capped = min(10,15)=10, min(20,25)=20; sum=30 <= 100 -> no scaling
+    assert result == {"P1": 10, "P2": 20}
+
+
+def test_fair_share_sum_above_free_space_scales_proportionally():
+    """When sum(requested) > global_free_space and headroom is non-binding, output sums to <= free_space."""
+    requested = {"P1": 60.0, "P2": 40.0}
+    per_sku_headroom = {"P1": 1000, "P2": 1000}  # headroom non-binding
+    global_free_space = 50
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+    # sum(capped) = 100 > 50 -> scale by 0.5: P1=30, P2=20
+    assert sum(result.values()) <= global_free_space
+    # Proportions preserved within +/-1 (truncation tolerance)
+    assert abs(result["P1"] - 30) <= 1
+    assert abs(result["P2"] - 20) <= 1
+
+
+def test_fair_share_per_sku_headroom_binds_tighter_than_global():
+    """P1 headroom of 10 caps P1 even when global free space is 200."""
+    requested = {"P1": 100.0, "P2": 100.0}
+    per_sku_headroom = {"P1": 10, "P2": 1000}
+    global_free_space = 200
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+    # P1 capped to 10 by headroom; P2 capped to min(100,1000)=100; sum=110 <= 200 -> no scaling
+    assert result["P1"] == 10
+    assert result["P2"] == 100
+
+
+def test_fair_share_zero_global_free_space_returns_all_zeros():
+    """global_free_space = 0 forces all outputs to 0."""
+    requested = {"P1": 50.0, "P2": 30.0}
+    per_sku_headroom = {"P1": 100, "P2": 100}
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space=0)
+    assert result == {"P1": 0, "P2": 0}
+
+
+def test_fair_share_total_never_exceeds_free_space():
+    """Property: sum(output) <= global_free_space across randomised inputs."""
+    rng = Random(42)
+    for _ in range(200):
+        n_skus = rng.randint(1, 10)
+        pids = [f"P{i:04d}" for i in range(n_skus)]
+        requested = {pid: rng.uniform(0, 500) for pid in pids}
+        per_sku_headroom = {pid: rng.randint(0, 300) for pid in pids}
+        global_free_space = rng.randint(0, 1000)
+        result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+        assert sum(result.values()) <= global_free_space, (
+            f"Sum {sum(result.values())} exceeds free space {global_free_space}"
+        )
+
+
+def test_fair_share_per_sku_never_exceeds_headroom():
+    """Property: output[pid] <= per_sku_headroom[pid] for all pids."""
+    rng = Random(99)
+    for _ in range(200):
+        n_skus = rng.randint(1, 10)
+        pids = [f"P{i:04d}" for i in range(n_skus)]
+        requested = {pid: rng.uniform(0, 500) for pid in pids}
+        per_sku_headroom = {pid: rng.randint(0, 300) for pid in pids}
+        global_free_space = rng.randint(0, 1000)
+        result = fair_share_allocate(requested, per_sku_headroom, global_free_space)
+        for pid in pids:
+            assert result[pid] <= per_sku_headroom[pid], (
+                f"{pid}: output {result[pid]} exceeds headroom {per_sku_headroom[pid]}"
+            )
+
+
+def test_fair_share_output_keys_match_requested_keys():
+    """Output contains exactly the keys in requested -- nothing more, nothing less."""
+    requested = {"A": 10.0, "B": 20.0, "C": 5.0}
+    per_sku_headroom = {"A": 50, "B": 50, "C": 50}
+    result = fair_share_allocate(requested, per_sku_headroom, global_free_space=100)
+    assert set(result.keys()) == set(requested.keys())
+
+
+# ---------------------------------------------------------------------------
+# decode_action — order-up-to decoder (issue 04)
+# ---------------------------------------------------------------------------
+
+
+def test_decode_action_zero_action_matches_periodic_order_up_to_formula():
+    """At action_vec=zeros, target_lt=15. With rate=10, inv=30, pending=0, qty=max(0,15*10-30)=120."""
+    K = 2
+    pids = ["P0000", "P0001"]
+    effective_rate = {pid: 10.0 for pid in pids}
+    inventory = {pid: 30 for pid in pids}
+    pending = {pid: 0 for pid in pids}
+    capacity = 5000.0  # large so headroom is non-binding
+    store = _make_store(
+        pids,
+        capacity=capacity,
+        inventory=inventory,
+        pending=pending,
+    )
+    base_prices = {pid: 18.0 for pid in pids}
+    slot_perm = list(range(K))
+    action_vec = np.zeros(2 * K, dtype=np.float32)
+
+    result = decode_action(
+        action_vec,
+        slot_perm,
+        store,
+        K,
+        base_prices,
+        effective_rate=effective_rate,
+        target_centre_lead_times=15,
+        target_half_span_lead_times=15,
+        target_max_lead_times=30,
+    )
+    # requested = max(0, 15*10 - (30+0)) = max(0, 150-30) = 120
+    for pid in pids:
+        assert result["order"][pid] == 120, f"{pid}: expected 120 got {result['order'][pid]}"
+
+
+def test_decode_action_position_at_target_returns_zero_qty():
+    """The max(0,...) floor: negative requests map to zero.
+
+    When position >= target_lt * rate (even for negative order_raw),
+    the requested quantity is floored at zero.
+
+    Specifically: position = target_max * rate means ALL actions give zero
+    (the highest possible target is target_max, so position >= target_lt always).
+    """
+    K = 2
+    pids = ["P0000", "P0001"]
+    rate = 8.0
+    target_max = 30
+    # Set position to target_max * rate so even the highest target can't exceed it.
+    position = int(target_max * rate)  # 240 units
+    effective_rate = {pid: rate for pid in pids}
+    inventory = {pid: position for pid in pids}
+    pending = {pid: 0 for pid in pids}
+    capacity = 5000.0
+    store = _make_store(pids, capacity=capacity, inventory=inventory, pending=pending)
+    base_prices = {pid: 18.0 for pid in pids}
+    slot_perm = list(range(K))
+
+    # With position at target_max * rate, ALL order_raw values give zero qty.
+    for order_raw in [-1.0, -0.5, 0.0, 0.5, 1.0]:
+        action_vec = np.array(
+            [0.0] * K + [order_raw] * K, dtype=np.float32
+        )
+        result = decode_action(
+            action_vec,
+            slot_perm,
+            store,
+            K,
+            base_prices,
+            effective_rate=effective_rate,
+            target_centre_lead_times=15,
+            target_half_span_lead_times=15,
+            target_max_lead_times=target_max,
+        )
+        for pid in pids:
+            assert result["order"][pid] == 0, (
+                f"order_raw={order_raw}, pid={pid}: expected 0 got {result['order'][pid]}"
+            )
+
+
+def test_decode_action_total_qty_respects_global_free_space():
+    """Property: sum(qty) <= capacity - total_inventory - total_pending."""
+    rng = Random(7)
+    K = 5
+    pids = [f"P{i:04d}" for i in range(K)]
+    slot_perm = list(range(K))
+    base_prices = {pid: 18.0 for pid in pids}
+
+    for _ in range(100):
+        capacity = rng.uniform(100, 1000)
+        inventory = {pid: rng.uniform(0, capacity / (K * 2)) for pid in pids}
+        pending = {pid: rng.uniform(0, capacity / (K * 2)) for pid in pids}
+        store = _make_store(pids, capacity=capacity, inventory=inventory, pending=pending)
+        effective_rate = {pid: rng.uniform(0.5, 20.0) for pid in pids}
+        action_vec = np.array(
+            [rng.uniform(-1, 1) for _ in range(2 * K)], dtype=np.float32
+        )
+        result = decode_action(
+            action_vec,
+            slot_perm,
+            store,
+            K,
+            base_prices,
+            effective_rate=effective_rate,
+        )
+        global_free_space = max(
+            0, capacity - sum(inventory.values()) - sum(pending.values())
+        )
+        total_qty = sum(result["order"].values())
+        assert total_qty <= global_free_space + 1, (
+            f"total_qty={total_qty} > global_free_space={global_free_space}"
+        )
+
+
+def test_decode_action_per_sku_qty_respects_per_sku_headroom():
+    """Property: qty[pid] <= capacity - inventory[pid] - pending[pid] for all pids."""
+    rng = Random(13)
+    K = 5
+    pids = [f"P{i:04d}" for i in range(K)]
+    slot_perm = list(range(K))
+    base_prices = {pid: 18.0 for pid in pids}
+
+    for _ in range(100):
+        capacity = rng.uniform(100, 1000)
+        inventory = {pid: rng.uniform(0, capacity / (K * 2)) for pid in pids}
+        pending = {pid: rng.uniform(0, capacity / (K * 2)) for pid in pids}
+        store = _make_store(pids, capacity=capacity, inventory=inventory, pending=pending)
+        effective_rate = {pid: rng.uniform(0.5, 20.0) for pid in pids}
+        action_vec = np.array(
+            [rng.uniform(-1, 1) for _ in range(2 * K)], dtype=np.float32
+        )
+        result = decode_action(
+            action_vec,
+            slot_perm,
+            store,
+            K,
+            base_prices,
+            effective_rate=effective_rate,
+        )
+        for pid in pids:
+            headroom = max(0, capacity - inventory[pid] - pending[pid])
+            qty = result["order"][pid]
+            assert qty <= headroom + 1, (
+                f"{pid}: qty={qty} > headroom={headroom}"
+            )
+
+
+def test_decode_action_price_half_unchanged():
+    """Price decoding: price_raw=0 → MSRP; +1 → 1.5*MSRP; -1 → 0.5*MSRP."""
+    K = 2
+    pids = ["P0000", "P0001"]
+    msrps = {"P0000": 20.0, "P0001": 30.0}
+    store = _make_store(pids, base_prices=msrps, capacity=5000.0)
+    slot_perm = list(range(K))
+
+    for price_raw, expected_mult in [(-1.0, 0.5), (0.0, 1.0), (1.0, 1.5)]:
+        action_vec = np.array(
+            [price_raw] * K + [0.0] * K, dtype=np.float32
+        )
+        result = decode_action(
+            action_vec,
+            slot_perm,
+            store,
+            K,
+            msrps,
+            effective_rate={pid: 5.0 for pid in pids},
+        )
+        for pid in pids:
+            expected_price = msrps[pid] * expected_mult
+            assert result["price"][pid] == pytest.approx(expected_price, abs=1e-5), (
+                f"price_raw={price_raw}, {pid}: expected {expected_price} got {result['price'][pid]}"
+            )
+
+
+def test_decode_action_uses_inventory_position_not_just_inventory():
+    """Pending in-transit nets against the target: inv=0, pending=50, rate=10, target_lt=15 → qty=100."""
+    K = 1
+    pids = ["P0000"]
+    effective_rate = {"P0000": 10.0}
+    inventory = {"P0000": 0}
+    pending = {"P0000": 50}
+    capacity = 5000.0
+    store = _make_store(pids, capacity=capacity, inventory=inventory, pending=pending)
+    base_prices = {"P0000": 18.0}
+    slot_perm = [0]
+    action_vec = np.zeros(2 * K, dtype=np.float32)
+
+    result = decode_action(
+        action_vec,
+        slot_perm,
+        store,
+        K,
+        base_prices,
+        effective_rate=effective_rate,
+        target_centre_lead_times=15,
+        target_half_span_lead_times=15,
+        target_max_lead_times=30,
+    )
+    # requested = max(0, 15*10 - (0 + 50)) = max(0, 150 - 50) = 100
+    assert result["order"]["P0000"] == 100
+
+
+def test_decode_action_cold_start_qty_scales_with_prior():
+    """Cold-start qty ratio scales 10x when base_demand_prior scales 10x (empty history)."""
+    K = 1
+    pids = ["P0000"]
+    store = _make_store(pids, capacity=50000.0, inventory={"P0000": 0}, pending={"P0000": 0})
+    base_prices = {"P0000": 18.0}
+    slot_perm = [0]
+    action_vec = np.zeros(2 * K, dtype=np.float32)
+
+    # Empty history → effective_rate == base_demand_prior
+    rate_low = {"P0000": 2.0}
+    rate_high = {"P0000": 20.0}
+
+    result_low = decode_action(
+        action_vec, slot_perm, store, K, base_prices,
+        effective_rate=rate_low,
+        target_centre_lead_times=15,
+        target_half_span_lead_times=15,
+        target_max_lead_times=30,
+    )
+    result_high = decode_action(
+        action_vec, slot_perm, store, K, base_prices,
+        effective_rate=rate_high,
+        target_centre_lead_times=15,
+        target_half_span_lead_times=15,
+        target_max_lead_times=30,
+    )
+    qty_low = result_low["order"]["P0000"]
+    qty_high = result_high["order"]["P0000"]
+    # At zero inventory+pending: qty = target_lt * rate; ratio should be 10x
+    # (integer truncation may cause small deviation; allow +-1)
+    assert abs(qty_high - qty_low * 10) <= 2, (
+        f"Expected 10x ratio: qty_low={qty_low}, qty_high={qty_high}"
+    )
+
+
+def test_decode_action_effective_rate_none_returns_zero_qty():
+    """effective_rate=None produces zero qty for every SKU (backward-compat branch)."""
+    K = 3
+    pids = [f"P{i:04d}" for i in range(K)]
+    store = _make_store(pids, capacity=5000.0, inventory={pid: 0 for pid in pids})
+    base_prices = {pid: 18.0 for pid in pids}
+    slot_perm = list(range(K))
+    action_vec = np.ones(2 * K, dtype=np.float32)  # max order_raw = +1
+
+    result = decode_action(
+        action_vec,
+        slot_perm,
+        store,
+        K,
+        base_prices,
+        effective_rate=None,
+    )
+    for pid in pids:
+        assert result["order"][pid] == 0, (
+            f"{pid}: expected 0 with effective_rate=None, got {result['order'][pid]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Slot-13 demand-units inventory feature (issue 05)
+# ---------------------------------------------------------------------------
+
+
+def test_observation_dim_increased_to_14_per_sku():
+    """observation_dim(K=5) == 5 * 14 + 4 == 74 (N_PER_SKU bumped from 13→14)."""
+    assert N_PER_SKU == 14, f"Expected N_PER_SKU=14, got {N_PER_SKU}"
+    assert observation_dim(5) == 74, f"Expected 74, got {observation_dim(5)}"
+    assert observation_dim(1) == 18
+    assert observation_dim(3) == 46
+
+
+def test_encoder_slot_13_matches_demand_units_formula():
+    """Slot 13 = clip(inv / (rate * max_lt), 0, 1).  Concrete: inv=100, rate=10, max_lt=30 → 1/3."""
+    K = 2
+    pids = ["P0000", "P0001"]
+    inventory = 100
+    effective_rate_val = 10.0
+    max_lt = 30.0
+    store = _make_store(
+        pids,
+        inventory={pid: inventory for pid in pids},
+        capacity=5000.0,
+    )
+    market = _make_market()
+    registry = _make_registry()
+    slot_perm = list(range(K))
+    eff_rate = {pid: effective_rate_val for pid in pids}
+
+    obs = encode_observation(
+        store, market, registry, step=0, slot_perm=slot_perm, K_active=K,
+        effective_rate=eff_rate, max_inventory_lt=max_lt,
+    )
+    expected = min(1.0, inventory / (effective_rate_val * max_lt))  # 100/300 ≈ 0.333
+    for slot_idx in range(K):
+        val = obs[slot_idx * N_PER_SKU + 13]
+        assert val == pytest.approx(expected, abs=1e-5), (
+            f"slot {slot_idx}: expected {expected}, got {val}"
+        )
+
+
+def test_encoder_slot_13_saturates_at_max_inventory_lt():
+    """With inv=10_000, rate=10, max_lt=30 → slot 13 == 1.0 (saturated)."""
+    K = 1
+    pids = ["P0000"]
+    store = _make_store(pids, inventory={"P0000": 10_000}, capacity=100_000.0)
+    market = _make_market()
+    registry = _make_registry()
+    slot_perm = [0]
+    eff_rate = {"P0000": 10.0}
+
+    obs = encode_observation(
+        store, market, registry, step=0, slot_perm=slot_perm, K_active=K,
+        effective_rate=eff_rate, max_inventory_lt=30.0,
+    )
+    assert obs[0 * N_PER_SKU + 13] == pytest.approx(1.0, abs=1e-6), (
+        f"Expected 1.0 (saturated), got {obs[0 * N_PER_SKU + 13]}"
+    )
+
+
+def test_encoder_slot_13_zero_when_effective_rate_is_none():
+    """When effective_rate=None, slot 13 is 0.0 for every active SKU."""
+    K = 3
+    pids = [f"P{i:04d}" for i in range(K)]
+    store = _make_store(pids, inventory={pid: 200 for pid in pids}, capacity=5000.0)
+    market = _make_market()
+    registry = _make_registry()
+    slot_perm = list(range(K))
+
+    obs = encode_observation(
+        store, market, registry, step=0, slot_perm=slot_perm, K_active=K,
+        effective_rate=None,
+    )
+    for slot_idx in range(K):
+        val = obs[slot_idx * N_PER_SKU + 13]
+        assert val == pytest.approx(0.0, abs=1e-9), (
+            f"slot {slot_idx}: expected 0.0 (effective_rate=None), got {val}"
+        )
+
+
+def test_encoder_slot_0_capacity_units_inventory_unchanged():
+    """Slot 0 still equals clip(inventory / per_sku_capacity, 0, 1) — regression guard."""
+    K = 3
+    pids = [f"P{i:04d}" for i in range(K)]
+    capacity = 300.0
+    inventory_val = 20
+    store = _make_store(
+        pids,
+        inventory={pid: inventory_val for pid in pids},
+        capacity=capacity,
+    )
+    market = _make_market()
+    registry = _make_registry()
+    slot_perm = list(range(K))
+    eff_rate = {pid: 5.0 for pid in pids}
+
+    obs = encode_observation(
+        store, market, registry, step=0, slot_perm=slot_perm, K_active=K,
+        effective_rate=eff_rate,
+    )
+    per_sku_cap = capacity / K  # 100.0
+    expected_slot0 = min(1.0, inventory_val / per_sku_cap)  # 20/100 = 0.2
+    for slot_idx in range(K):
+        val = obs[slot_idx * N_PER_SKU + 0]
+        assert val == pytest.approx(expected_slot0, abs=1e-5), (
+            f"slot {slot_idx} slot-0: expected {expected_slot0}, got {val}"
+        )
+
+
+def test_encoder_scale_invariance_of_slot_13():
+    """Same inventory/rate ratio at two different absolute capacities → same slot 13."""
+    # SKU has inventory=100, effective_rate=10 in both scenarios.
+    # Capacity differs (300 vs 10_000) — slot 13 should be identical because it uses demand units.
+    K = 1
+    pids = ["P0000"]
+    eff_rate = {"P0000": 10.0}
+    inventory_val = 100
+
+    for cap in [300.0, 10_000.0]:
+        store = _make_store(pids, inventory={"P0000": inventory_val}, capacity=cap)
+        market = _make_market()
+        registry = _make_registry()
+        obs = encode_observation(
+            store, market, registry, step=0, slot_perm=[0], K_active=K,
+            effective_rate=eff_rate, max_inventory_lt=30.0,
+        )
+        val = obs[0 * N_PER_SKU + 13]
+        expected = min(1.0, inventory_val / (10.0 * 30.0))  # 100/300 ≈ 0.333
+        assert val == pytest.approx(expected, abs=1e-5), (
+            f"capacity={cap}: expected {expected}, got {val}"
+        )

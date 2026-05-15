@@ -300,3 +300,44 @@ class TestPPOSmoke:
         assert torch.all(action > -1.0) and torch.all(action < 1.0), (
             "Actor actions not in (-1, 1)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Stale-checkpoint failure-mode test (issue 05 acceptance criterion)
+# ---------------------------------------------------------------------------
+
+
+def test_loading_stale_obs_shape_checkpoint_raises_shape_mismatch(tmp_path):
+    """Loading a pre-ADR-0007 checkpoint (N_PER_SKU=13) into a new Actor (N_PER_SKU=14) raises RuntimeError.
+
+    The error must mention a size mismatch, confirming that stale checkpoints
+    produce a loud, early failure rather than a silent wrong-shape load.
+    """
+    import tempfile
+    from src.rl.encoders import action_dim
+
+    K = 5
+    # Pre-ADR-0007 obs dim: K * 13 + 4
+    old_obs_dim = K * 13 + 4
+    # New obs dim: K * 14 + 4
+    new_obs_dim = K * 14 + 4
+    act_dim = action_dim(K)
+
+    # Build an Actor with the old (stale) observation shape and save its state_dict.
+    stale_actor = Actor(old_obs_dim, act_dim)
+    stale_ckpt = tmp_path / "stale_actor.pt"
+    torch.save(stale_actor.state_dict(), str(stale_ckpt))
+
+    # Build a new Actor with the widened observation shape.
+    new_actor = Actor(new_obs_dim, act_dim)
+
+    # Attempt to load the stale state_dict into the new Actor.
+    loaded_state_dict = torch.load(str(stale_ckpt), map_location="cpu")
+    with pytest.raises(RuntimeError) as exc_info:
+        new_actor.load_state_dict(loaded_state_dict)
+
+    error_msg = str(exc_info.value)
+    # The error must mention a size/shape mismatch (PyTorch uses "size mismatch").
+    assert "size mismatch" in error_msg.lower() or "shape" in error_msg.lower(), (
+        f"Expected 'size mismatch' or 'shape' in RuntimeError message, got: {error_msg}"
+    )

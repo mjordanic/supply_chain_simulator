@@ -26,17 +26,25 @@ from src.sim.distributions import Distribution
 
 
 def _default_capacity_dist() -> Distribution:
-    """Return ``Uniform(150, 400)`` — default per-episode capacity distribution."""
-    from src.sim.distributions import Uniform
+    """Return ``LogUniform(100, 10_000)`` — default per-episode capacity distribution.
 
-    return Uniform(150, 400)
+    Log-uniform over two orders of magnitude so a single trained policy covers
+    small-store (corner-shop) and flagship deployments.  See ADR 0007.
+    """
+    from src.sim.distributions import LogUniform
+
+    return LogUniform(100, 10_000)
 
 
 def _default_balance_dist() -> Distribution:
-    """Return ``Uniform(15000, 40000)`` — default per-episode balance distribution."""
-    from src.sim.distributions import Uniform
+    """Return ``LogUniform(10_000, 1_000_000)`` — default per-episode balance distribution.
 
-    return Uniform(15000, 40000)
+    Log-uniform over two orders of magnitude, matched to the capacity range so
+    the per-SKU budget scales consistently across store sizes.  See ADR 0007.
+    """
+    from src.sim.distributions import LogUniform
+
+    return LogUniform(10_000, 1_000_000)
 
 
 @dataclass(frozen=True)
@@ -156,6 +164,40 @@ class RLConfig:
 
     experiment_name: str = "rl_ppo"
     """Label used for the TensorBoard sub-directory and checkpoint prefix."""
+
+    # ------------------------------------------------------------------
+    # Order-up-to decoder parameters
+    # ------------------------------------------------------------------
+    target_centre_lead_times: int = 15
+    """Order-up-to target (in lead-times) when ``order_raw = 0``.
+
+    Matches ``OrderUpToPolicy.S / rate`` at the default policy kwargs
+    (``delivery_lag + safety_lead_ticks + cover_horizon_ticks = 3 + 2 + 10``).
+    """
+
+    target_half_span_lead_times: int = 15
+    """Half-width of the action range around the centre (in lead-times).
+
+    The raw action ``order_raw ∈ [-1, 1]`` maps to a target of
+    ``target_centre ± target_half_span`` lead-times before clipping.
+    """
+
+    target_max_lead_times: int = 30
+    """Upper clip for the order-up-to target (in lead-times).
+
+    Prevents pathologically large target requests on extreme positive actions.
+    """
+
+    # ------------------------------------------------------------------
+    # Encoder parameters
+    # ------------------------------------------------------------------
+    max_inventory_lt: float = 30.0
+    """Saturation point for the demand-units inventory feature (slot 13).
+
+    The slot-13 value is ``clip(inventory / effective_rate, 0, max_inventory_lt)
+    / max_inventory_lt``.  At ``max_inventory_lt`` lead-times of cover the
+    feature saturates at 1.0; above that it stays clamped.
+    """
 
     # ------------------------------------------------------------------
     # World
