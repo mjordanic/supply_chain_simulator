@@ -4,7 +4,7 @@
 - **PRD**: [PRD.md](./PRD.md)
 - **Integration branch**: `hyperparameter-optimization`
 - **Started**: 2026-05-16T02:06:50+02:00
-- **Last updated**: 2026-05-16T07:30:00+02:00
+- **Last updated**: 2026-05-16T08:10:00+02:00
 - **Parallelism cap**: 1 (in-place sequential)
 - **Preflight assumptions**:
   - Untracked `.claude/settings.local.json` left as-is (harness-owned settings file, not feature work).
@@ -21,7 +21,7 @@
 | 05-confirm-top-k-and-holdout | `confirm_top_k()` + `holdout.parquet` / `holdout_summary.json` | 5 | committed | 3a99d17362a21fc16909d9604f9064e17b51c512 | 3a99d17362a21fc16909d9604f9064e17b51c512 | 2026-05-16T05:10:00+02:00 | 2026-05-16T05:30:00+02:00 | In-place (cap=1). 10 new tests pass; 69 total tuning tests green. confirm_top_k exported from src.tuning. Issue file moved to done/. |
 | 06-cli-entry-point | CLI entry point `python -m src.tuning.study` | 6 | committed | 7c302a2d046aa5fa00dea6a1c0a2a72a7e6a9466 | 7c302a2d046aa5fa00dea6a1c0a2a72a7e6a9466 | 2026-05-16T06:00:00+02:00 | 2026-05-16T06:30:00+02:00 | In-place (cap=1). __main__ block added to study.py; 7 new CLI tests pass (76 total tuning tests green). Issue file moved to done/. |
 | 07-tune-textbook-policy-notebook | Notebook `notebooks/08-tune_textbook_policy.ipynb` | 7 | committed | 9906864c152bd3538dfa2f9bc75248b143d5d3ff | 9906864c152bd3538dfa2f9bc75248b143d5d3ff | 2026-05-16T07:00:00+02:00 | 2026-05-16T07:30:00+02:00 | In-place (cap=1). 10-section notebook + scikit-learn dep added. Full 150-trial study run locally; graceful fallback verified. Issue file moved to done/. |
-| 08-context-md-update-for-tuning | `CONTEXT.md` updates for the tuning tool | 8 | pending | — | — | — | — | — |
+| 08-context-md-update-for-tuning | `CONTEXT.md` updates for the tuning tool | 8 | committed | — | — | 2026-05-16T08:00:00+02:00 | 2026-05-16T08:10:00+02:00 | In-place (cap=1). CONTEXT.md already contained all three required edits (landed in 7666ebc during PRD-drafting). 76 tuning tests green. Issue file moved to done/. |
 
 ## Dependency graph
 
@@ -62,6 +62,8 @@ Reduced (no redundancy): linear chain 01 → 02 → 03 → 04 → 05 → 06 → 
 - 2026-05-16T06:30:00+02:00 — Wave 6 complete. 06-cli-entry-point committed (in-place). __main__ block + _cli_main() added to src/tuning/study.py; all flags work including --skip-holdout and --episode-length. 7 new CLI tests pass (76 total tuning tests green). Issue file moved to done/.
 - 2026-05-16T07:00:00+02:00 — Wave 7 started. Dispatching 07-tune-textbook-policy-notebook in-place.
 - 2026-05-16T07:30:00+02:00 — Wave 7 complete. 07-tune-textbook-policy-notebook committed at 9906864 (in-place). notebooks/08-tune_textbook_policy.ipynb created with 10 sections; scikit-learn added for fANOVA importances; full 150-trial study run locally; graceful fallback verified with and without artifacts. Issue file moved to done/.
+- 2026-05-16T08:00:00+02:00 — Wave 8 started. Dispatching 08-context-md-update-for-tuning in-place.
+- 2026-05-16T08:10:00+02:00 — Wave 8 complete. 08-context-md-update-for-tuning committed (in-place). CONTEXT.md already fully updated in 7666ebc (PRD-drafting commit) with all three required edits: Policy tuning study glossary entry, CRN-paired eval cross-reference, and ADR 0009 Decisions row. No further edits needed. 76 tuning tests green. Issue file moved to done/.
 
 ## Outstanding follow-ups
 
