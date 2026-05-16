@@ -80,11 +80,24 @@ Flat typed dataclass holding a complete experiment: `catalog` (`list[Ware]`), `m
 
 The canonical World→Scenario derivation is `Scenario.from_world(world, *, disruption, item_lifecycle, stores, n_steps, start_date, world_seed)` — it copies `catalog` and `market` from the `World` artifact and fills the remaining fields from the caller. The six DataFrame inspection methods are the canonical way to examine a scenario before running it: `catalog_df()`, `stores_df()`, `market_df()`, `disruption_df()`, `lifecycle_df()`, `summary_df()`. `stores_df()` exposes `policy_class` populated from live `Policy` instances; when the scenario is reconstructed from JSON via `Scenario.from_json()` (historical-run audit path), `policy_class` is `None` by design — policies are not serialised. Use `load_scenario_from_path(path)` to obtain a live `Scenario` with policies attached from a scenario script. See `notebooks/03-inspect_scenario.ipynb` for a worked walkthrough of all six views.
 
+The canonical attach pattern for spec-based callers that hold `policy=None` on `StoreInstance` is `build_world(scenario, policy_overrides=[my_policy, ...])` — see the **Simulation** entry below.
+
 **Distribution** (`src/sim/distributions.py`)
 Abstract base class with one method, `sample(rng) -> Any`, and five concrete implementations: `Constant(value)`, `Uniform(lo, hi)`, `Normal(mean, std)`, `Choice(options)`, `LogUniform(lo, hi)`. `LogUniform` draws from a log-uniform distribution (uniform in log-space; requires `lo > 0` and `hi > lo`) and is used for domain-randomisation parameters that span orders of magnitude, such as per-episode capacity (`LogUniform(100, 10_000)`) and opening balance (`LogUniform(10_000, 1_000_000)`). Replaces the lambda-as-config idiom from the deleted system; instances are typed, comparable, and JSON-serialisable. Stochastic fields on `MarketParams`, `DisruptionParams`, `StoreTemplate`, etc. accept either a scalar or a `Distribution` and are sampled against an injected RNG (`world_rng` for market/events, `init_rng` for store construction).
 
+**Simulation** (`src/sim/runner.py`)
+Mutable bundle returned by `build_world(scenario, *, policy_overrides=None)`. Holds `(scenario, world_rng, item_registry, market, event_engine, stores)` and exposes a two-phase tick API:
+
+- `tick_world() → list[WorldEvent]` — phase 1: advances market, events, and item lifecycle; returns active events.
+- `tick_decide_and_settle(active_events) → TickResult` — phase 2: per-store observe → decide → dispatch orders → sample demand and settle accounting. RL action-injection happens in the seam: encode obs from post-`tick_world` state, run actor, decode, set pending action on `RLPolicy`, then call this method.
+- `tick() → TickResult` — convenience composing both phases; equivalent to `tick_decide_and_settle(tick_world())`.
+
+`TickResult` is a frozen dataclass `(actions: dict[int, dict], demand_traces: dict[int, dict], active_events: list[WorldEvent])`.
+
+`build_world(scenario, *, policy_overrides=None)` is the canonical attach pattern for spec-based callers (tuning, RL eval, RL env) whose specs carry `policy=None`. When `policy_overrides` is supplied, store `i` is built with `policy_overrides[i]`; override wins when `StoreInstance.policy` is also set. Scenario-authoring callers leave `policy_overrides=None`.
+
 **Runner** (`src/sim/runner.py`)
-Owns the simulation loop. `Runner(scenario).run() → dict` builds all subsystems from a `Scenario` and runs the observe → decide → advance → log loop. Maintains the three-stream RNG split (`world_rng` from `Scenario.world_seed`; one `policy_rng` per `Policy` instance from its `policy_seed`; one `init_rng` per `StoreInstance` from its `init_seed`) that makes Common Random Numbers comparison correct.
+Owns the simulation loop. `Runner(scenario).run() → dict` builds all subsystems (now via `build_world`) and runs the observe → decide → advance → log loop. Maintains the three-stream RNG split (`world_rng` from `Scenario.world_seed`; one `policy_rng` per `Policy` instance from its `policy_seed`; one `init_rng` per `StoreInstance` from its `init_seed`) that makes Common Random Numbers comparison correct. The public API is unchanged; the body now composes `build_world` + `Simulation.tick()` per step plus the existing log-collection helpers.
 
 **DataExporter** (`src/sim/data_exporter.py`)
 Consumes a `Scenario` and a completed run log and writes all outputs: parquet time-series, parquet static product/store tables, JSON config snapshot and run log, and a regional supply/demand PNG. Public methods: `export_all(output_folder)` plus per-artifact `save_scenario_json`, `save_run_log_json`, `save_products_parquet`, `save_stores_parquet`, `save_timeseries_parquet`, `save_overview_plot`. Each method creates its own subdirectory under `output_folder` (`config/`, `data/`, `reports/`).

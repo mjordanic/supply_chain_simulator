@@ -40,19 +40,225 @@ modulo the runner-internal skeleton replaced by the typed modules):
 A step-0 baseline snapshot is appended *before* the loop runs so every
 metric series in the run log has length ``n_steps + 1`` (initial state
 + n post-tick states).
+
+New sim surface (issue 03):
+
+- ``build_world(scenario, *, policy_overrides=None) -> Simulation`` —
+  module-level free function that constructs the mutable bundle.
+- ``Simulation`` — mutable bundle holding ``(scenario, world_rng,
+  item_registry, market, event_engine, stores)``.
+- ``Simulation.tick_world() -> list[WorldEvent]`` — phase 1 (world only).
+- ``Simulation.tick_decide_and_settle() -> TickResult`` — phase 2
+  (per-store observe/decide/dispatch/demand).
+- ``Simulation.tick() -> TickResult`` — convenience composing both phases.
+- ``TickResult`` — frozen dataclass with actions, demand_traces,
+  active_events.
+
+``Runner`` keeps its unchanged public API (``Runner(scenario).run() ->
+dict``); its body now delegates to ``build_world`` + ``Simulation.tick()``
++ the existing log-collection helpers.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from random import Random
 from typing import Any
 
-from src.sim.event_engine import EventEngine
+from src.sim.event_engine import EventEngine, WorldEvent
 from src.sim.item_registry import ItemRegistry
 from src.sim.market import Market
+from src.sim.policy import Policy
 from src.sim.scenario import Scenario
 from src.sim.store import Store
 
+
+# ---------------------------------------------------------------------------
+# TickResult — frozen data carrier for one simulation tick
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TickResult:
+    """Data produced by one call to ``Simulation.tick()`` or phase 2 only.
+
+    ``actions``       — ``{store_idx: {"order": {...}, "price": {...}, ...}}``.
+    ``demand_traces`` — ``{store_idx: {pid: realised_demand_int}}``.
+    ``active_events`` — snapshot of events active *after* ``tick_world``
+                        fired (carry-through from phase 1; set to ``[]``
+                        when constructed from phase 2 alone).
+    """
+
+    actions: dict[int, dict[str, Any]]
+    demand_traces: dict[int, dict[str, int]]
+    active_events: list[WorldEvent]
+
+
+# ---------------------------------------------------------------------------
+# Simulation — mutable world bundle
+# ---------------------------------------------------------------------------
+
+class Simulation:
+    """Mutable bundle returned by ``build_world``.
+
+    Attributes
+    ----------
+    scenario      — the frozen ``Scenario`` used to build this bundle.
+    world_rng     — shared world RNG (all market/event/lifecycle draws).
+    item_registry — catalog + per-item lifecycle state.
+    market        — regional demand/supply environment.
+    event_engine  — disruption events + order-delivery callbacks.
+    stores        — one ``Store`` per ``StoreInstance``.
+    """
+
+    def __init__(
+        self,
+        scenario: Scenario,
+        world_rng: Random,
+        item_registry: ItemRegistry,
+        market: Market,
+        event_engine: EventEngine,
+        stores: list[Store],
+    ) -> None:
+        self.scenario = scenario
+        self.world_rng = world_rng
+        self.item_registry = item_registry
+        self.market = market
+        self.event_engine = event_engine
+        self.stores = stores
+
+    # ------------------------------------------------------------------
+    # Two-phase API
+    # ------------------------------------------------------------------
+
+    def tick_world(self) -> list[WorldEvent]:
+        """Phase 1: advance the world (market, events, lifecycle).
+
+        Returns the list of ``WorldEvent`` objects active after this tick
+        so callers can log them or inject actions before phase 2.
+        """
+        self.market.tick()
+        active_events = self.event_engine.tick(self.market)
+        self.item_registry.tick()
+        return active_events
+
+    def tick_decide_and_settle(
+        self,
+        active_events: list[WorldEvent] | None = None,
+    ) -> TickResult:
+        """Phase 2: per-store observe → decide → dispatch → settle demand.
+
+        ``active_events`` is forwarded into the returned ``TickResult``
+        unchanged.  Callers that run both phases independently should pass
+        the return value of ``tick_world()`` here; callers using the
+        convenience ``tick()`` wrapper can ignore this parameter.
+
+        Demand-sampling order: ``store.inventory`` iteration order (catalog
+        order via the ``__init__`` registration loop), matching ADR 0003.
+        """
+        if active_events is None:
+            active_events = []
+
+        actions: dict[int, dict[str, Any]] = {}
+        for i, store in enumerate(self.stores):
+            obs = store.observe(
+                self.market.current_step(),
+                self.item_registry,
+            )
+            actions[i] = store.decide(obs)
+
+        for i, store in enumerate(self.stores):
+            _dispatch_orders(store, actions[i], self.market, self.event_engine)
+
+        demand_traces: dict[int, dict[str, int]] = {}
+        for i, store in enumerate(self.stores):
+            demand_traces[i] = _process_demand(store, actions[i], self.market)
+
+        return TickResult(
+            actions=actions,
+            demand_traces=demand_traces,
+            active_events=active_events,
+        )
+
+    def tick(self) -> TickResult:
+        """Convenience: run both phases and return a combined ``TickResult``.
+
+        Equivalent to ``tick_decide_and_settle(tick_world())``.
+        """
+        active_events = self.tick_world()
+        return self.tick_decide_and_settle(active_events)
+
+
+# ---------------------------------------------------------------------------
+# build_world — module-level factory
+# ---------------------------------------------------------------------------
+
+def build_world(
+    scenario: Scenario,
+    *,
+    policy_overrides: list[Policy] | None = None,
+) -> Simulation:
+    """Construct and return a ``Simulation`` bundle from ``scenario``.
+
+    ``policy_overrides``, when supplied, must have the same length as
+    ``scenario.stores``.  Store ``i`` is built with
+    ``policy_overrides[i]`` in place of ``StoreInstance.policy``.
+    Override wins when both are set — the canonical pattern for
+    spec-based callers (tuning, RL eval, RL env) whose specs carry
+    ``policy=None``.  Scenario-authoring callers (``main.py``,
+    hand-authored scenarios) leave ``policy_overrides=None`` and let
+    ``StoreInstance.policy`` flow through.
+    """
+    if policy_overrides is not None and len(policy_overrides) != len(scenario.stores):
+        raise ValueError(
+            f"policy_overrides has {len(policy_overrides)} entries but "
+            f"scenario has {len(scenario.stores)} stores"
+        )
+
+    world_rng: Random = Random(scenario.world_seed)
+    # Construction order: ItemRegistry → Market → EventEngine (matches Runner).
+    item_registry = ItemRegistry(
+        scenario.item_lifecycle, scenario.catalog, world_rng
+    )
+    market = Market(
+        scenario.market,
+        world_rng,
+        scenario.start_date,
+        registry=item_registry,
+    )
+    event_engine = EventEngine(scenario.disruption, world_rng)
+
+    stores: list[Store] = []
+    for i, s in enumerate(scenario.stores):
+        policy = (
+            policy_overrides[i]
+            if policy_overrides is not None
+            else s.policy
+        )
+        stores.append(
+            Store(
+                s.template,
+                s.init_seed,
+                policy,
+                scenario.catalog,
+                freshness_alpha=item_registry.default_freshness_alpha,
+                freshness_decay=item_registry.default_freshness_decay,
+                item_registry=item_registry,
+            )
+        )
+
+    return Simulation(
+        scenario=scenario,
+        world_rng=world_rng,
+        item_registry=item_registry,
+        market=market,
+        event_engine=event_engine,
+        stores=stores,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Runner — unchanged public API; body delegates to build_world + Simulation
+# ---------------------------------------------------------------------------
 
 class Runner:
     """Drive a ``Scenario`` to a full ``RunLog``.
@@ -60,84 +266,42 @@ class Runner:
     Public entry points: ``Runner(scenario)`` builds the world, then
     ``run()`` returns the log. The ``stores`` attribute is exposed so
     determinism tests can read step-0 state pre-run.
+
+    Implementation note: the body of ``__init__`` now delegates to
+    ``build_world``; ``run()`` uses ``Simulation.tick()`` per step.
+    The public API and all log contents are unchanged.
     """
 
     def __init__(self, scenario: Scenario) -> None:
-        # Source-of-truth artifact; held for later metadata queries.
         self.scenario = scenario
-        # Single shared world RNG seeded from the scenario seed. Every
-        # world-side stochastic draw goes through this stream.
-        self.world_rng: Random = Random(scenario.world_seed)
-        # Construction order matters for RNG bookkeeping. ItemRegistry first
-        # so its lifecycle-distribution draws (if any) are stable; Market
-        # carries the registry so ``sample_demand`` works without
-        # rebinding; EventEngine last.
-        self.item_registry = ItemRegistry(
-            scenario.item_lifecycle, scenario.catalog, self.world_rng
-        )
-        self.market = Market(
-            scenario.market,
-            self.world_rng,
-            scenario.start_date,
-            registry=self.item_registry,
-        )
-        self.event_engine = EventEngine(scenario.disruption, self.world_rng)
-        # One ``Store`` per ``StoreInstance``. Each receives its own
-        # ``init_seed`` so the per-store init RNG stays independent of
-        # the world stream.
-        self.stores: list[Store] = [
-            Store(
-                s.template,
-                s.init_seed,
-                s.policy,
-                scenario.catalog,
-                freshness_alpha=self.item_registry.default_freshness_alpha,
-                freshness_decay=self.item_registry.default_freshness_decay,
-                item_registry=self.item_registry,
-            )
-            for s in scenario.stores
-        ]
+        # Delegate world construction to the shared factory.
+        _sim = build_world(scenario)
+        self.world_rng = _sim.world_rng
+        self.item_registry = _sim.item_registry
+        self.market = _sim.market
+        self.event_engine = _sim.event_engine
+        self.stores = _sim.stores
+        # Keep a reference to the Simulation bundle for use in run().
+        self._sim = _sim
 
     def run(self) -> dict[str, Any]:
         """Execute the full simulation and return the accumulated run log."""
-        # Pre-allocate the nested run-log skeleton so the per-step append
-        # paths can stay dict-key-lookup-only (no defaultdicts).
         run_log = self._init_run_log()
 
-        # Step-0 baseline snapshot: pre-tick state, no actions yet. Every
-        # metric series therefore ends up with length n_steps + 1.
-        self._log_state(run_log, actions={}, demand_traces=None)
+        # Step-0 baseline snapshot: pre-tick state, no actions yet.
+        self._log_state(run_log, actions={}, demand_traces=None, active_events=[])
 
         for _ in range(self.scenario.n_steps):
-            # World ticks first; policy.decide observes the post-tick state.
-            self.market.tick()
-            active_events = self.event_engine.tick(self.market) #applies deliveries and disruption events to the market
-            self.item_registry.tick()
+            result = self._sim.tick()
             run_log["global"]["events"]["occurrences"].append(
-                self._event_payloads(active_events)
+                _event_payloads(result.active_events)
             )
-
-            # Phase 1: gather one action per store.
-            actions: dict[int, dict[str, Any]] = {}
-            for i, store in enumerate(self.stores):
-                obs = store.observe(
-                    self.market.current_step(),
-                    self.item_registry,
-                )
-                actions[i] = store.decide(obs)
-
-            # Phase 2: dispatch newly placed orders as scheduled callbacks.
-            for i, store in enumerate(self.stores):
-                self._dispatch_orders(store, actions[i])
-
-            # Phase 3: realise demand for every (store, product) and
-            # settle the accounting. ``demand_traces`` is logged for
-            # observability — useful when debugging CRN drift.
-            demand_traces: dict[int, dict[str, int]] = {}
-            for i, store in enumerate(self.stores):
-                demand_traces[i] = self._process_demand(store, actions[i])
-
-            self._log_state(run_log, actions=actions, demand_traces=demand_traces)
+            self._log_state(
+                run_log,
+                actions=result.actions,
+                demand_traces=result.demand_traces,
+                active_events=result.active_events,
+            )
 
         return run_log
 
@@ -154,12 +318,6 @@ class Runner:
                 "products": {
                     pid: {
                         "lifecycle_stage": [],
-                        # Static per-product values resolved once at
-                        # construction (issues 04, 08). DataExporter
-                        # reads these to populate the products parquet
-                        # so downstream analysis can reproduce demand
-                        # math (and verify the budgeted stock weights)
-                        # without re-resolving Ware overrides.
                         "freshness_alpha": item.freshness_alpha,
                         "freshness_decay": item.freshness_decay,
                         "init_stock_share": item.init_stock_share,
@@ -169,8 +327,6 @@ class Runner:
             },
             "stores": {},
         }
-        # Per-store sub-tree. ``step0_*`` fields capture the pre-run
-        # baseline so determinism tests can compare without re-running.
         for i, store in enumerate(self.stores):
             run_log["stores"][i] = {
                 "balance": [],
@@ -199,103 +355,14 @@ class Runner:
             }
         return run_log
 
-    @staticmethod
-    def _event_payloads(events) -> list[dict[str, Any]]:
-        """Flatten the active ``WorldEvent`` list for JSON-friendly logging.
-
-        Records every event currently impacting the market this tick — not
-        only freshly-spawned ones — so the occurrences series captures
-        the full active set (overlapping multi-tick events included).
-        ``duration`` is the post-tick remaining lifetime: ``0`` means
-        "expired this tick after applying".
-        """
-        return [
-            {
-                "type": event.event_type,
-                "severity": event.severity,
-                # ``list(...)`` so we don't smuggle a tuple/mutable ref into the log.
-                "regions": list(event.affected_regions),
-                "duration": event.duration,
-            }
-            for event in events
-        ]
-
-    def _dispatch_orders(self, store: Store, action: dict[str, Any]) -> None:
-        """Schedule a delivery callback for every positive-qty order.
-
-        Lead-time math: ``adjusted_lead_time = int(base_lead_time / supply_factor)``.
-        ``market_supply`` is already on the 0–2 scale, so it's used
-        directly as the factor, floored at ``params.supply_factor_min`` to
-        avoid divide-by-zero.
-        """
-        # Pull the order plan out of the action dict. Empty ⇒ early exit.
-        orders = action.get("order", {})
-        if not orders:
-            return
-        current_step = self.market.current_step()
-        # Region-level supply driving the lead-time adjustment.
-        # ``market_supply`` is already on the 0–2  scale and used
-        # directly as a factor. Floored at ``supply_factor_min`` to avoid
-        # a divide-by-zero.
-        supply = self.market.market_state[store.region]["market_supply"]
-        supply_factor = max(self.market.params.supply_factor_min, supply)
-        for pid, qty in orders.items():
-            if qty <= 0:
-                continue
-            # Base lead time per product (per-store copy).
-            base_lead = store.delivery_lags[pid]
-            # Lower supply ⇒ longer effective lead time.
-            adjusted_lead = int(base_lead / supply_factor)
-            arrival_time = current_step + adjusted_lead
-            self.event_engine.schedule(
-                event_type="order_arrival",
-                delay=arrival_time,
-                callback=_make_delivery_callback(store, pid, qty),
-            )
-
-    def _process_demand(
-        self, store: Store, action: dict[str, Any]
-    ) -> dict[str, int]:
-        """Sample realised demand and settle accounting for one store.
-
-        Iteration order is ``store.inventory`` (catalog order via the
-        ``__init__`` registration loop), matching the verbatim port of
-        ``SimulationRunner._process_demand``. Every product consumes one
-        ``Market.sample_demand`` call — and therefore one ``world_rng``
-        draw — regardless of whether it is in the active assortment.
-        """
-        # Effective per-product prices for this tick (fall back to the
-        # store's current price if the policy didn't override).
-        prices = action.get("price", {})
-        orders = action.get("order", {})
-        # Demand trace returned for logging.
-        traces: dict[str, int] = {}
-        current_step = self.market.current_step()
-        # ``list(...)`` snapshots the key set — the loop body mutates
-        # store state but never the inventory key set, so this is purely
-        # defensive against accidental future changes.
-        for pid in list(store.inventory.keys()):
-            price = prices.get(pid, store.prices[pid])
-            order_qty = orders.get(pid, 0)
-            # One ``world_rng`` draw per iteration — load-bearing for CRN.
-            demand = self.market.sample_demand(
-                pid, store, price, current_step=current_step
-            )
-            store.settle(pid, demand=demand, price=price, order_qty=order_qty)
-            # Reflect the realised effective price back into the store
-            # so subsequent observations see the post-action state.
-            store.prices[pid] = price
-            traces[pid] = demand
-        return traces
-
     def _log_state(
         self,
         run_log: dict[str, Any],
         actions: dict[int, dict[str, Any]],
         demand_traces: dict[int, dict[str, int]] | None,
+        active_events: list[WorldEvent],
     ) -> None:
         """Append one timestep of state to ``run_log``."""
-        # Time axis — appended once per tick.
         run_log["global"]["time"]["simulation_step"].append(
             self.market.current_step()
         )
@@ -303,20 +370,16 @@ class Runner:
             self.market.current_date()
         )
 
-        # Per-region demand/supply snapshot.
         for region in self.market.regions:
             state = self.market.market_state[region]
             run_log["global"]["market_supply"][region].append(state["market_supply"])
             run_log["global"]["market_demand"][region].append(state["market_demand"])
 
-        # Per-product lifecycle snapshot.
         for pid, item in self.item_registry.items.items():
             run_log["global"]["products"][pid]["lifecycle_stage"].append(
                 item.lifecycle_stage
             )
 
-        # Per-store metrics — balance, active count, demand trace,
-        # plus a long per-product accounting tail.
         for i, store in enumerate(self.stores):
             store_log = run_log["stores"][i]
             action = actions.get(i, {})
@@ -326,7 +389,6 @@ class Runner:
             store_log["balance"].append(store.balance)
             store_log["active_product_count"].append(len(store.active_items))
             if demand_traces is None:
-                # Step-0 baseline ⇒ no demand drawn yet.
                 store_log["demand_trace"].append({})
             else:
                 store_log["demand_trace"].append(dict(demand_traces.get(i, {})))
@@ -347,21 +409,78 @@ class Runner:
                 product_log["revenue"].append(store.revenue.get(pid, 0.0))
                 product_log["total_cost"].append(store.total_cost.get(pid, 0.0))
                 product_log["holding_cost"].append(store.holding_cost.get(pid, 0.0))
-                # Profit recomputed at log time so a future change to
-                # ``Store.settle`` doesn't quietly desync this column.
                 product_log["profit"].append(
                     store.revenue.get(pid, 0.0) - store.total_cost.get(pid, 0.0)
                 )
 
 
-def _make_delivery_callback(store: Store, pid: str, qty: int):
-    """Bind ``(store, pid, qty)`` into a zero-arg callback for ``EventEngine``.
+# ---------------------------------------------------------------------------
+# Module-level helpers (shared by Runner and Simulation)
+# ---------------------------------------------------------------------------
 
-    A separate factory keeps each callback's closure independent — using a
-    naked lambda inside a loop would capture loop variables by reference
-    and every callback would end up calling ``store.deliver`` with the
-    *last* iteration's pid and qty.
-    """
+def _event_payloads(events: list[WorldEvent]) -> list[dict[str, Any]]:
+    """Flatten the active ``WorldEvent`` list for JSON-friendly logging."""
+    return [
+        {
+            "type": event.event_type,
+            "severity": event.severity,
+            "regions": list(event.affected_regions),
+            "duration": event.duration,
+        }
+        for event in events
+    ]
+
+
+def _dispatch_orders(
+    store: Store,
+    action: dict[str, Any],
+    market: Market,
+    event_engine: EventEngine,
+) -> None:
+    """Schedule a delivery callback for every positive-qty order."""
+    orders = action.get("order", {})
+    if not orders:
+        return
+    current_step = market.current_step()
+    supply = market.market_state[store.region]["market_supply"]
+    supply_factor = max(market.params.supply_factor_min, supply)
+    for pid, qty in orders.items():
+        if qty <= 0:
+            continue
+        base_lead = store.delivery_lags[pid]
+        adjusted_lead = int(base_lead / supply_factor)
+        arrival_time = current_step + adjusted_lead
+        event_engine.schedule(
+            event_type="order_arrival",
+            delay=arrival_time,
+            callback=_make_delivery_callback(store, pid, qty),
+        )
+
+
+def _process_demand(
+    store: Store,
+    action: dict[str, Any],
+    market: Market,
+) -> dict[str, int]:
+    """Sample realised demand and settle accounting for one store."""
+    prices = action.get("price", {})
+    orders = action.get("order", {})
+    traces: dict[str, int] = {}
+    current_step = market.current_step()
+    for pid in list(store.inventory.keys()):
+        price = prices.get(pid, store.prices[pid])
+        order_qty = orders.get(pid, 0)
+        demand = market.sample_demand(
+            pid, store, price, current_step=current_step
+        )
+        store.settle(pid, demand=demand, price=price, order_qty=order_qty)
+        store.prices[pid] = price
+        traces[pid] = demand
+    return traces
+
+
+def _make_delivery_callback(store: Store, pid: str, qty: int):
+    """Bind ``(store, pid, qty)`` into a zero-arg callback for ``EventEngine``."""
 
     def _callback() -> None:
         store.deliver(pid, qty)
@@ -369,4 +488,4 @@ def _make_delivery_callback(store: Store, pid: str, qty: int):
     return _callback
 
 
-__all__ = ["Runner"]
+__all__ = ["Runner", "Simulation", "TickResult", "build_world"]
