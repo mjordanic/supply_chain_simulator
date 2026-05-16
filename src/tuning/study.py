@@ -9,6 +9,12 @@ list (CRN at the trial level), runs ``n_trials`` Optuna trials calling
   - ``per_seed.parquet`` — long format, one row per (trial, seed).
   - ``study.json``       — self-describing study metadata.
 
+``confirm_top_k`` re-evaluates the top-K search trials plus the published
+default on a disjoint held-out seed set, and writes:
+
+  - ``holdout.parquet``        — one row per (label, seed).
+  - ``holdout_summary.json``   — bootstrap confidence intervals + headline uplift.
+
 CRN guarantee
 -------------
 The same ``eval_specs`` list is built once before ``study.optimize`` is called
@@ -16,13 +22,14 @@ and is closed over by the trial objective.  Every trial therefore evaluates on
 bit-identical world trajectories for each seed; differences in aggregate KPIs
 between trials are attributable to the policy kwargs alone.
 
+The holdout specs are built once in ``confirm_top_k`` and reused for all K+1
+policy evaluations (same CRN paired comparison on the held-out seeds).
+
 Artifact portability
 --------------------
 The Parquet files are written with ``pandas``.  They load cleanly with only
 ``pandas`` + ``pyarrow`` — no Optuna import required at read time.  The JSON
 file is written with the standard library ``json`` module.
-
-``confirm_top_k`` is added in issue 05.
 """
 
 from __future__ import annotations
@@ -402,4 +409,277 @@ def run_study(
     return study
 
 
-__all__ = ["run_study"]
+# ---------------------------------------------------------------------------
+# Public: confirm_top_k
+# ---------------------------------------------------------------------------
+
+
+_HOLDOUT_PARQUET_COLUMNS = [
+    "label",
+    "trial_id",
+    "seed",
+    "capacity",
+    "initial_cash",
+    "net_profit",
+    "normalised_return",
+    "service_level",
+    "stockout_rate",
+    "inventory_turnover",
+    "revenue",
+    "mean_price_pct_of_msrp",
+]
+
+_HOLDOUT_SUMMARY_FIELDS = [
+    "tuned_best_label",
+    "tuned_best_mean_net_profit",
+    "tuned_best_ci_low",
+    "tuned_best_ci_high",
+    "default_mean_net_profit",
+    "default_ci_low",
+    "default_ci_high",
+    "headline_uplift",
+    "headline_uplift_ci_low",
+    "headline_uplift_ci_high",
+    "n_holdout_seeds",
+]
+
+
+def _bootstrap_ci(
+    values: list[float],
+    n_resamples: int = 1000,
+    ci: float = 0.95,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """Return (ci_low, ci_high) via percentile bootstrap.
+
+    Parameters
+    ----------
+    values:
+        Per-seed numeric values.
+    n_resamples:
+        Number of bootstrap resamples.
+    ci:
+        Coverage probability (default 0.95 → 95% CI).
+    seed:
+        RNG seed for reproducibility.
+    """
+    import random
+
+    rng = random.Random(seed)
+    n = len(values)
+    if n == 0:
+        return (float("nan"), float("nan"))
+
+    boot_means: list[float] = []
+    for _ in range(n_resamples):
+        sample = [rng.choice(values) for _ in range(n)]
+        boot_means.append(sum(sample) / n)
+
+    boot_means.sort()
+    alpha = 1.0 - ci
+    lo_idx = int(alpha / 2 * n_resamples)
+    hi_idx = int((1.0 - alpha / 2) * n_resamples) - 1
+    hi_idx = min(hi_idx, n_resamples - 1)
+    return (boot_means[lo_idx], boot_means[hi_idx])
+
+
+def confirm_top_k(
+    study: "optuna.Study",
+    policy_space: Callable[["optuna.Trial"], Policy],
+    *,
+    catalog: list[Ware],
+    base_template: StoreTemplate,
+    rl_config: RLConfig,
+    tuning_config: TuningConfig,
+    study_dir: str,
+) -> dict[str, Any]:
+    """Re-evaluate the top-K search trials plus the published default on held-out seeds.
+
+    Selects the top ``tuning_config.top_k_for_holdout`` completed trials by
+    ``mean_normalised_return`` (descending), re-instantiates each policy via
+    ``optuna.trial.FixedTrial(trial.params)`` passed to ``policy_space``, and
+    evaluates them on ``tuning_config.n_holdout_seeds`` CRN seeds starting at
+    ``tuning_config.holdout_seed_offset`` — disjoint from the search seeds.
+
+    The published default (``OrderUpToPolicy()`` with no kwargs) is evaluated
+    on the *same* holdout seeds for CRN paired comparison.
+
+    Writes two artifact files:
+
+    - ``holdout.parquet``       — one row per (label, seed).
+      Columns: same as ``per_seed.parquet`` + ``label``.
+      Row count: ``(top_k_for_holdout + 1) × n_holdout_seeds``.
+    - ``holdout_summary.json``  — bootstrap CIs + headline uplift.
+
+    Parameters
+    ----------
+    study:
+        The completed ``optuna.Study`` returned by ``run_study``.
+    policy_space:
+        The same trial-callback factory used to run the original study.
+        Re-invoked via ``FixedTrial`` to reconstruct the K best policies.
+    catalog, base_template, rl_config, tuning_config:
+        Same arguments as ``run_study``.
+    study_dir:
+        Absolute path to the study artifact directory (typically
+        ``{output_dir}/{study_name}/``).  Artefacts are written here.
+
+    Returns
+    -------
+    dict
+        The ``holdout_summary.json`` payload (all documented fields).
+    """
+    import pandas as pd
+    from src.sim.policy import OrderUpToPolicy
+
+    # ------------------------------------------------------------------
+    # 1. Build holdout eval specs (disjoint from search seeds).
+    # ------------------------------------------------------------------
+    import dataclasses as _dc
+
+    rl_config_with_length = _dc.replace(
+        rl_config,
+        episode_length=tuning_config.episode_length,
+    )
+    holdout_specs: list[EpisodeSpec] = []
+    from src.rl.episode_sampler import sample_episode as _sample_episode
+    for i in range(tuning_config.n_holdout_seeds):
+        seed = tuning_config.holdout_seed_offset + i
+        spec = _sample_episode(
+            catalog=catalog,
+            base_template=base_template,
+            config=rl_config_with_length,
+            episode_seed=seed,
+        )
+        holdout_specs.append(spec)
+
+    # ------------------------------------------------------------------
+    # 2. Select top-K completed trials by mean_normalised_return.
+    # ------------------------------------------------------------------
+    completed = [
+        t for t in study.trials
+        if t.value is not None
+    ]
+    if not completed:
+        raise ValueError("confirm_top_k: no completed trials found in study.")
+
+    top_k = min(tuning_config.top_k_for_holdout, len(completed))
+    sorted_trials = sorted(completed, key=lambda t: t.value, reverse=True)
+    top_k_trials = sorted_trials[:top_k]
+
+    # ------------------------------------------------------------------
+    # 3. Evaluate each top-K trial + the published default on holdout specs.
+    # ------------------------------------------------------------------
+    holdout_rows: list[dict[str, Any]] = []
+    per_label_net_profit: dict[str, list[float]] = {}
+
+    def _evaluate_and_collect(
+        label: str,
+        policy_factory: Callable[[], Policy],
+        trial_id: int | None,
+    ) -> None:
+        kpis = evaluate_policy_normalised(
+            policy_factory,
+            holdout_specs,
+            config=rl_config,
+        )
+        net_profits: list[float] = kpis["per_seed_net_profit"]
+        per_label_net_profit[label] = net_profits
+
+        for i, spec in enumerate(holdout_specs):
+            seed = tuning_config.holdout_seed_offset + i
+            net_profit_i = kpis["per_seed_net_profit"][i]
+            initial_cash_i = kpis["per_seed_initial_cash"][i]
+            normalised_return_i = net_profit_i / max(1e-9, initial_cash_i)
+            holdout_rows.append({
+                "label": label,
+                "trial_id": trial_id if trial_id is not None else -1,
+                "seed": seed,
+                "capacity": kpis["per_seed_capacity"][i],
+                "initial_cash": initial_cash_i,
+                "net_profit": net_profit_i,
+                "normalised_return": normalised_return_i,
+                "service_level": kpis["per_seed_service_level"][i],
+                "stockout_rate": kpis["per_seed_stockout_rate"][i],
+                "inventory_turnover": kpis["per_seed_inventory_turnover"][i],
+                "revenue": kpis["per_seed_revenue"][i],
+                "mean_price_pct_of_msrp": kpis["per_seed_mean_price_pct_of_msrp"][i],
+            })
+
+    # Evaluate top-K trials.
+    for rank, trial in enumerate(top_k_trials, start=1):
+        label = f"tuned_rank_{rank}"
+        fixed_params = dict(trial.params)
+
+        def _make_factory(params: dict[str, Any]) -> Callable[[], Policy]:
+            def _factory() -> Policy:
+                fixed_trial = optuna.trial.FixedTrial(params)
+                return policy_space(fixed_trial)
+            return _factory
+
+        _evaluate_and_collect(label, _make_factory(fixed_params), trial.number)
+
+    # Evaluate published default (OrderUpToPolicy with no kwargs).
+    _evaluate_and_collect(
+        "default",
+        lambda: OrderUpToPolicy(),
+        None,
+    )
+
+    # ------------------------------------------------------------------
+    # 4. Write holdout.parquet.
+    # ------------------------------------------------------------------
+    os.makedirs(study_dir, exist_ok=True)
+    holdout_df = pd.DataFrame(holdout_rows, columns=_HOLDOUT_PARQUET_COLUMNS)
+    holdout_df.to_parquet(os.path.join(study_dir, "holdout.parquet"), index=False)
+
+    # ------------------------------------------------------------------
+    # 5. Compute bootstrap CIs.
+    # ------------------------------------------------------------------
+    # Find the label with the best mean net profit among the tuned ranks.
+    tuned_labels = [f"tuned_rank_{r}" for r in range(1, top_k + 1)]
+    best_label = max(
+        tuned_labels,
+        key=lambda lbl: sum(per_label_net_profit.get(lbl, [0.0])) / max(1, len(per_label_net_profit.get(lbl, [0.0]))),
+    )
+    tuned_best_profits = per_label_net_profit[best_label]
+    default_profits = per_label_net_profit["default"]
+
+    tuned_mean = sum(tuned_best_profits) / max(1, len(tuned_best_profits))
+    default_mean = sum(default_profits) / max(1, len(default_profits))
+
+    tuned_ci_low, tuned_ci_high = _bootstrap_ci(tuned_best_profits, seed=0)
+    default_ci_low, default_ci_high = _bootstrap_ci(default_profits, seed=1)
+
+    # Paired uplift: per-seed differences.
+    paired_uplift = [
+        t - d
+        for t, d in zip(tuned_best_profits, default_profits)
+    ]
+    headline_uplift = sum(paired_uplift) / max(1, len(paired_uplift))
+    uplift_ci_low, uplift_ci_high = _bootstrap_ci(paired_uplift, seed=2)
+
+    # ------------------------------------------------------------------
+    # 6. Write holdout_summary.json.
+    # ------------------------------------------------------------------
+    summary: dict[str, Any] = {
+        "tuned_best_label": best_label,
+        "tuned_best_mean_net_profit": tuned_mean,
+        "tuned_best_ci_low": tuned_ci_low,
+        "tuned_best_ci_high": tuned_ci_high,
+        "default_mean_net_profit": default_mean,
+        "default_ci_low": default_ci_low,
+        "default_ci_high": default_ci_high,
+        "headline_uplift": headline_uplift,
+        "headline_uplift_ci_low": uplift_ci_low,
+        "headline_uplift_ci_high": uplift_ci_high,
+        "n_holdout_seeds": tuning_config.n_holdout_seeds,
+    }
+
+    with open(os.path.join(study_dir, "holdout_summary.json"), "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, default=str)
+
+    return summary
+
+
+__all__ = ["run_study", "confirm_top_k"]

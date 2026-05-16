@@ -1,6 +1,6 @@
 """Public API for the policy hyperparameter tuning module.
 
-Exported in this slice (issues 02–04):
+Exported in this slice (issues 02–05):
     TuningConfig               — immutable study-configuration dataclass.
     evaluate_policy_normalised — single-policy CRN evaluator (no Optuna).
     order_up_to_space          — OrderUpToPolicy trial-callback factory.
@@ -8,9 +8,10 @@ Exported in this slice (issues 02–04):
     periodic_order_up_to_space — PeriodicOrderUpToPolicy trial-callback factory.
     periodic_reorder_space     — PeriodicReorderPolicy trial-callback factory.
     run_study                  — Optuna study orchestration + artifact writer.
+    confirm_top_k              — Top-K re-evaluation on held-out seeds.
 
 Later slices will add:
-    confirm_top_k (issue 05), CLI entry point (issue 06).
+    CLI entry point (issue 06).
 """
 
 from src.tuning.config import TuningConfig
@@ -21,7 +22,7 @@ from src.tuning.search_spaces import (
     periodic_reorder_space,
     reorder_point_space,
 )
-from src.tuning.study import run_study
+from src.tuning.study import confirm_top_k, run_study
 
 __all__ = [
     "TuningConfig",
@@ -31,4 +32,5 @@ __all__ = [
     "periodic_order_up_to_space",
     "periodic_reorder_space",
     "run_study",
+    "confirm_top_k",
 ]
