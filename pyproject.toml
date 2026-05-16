@@ -27,6 +27,7 @@ dependencies = [
     "ipympl>=0.10.0",
     "gymnasium>=0.29",
     "tensorboard",
+    "optuna>=4.8.0",
 ]
 
 [dependency-groups]
