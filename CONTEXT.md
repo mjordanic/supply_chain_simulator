@@ -107,6 +107,15 @@ The persisted simulation artifact produced by `WorldBuilder` and consumed by sce
 
 Worlds are persisted to `data/worlds/<name>/world.json`. `World.to_json()` / `World.from_json()` handle serialisation; the on-disk format is stable. Four DataFrame inspection methods are available for notebook use: `catalog_df()`, `store_templates_df()`, `market_df()`, `meta_df()`. `from src.llm.world_builder import World` continues to work as a transitional re-export during migration. See `notebooks/02-inspect_world.ipynb` for a worked walkthrough.
 
+**Episode sampler** (`src/sim/episode_sampler.py`)
+Canonical home for the shared `(scenario, active_subset)` sampler, the 4-stream seed split (assortment / capacity / balance / world), and the three public default-params factories. Exposes:
+
+- `EpisodeSpec(scenario, active_subset)` — frozen dataclass. No `slot_permutation` — that is an RL-observation-encoder concern (ADR 0004, "Slot-shuffled observation").
+- `sample_episode(catalog, base_template, *, K_active, episode_length, capacity_dist, balance_dist, episode_seed, market_params=None, disruption_params=None, lifecycle_params=None, start_date=None) → EpisodeSpec` — Config-agnostic (kwargs, not a Config object); safe to call from multiple threads.
+- `default_market_params()`, `default_disruption_params()`, `default_lifecycle_params()` — public factories consumed by `sample_episode`'s `is None` fallbacks and by `src.sim.world_loader`'s synthetic-fallback path.
+
+Sub-seed derivation: `sub = (episode_seed * PRIME + OFFSET) & 0xFFFF_FFFF`, one `(PRIME, OFFSET)` pair per purpose. RL adds a 5th `slot` stream in `src.rl.episode_sampler`. Tuning's Config-adapter (`src.tuning.episode`) unpacks `TuningConfig` and forwards primitives here. The historical `TuningEpisodeSpec` name is a transitional alias for `EpisodeSpec`.
+
 **WorldBuilder** (`src/llm/world_builder.py`)
 LLM-driven world generator that produces a `World` artifact for an archetype string (e.g. `"fashion_retail"`). Four stages: taxonomy (LLM) → catalog (deterministic Python skeleton allocator + LLM naming, including per-`Ware` lifecycle and freshness parameters per category) → store templates (LLM, per region — including `init_active_products` rosters and `init_freshness` mode) → market domain params (LLM authors the domain slice; math defaults are hand-set). Each LLM call is parsed through a Pydantic schema in `src/llm/schemas.py`; on `ValidationError`, the failure is fed back into the next prompt for self-correction (default 3 retries). Consumed by scenario authors who want a generated catalog/market instead of hand-coding one. Policies, disruption parameters, and seeds remain author-supplied.
 

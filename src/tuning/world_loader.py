@@ -22,7 +22,7 @@ from src.sim.scenario import (
     Ware,
     load_catalog,
 )
-from src.tuning.episode import _default_disruption_params
+from src.sim.episode_sampler import default_disruption_params as _default_disruption_params
 
 if TYPE_CHECKING:
     from src.tuning.config import TuningConfig

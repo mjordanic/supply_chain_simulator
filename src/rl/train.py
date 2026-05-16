@@ -49,7 +49,7 @@ from torch.utils.tensorboard import SummaryWriter
 from src.rl.agents.ppo import Actor, train_ppo
 from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
-from src.rl.episode_sampler import _default_disruption_params
+from src.sim.episode_sampler import default_disruption_params as _default_disruption_params
 from src.rl.eval import build_eval_seeds, evaluate
 from src.sim.scenario import DisruptionParams, MarketParams, StoreTemplate, load_catalog
 from src.sim.policy import OrderUpToPolicy
