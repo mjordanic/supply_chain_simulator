@@ -35,7 +35,6 @@ import json
 import os
 from collections import deque
 from dataclasses import dataclass
-from random import Random
 from typing import Any, Callable
 
 import numpy as np
@@ -44,18 +43,14 @@ from src.rl.configs.default import RLConfig
 from src.rl.encoders import compute_effective_rate, decode_action, encode_observation
 from src.rl.episode_sampler import EpisodeSpec, sample_episode
 from src.sim.metrics import RunSlice, aggregate_episode
-from src.sim.event_engine import EventEngine
-from src.sim.item_registry import ItemRegistry
-from src.sim.market import Market
-from src.sim.policy import OrderUpToPolicy, Policy
+from src.sim.policy import OrderUpToPolicy, Policy, RLPolicy
+from src.sim.runner import build_world
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     MarketParams,
-    StoreInstance,
     Ware,
 )
-from src.sim.store import Store
 
 
 # ---------------------------------------------------------------------------
@@ -219,88 +214,32 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 
-def _build_world(spec: EpisodeSpec):
-    """Instantiate the simulator subsystems from an ``EpisodeSpec``.
+def _record_active_subset_tick(
+    store,
+    action: dict,
+    run_slice: RunSlice,
+) -> None:
+    """Append one tick of store state to the active-subset ``RunSlice``.
 
-    Returns ``(world_rng, item_registry, market, event_engine, store)``
-    with the ``Store`` having ``policy=None`` (caller must wire up the
-    policy separately).
+    Reads order_cost from ``store.costs`` (unit_cost populated at
+    construction from ``Ware.unit_cost``).
     """
-    scenario = spec.scenario
-    world_rng = Random(scenario.world_seed)
-
-    item_registry = ItemRegistry(
-        scenario.item_lifecycle,
-        scenario.catalog,
-        world_rng,
-    )
-    market = Market(
-        scenario.market,
-        world_rng,
-        scenario.start_date,
-        registry=item_registry,
-    )
-    event_engine = EventEngine(scenario.disruption, world_rng)
-
-    si: StoreInstance = scenario.stores[0]
-    # Store requires a policy; we pass None and expect the caller to attach
-    # or set pending actions before Store.decide() is called.
-    store = Store(
-        si.template,
-        si.init_seed,
-        None,  # policy wired up by callers
-        scenario.catalog,
-        freshness_alpha=item_registry.default_freshness_alpha,
-        freshness_decay=item_registry.default_freshness_decay,
-        item_registry=item_registry,
-    )
-    return world_rng, item_registry, market, event_engine, store
-
-
-def _make_delivery_callback(store: Store, pid: str, qty: int):
-    """Bind ``(store, pid, qty)`` into a zero-arg delivery callback."""
-
-    def _cb() -> None:
-        store.deliver(pid, qty)
-
-    return _cb
-
-
-def _dispatch_orders(store: Store, market: Market, event_engine: EventEngine, action: dict) -> None:
-    """Schedule delivery callbacks for positive-qty orders (same as Runner)."""
+    pids = run_slice.active_pids
     orders = action.get("order", {})
-    if not orders:
-        return
-    current_step = market.current_step()
-    supply = market.market_state[store.region]["market_supply"]
-    supply_factor = max(market.params.supply_factor_min, supply)
-    for pid, qty in orders.items():
-        if qty <= 0:
-            continue
-        base_lead = store.delivery_lags[pid]
-        adjusted_lead = int(base_lead / supply_factor)
-        arrival_time = current_step + adjusted_lead
-        event_engine.schedule(
-            event_type="order_arrival",
-            delay=arrival_time,
-            callback=_make_delivery_callback(store, pid, qty),
-        )
 
-
-def _process_demand(store: Store, market: Market, action: dict) -> dict[str, float]:
-    """Sample demand and settle accounting — mirrors Runner._process_demand."""
-    prices = action.get("price", {})
-    orders = action.get("order", {})
-    current_step = market.current_step()
-    traces: dict[str, float] = {}
-    for pid in list(store.inventory.keys()):
-        price = prices.get(pid, store.prices[pid])
-        order_qty = orders.get(pid, 0)
-        demand = market.sample_demand(pid, store, price, current_step=current_step)
-        store.settle(pid, demand=demand, price=price, order_qty=order_qty)
-        store.prices[pid] = price
-        traces[pid] = demand
-    return traces
+    run_slice.sales.append([store.sales.get(pid, 0) for pid in pids])
+    run_slice.demand.append([store.demand.get(pid, 0) for pid in pids])
+    run_slice.inventory.append([store.inventory.get(pid, 0) for pid in pids])
+    run_slice.price.append([store.prices.get(pid, 0.0) for pid in pids])
+    run_slice.msrp.append([store.base_prices.get(pid, 1.0) for pid in pids])
+    run_slice.revenue.append([store.revenue.get(pid, 0.0) for pid in pids])
+    run_slice.holding_cost.append([store.holding_cost.get(pid, 0.0) for pid in pids])
+    run_slice.order_cost.append([
+        orders.get(pid, 0) * store.costs.get(pid, 0.0) for pid in pids
+    ])
+    run_slice.order_fee.append([
+        float(store.order_fee) if orders.get(pid, 0) > 0 else 0.0 for pid in pids
+    ])
 
 
 def _run_rl(
@@ -311,15 +250,19 @@ def _run_rl(
 ) -> dict[str, float]:
     """Run the RL policy on ``spec`` for one full episode.
 
-    Uses the same tick order as ``RLEnv.step()``.  Collects per-tick traces
-    into a ``RunSlice`` and returns ``aggregate_episode`` metrics.
+    Uses the two-phase tick API: ``sim.tick_world()`` → encode obs →
+    decode action → ``RLPolicy.set_pending_action()`` →
+    ``sim.tick_decide_and_settle()``.  Collects per-tick traces into a
+    ``RunSlice`` and returns ``aggregate_episode`` metrics.
+
+    RL-specific state (``sales_history``, ``effective_rate``,
+    ``base_demand_prior``, observation encoder, action decoder, slot
+    permutation) stays in this function; none of it leaks into
+    ``src/sim/``.
     """
-    from src.sim.policy import RLPolicy
-
-    _, item_registry, market, event_engine, store = _build_world(spec)
-
     rl_policy = RLPolicy()
-    store.policy = rl_policy
+    sim = build_world(spec.scenario, policy_overrides=[rl_policy])
+    store = sim.stores[0]
 
     K = config.K_active
     initial_cash = float(store.balance)
@@ -345,19 +288,17 @@ def _run_rl(
     episode_length = spec.scenario.n_steps
 
     for tick in range(episode_length):
-        # 1–3: world ticks
-        market.tick()
-        event_engine.tick(market)
-        item_registry.tick()
+        # Phase 1: advance world (market, event_engine, item_registry)
+        active_events = sim.tick_world()
 
         # Compute effective rate once per tick.
         effective_rate = compute_effective_rate(sales_history, base_demand_prior)
 
-        # 4: encode obs, call rl_policy_fn, decode action
+        # Encode obs, call rl_policy_fn, decode action
         obs = encode_observation(
             store,
-            market,
-            item_registry,
+            sim.market,
+            sim.item_registry,
             step=tick,
             slot_perm=slot_perm,
             K_active=K,
@@ -380,47 +321,19 @@ def _run_rl(
         action_dict["deactivate"] = []
         action_dict["promotions"] = {}
 
-        # 5: set pending action and call decide
+        # Inject action into RLPolicy shim
         rl_policy.set_pending_action(action_dict)
-        obs_dict = store.observe(market.current_step(), item_registry)
-        action_used = store.decide(obs_dict)
 
-        # 6–7: dispatch orders, process demand
-        _dispatch_orders(store, market, event_engine, action_used)
-        _process_demand(store, market, action_used)
+        # Phase 2: per-store observe → decide → dispatch → settle demand
+        result = sim.tick_decide_and_settle(active_events)
+        action_used = result.actions[0]
 
-        # Update sales history
+        # Update rolling sales history
         for pid, qty in store.sales.items():
             if pid in sales_history:
                 sales_history[pid].append(qty)
 
-        # Collect per-tick traces for active SKUs
-        active_set = set(store.active_items)
-        tick_sales = [store.sales.get(pid, 0) for pid in spec.active_subset]
-        tick_demand = [store.demand.get(pid, 0) for pid in spec.active_subset]
-        tick_inv = [store.inventory.get(pid, 0) for pid in spec.active_subset]
-        tick_price = [store.prices.get(pid, 0.0) for pid in spec.active_subset]
-        tick_msrp = [store.base_prices.get(pid, 1.0) for pid in spec.active_subset]
-        tick_rev = [store.revenue.get(pid, 0.0) for pid in spec.active_subset]
-        tick_hold = [store.holding_cost.get(pid, 0.0) for pid in spec.active_subset]
-        tick_order_cost = [
-            action_used.get("order", {}).get(pid, 0) * store.costs.get(pid, 0.0)
-            for pid in spec.active_subset
-        ]
-        tick_fee: list[float] = []
-        for pid in spec.active_subset:
-            ordered = action_used.get("order", {}).get(pid, 0)
-            tick_fee.append(float(store.order_fee) if ordered > 0 else 0.0)
-
-        run_slice.sales.append(tick_sales)
-        run_slice.demand.append(tick_demand)
-        run_slice.inventory.append(tick_inv)
-        run_slice.price.append(tick_price)
-        run_slice.msrp.append(tick_msrp)
-        run_slice.revenue.append(tick_rev)
-        run_slice.holding_cost.append(tick_hold)
-        run_slice.order_cost.append(tick_order_cost)
-        run_slice.order_fee.append(tick_fee)
+        _record_active_subset_tick(store, action_used, run_slice)
 
     return aggregate_episode(run_slice)
 
@@ -431,57 +344,20 @@ def _run_baseline(
 ) -> dict[str, float]:
     """Run a baseline policy on ``spec`` for one full episode.
 
-    Uses the same tick order as ``Runner.run()``.  Attaches ``policy``
-    directly to the ``Store`` and uses ``Store.decide()``.  Collects
-    per-tick traces into a ``RunSlice`` and returns ``aggregate_episode``
-    metrics.
+    Uses ``build_world`` + ``Simulation.tick()`` (single-phase).  Attaches
+    ``policy`` via ``policy_overrides`` so spec state is never mutated.
+    Collects per-tick traces into a ``RunSlice`` and returns
+    ``aggregate_episode`` metrics.
     """
-    _, item_registry, market, event_engine, store = _build_world(spec)
-    store.policy = policy
+    sim = build_world(spec.scenario, policy_overrides=[policy])
+    store = sim.stores[0]
 
     run_slice = RunSlice(active_pids=list(spec.active_subset))
     episode_length = spec.scenario.n_steps
 
     for _tick in range(episode_length):
-        # 1–3: world ticks
-        market.tick()
-        event_engine.tick(market)
-        item_registry.tick()
-
-        # 4–5: observe and decide
-        obs_dict = store.observe(market.current_step(), item_registry)
-        action = store.decide(obs_dict)
-
-        # 6–7: dispatch orders, process demand
-        _dispatch_orders(store, market, event_engine, action)
-        _process_demand(store, market, action)
-
-        # Collect per-tick traces for active SKUs
-        tick_sales = [store.sales.get(pid, 0) for pid in spec.active_subset]
-        tick_demand = [store.demand.get(pid, 0) for pid in spec.active_subset]
-        tick_inv = [store.inventory.get(pid, 0) for pid in spec.active_subset]
-        tick_price = [store.prices.get(pid, 0.0) for pid in spec.active_subset]
-        tick_msrp = [store.base_prices.get(pid, 1.0) for pid in spec.active_subset]
-        tick_rev = [store.revenue.get(pid, 0.0) for pid in spec.active_subset]
-        tick_hold = [store.holding_cost.get(pid, 0.0) for pid in spec.active_subset]
-        tick_order_cost = [
-            action.get("order", {}).get(pid, 0) * store.costs.get(pid, 0.0)
-            for pid in spec.active_subset
-        ]
-        tick_fee: list[float] = []
-        for pid in spec.active_subset:
-            ordered = action.get("order", {}).get(pid, 0)
-            tick_fee.append(float(store.order_fee) if ordered > 0 else 0.0)
-
-        run_slice.sales.append(tick_sales)
-        run_slice.demand.append(tick_demand)
-        run_slice.inventory.append(tick_inv)
-        run_slice.price.append(tick_price)
-        run_slice.msrp.append(tick_msrp)
-        run_slice.revenue.append(tick_rev)
-        run_slice.holding_cost.append(tick_hold)
-        run_slice.order_cost.append(tick_order_cost)
-        run_slice.order_fee.append(tick_fee)
+        result = sim.tick()
+        _record_active_subset_tick(store, result.actions[0], run_slice)
 
     return aggregate_episode(run_slice)
 
@@ -865,11 +741,9 @@ def _cold_start_qty_per_sku(
     from src.sim.distributions import Distribution as _Distribution
     from random import Random as _Random
 
-    _, item_registry, market, event_engine, store = _build_world(spec)
-    from src.sim.policy import RLPolicy
-
     rl_policy = RLPolicy()
-    store.policy = rl_policy
+    sim = build_world(spec.scenario, policy_overrides=[rl_policy])
+    store = sim.stores[0]
 
     K = config.K_active
     initial_cash = float(store.balance)
@@ -888,16 +762,14 @@ def _cold_start_qty_per_sku(
         base_demand_prior = 1.0
 
     # Only need tick 0.
-    market.tick()
-    event_engine.tick(market)
-    item_registry.tick()
+    sim.tick_world()
 
     effective_rate = compute_effective_rate(sales_history, base_demand_prior)
 
     obs = encode_observation(
         store,
-        market,
-        item_registry,
+        sim.market,
+        sim.item_registry,
         step=0,
         slot_perm=slot_perm,
         K_active=K,
