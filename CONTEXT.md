@@ -116,6 +116,20 @@ Canonical home for the shared `(scenario, active_subset)` sampler, the 4-stream 
 
 Sub-seed derivation: `sub = (episode_seed * PRIME + OFFSET) & 0xFFFF_FFFF`, one `(PRIME, OFFSET)` pair per purpose. RL adds a 5th `slot` stream in `src.rl.episode_sampler`. Tuning's Config-adapter (`src.tuning.episode`) unpacks `TuningConfig` and forwards primitives here. The historical `TuningEpisodeSpec` name is a transitional alias for `EpisodeSpec`.
 
+**World loader** (`src/sim/world_loader.py`)
+Canonical home for the `cache_path → archetype → synthetic fallback` resolution logic that both `src/tuning/` and `src/rl/train.py` previously duplicated. Exposes a single public function:
+
+`load_world(*, archetype, cache_path=None, delivery_lag, holding_rate, order_fee, K_active, synthetic_fallback=True, synthetic_catalog_size=100) → tuple[list[Ware], StoreTemplate, MarketParams | None, DisruptionParams | None]`
+
+Resolution order:
+1. Explicit `cache_path` — loaded unconditionally when the file exists.
+2. `data/worlds/<archetype>/world.json` — auto-lookup by archetype label.
+3. Synthetic fallback — `synthetic_catalog_size`-item catalog, no LLM required (raises `FileNotFoundError` when `synthetic_fallback=False`).
+
+For loaded worlds, `disruption_params.regions` is adjusted to match `world.market.regions` (the same fix both old callers applied). For the synthetic fallback, both `market_params` and `disruption_params` are `None` so `sample_episode` uses its own defaults.
+
+Config-adapters: `src.tuning.world_loader.load_world(config)` and `src.rl.train._load_world_catalog_and_template(config)` are now thin shims (~10 lines each) that unpack their respective Config objects and call this function.
+
 **WorldBuilder** (`src/llm/world_builder.py`)
 LLM-driven world generator that produces a `World` artifact for an archetype string (e.g. `"fashion_retail"`). Four stages: taxonomy (LLM) → catalog (deterministic Python skeleton allocator + LLM naming, including per-`Ware` lifecycle and freshness parameters per category) → store templates (LLM, per region — including `init_active_products` rosters and `init_freshness` mode) → market domain params (LLM authors the domain slice; math defaults are hand-set). Each LLM call is parsed through a Pydantic schema in `src/llm/schemas.py`; on `ValidationError`, the failure is fed back into the next prompt for self-correction (default 3 retries). Consumed by scenario authors who want a generated catalog/market instead of hand-coding one. Policies, disruption parameters, and seeds remain author-supplied.
 
