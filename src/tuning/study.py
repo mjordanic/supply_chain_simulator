@@ -683,3 +683,231 @@ def confirm_top_k(
 
 
 __all__ = ["run_study", "confirm_top_k"]
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point: python -m src.tuning.study
+# ---------------------------------------------------------------------------
+
+
+def _cli_main(argv: list[str] | None = None) -> None:
+    """Parse CLI flags and run a tuning study end-to-end.
+
+    Canonical invocation::
+
+        uv run python -m src.tuning.study \\
+            --policy order_up_to \\
+            --trials 150 \\
+            --study-name order_up_to_v1
+
+    See ``--help`` for all flags.
+    """
+    import argparse
+    import dataclasses as _dc
+    import sys
+
+    from src.tuning.config import TuningConfig
+    from src.tuning.search_spaces import (
+        order_up_to_space,
+        periodic_order_up_to_space,
+        periodic_reorder_space,
+        reorder_point_space,
+    )
+
+    _POLICY_DISPATCH = {
+        "order_up_to": order_up_to_space,
+        "reorder_point": reorder_point_space,
+        "periodic_order_up_to": periodic_order_up_to_space,
+        "periodic_reorder": periodic_reorder_space,
+    }
+
+    _defaults = TuningConfig()
+
+    parser = argparse.ArgumentParser(
+        prog="python -m src.tuning.study",
+        description=(
+            "Run an Optuna policy-hyperparameter study and write artifacts to disk.\n\n"
+            "Artifacts land under <output-dir>/<study-name>/:\n"
+            "  trials.parquet, per_seed.parquet, study.json\n"
+            "  holdout.parquet, holdout_summary.json  (unless --skip-holdout)"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # Required
+    parser.add_argument(
+        "--policy",
+        required=True,
+        choices=list(_POLICY_DISPATCH),
+        help="Bundled trial-callback factory to use.",
+    )
+    parser.add_argument(
+        "--study-name",
+        required=True,
+        help="Human-readable study name; also used as the output sub-directory.",
+    )
+
+    # Optional overrides for TuningConfig fields
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=_defaults.n_trials,
+        metavar="N",
+        help=f"Number of Optuna trials (default: {_defaults.n_trials}).",
+    )
+    parser.add_argument(
+        "--n-search-seeds",
+        type=int,
+        default=_defaults.n_search_seeds,
+        metavar="N",
+        help=f"CRN seeds for the search phase (default: {_defaults.n_search_seeds}).",
+    )
+    parser.add_argument(
+        "--n-holdout-seeds",
+        type=int,
+        default=_defaults.n_holdout_seeds,
+        metavar="N",
+        help=f"CRN seeds for the holdout phase (default: {_defaults.n_holdout_seeds}).",
+    )
+    parser.add_argument(
+        "--seed-offset",
+        type=int,
+        default=_defaults.seed_offset,
+        metavar="N",
+        help=f"First search-phase seed (default: {_defaults.seed_offset}).",
+    )
+    parser.add_argument(
+        "--sampler-seed",
+        type=int,
+        default=_defaults.sampler_seed,
+        metavar="N",
+        help=f"TPESampler seed for reproducibility (default: {_defaults.sampler_seed}).",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=_defaults.top_k_for_holdout,
+        metavar="K",
+        help=f"Number of top trials to re-evaluate on holdout (default: {_defaults.top_k_for_holdout}).",
+    )
+    parser.add_argument(
+        "--episode-length",
+        type=int,
+        default=_defaults.episode_length,
+        metavar="T",
+        help=f"Episode length in ticks (default: {_defaults.episode_length}).",
+    )
+
+    # World selection
+    parser.add_argument(
+        "--world",
+        default="rl_train",
+        metavar="ARCHETYPE",
+        help=(
+            "World archetype; selects catalog + base template via the same "
+            "resolution logic as the RL training pipeline (default: rl_train)."
+        ),
+    )
+
+    # Output
+    parser.add_argument(
+        "--output-dir",
+        default="runs/tuning",
+        metavar="PATH",
+        help="Root output directory (default: runs/tuning).",
+    )
+
+    # Skip holdout
+    parser.add_argument(
+        "--skip-holdout",
+        action="store_true",
+        default=False,
+        help="Skip confirm_top_k re-evaluation (write only the three search artifacts).",
+    )
+
+    args = parser.parse_args(argv)
+
+    # ------------------------------------------------------------------
+    # Build TuningConfig with flag overrides.
+    # ------------------------------------------------------------------
+    tuning_config = TuningConfig(
+        n_trials=args.trials,
+        n_search_seeds=args.n_search_seeds,
+        n_holdout_seeds=args.n_holdout_seeds,
+        episode_length=args.episode_length,
+        seed_offset=args.seed_offset,
+        sampler_seed=args.sampler_seed,
+        top_k_for_holdout=args.top_k,
+    )
+
+    # ------------------------------------------------------------------
+    # Load world (catalog + base template) using the same resolution logic
+    # as the RL training pipeline.
+    # ------------------------------------------------------------------
+    from src.rl.configs.default import RLConfig
+
+    rl_config = _dc.replace(RLConfig(), world_archetype=args.world)
+
+    # Reuse the world-loading helper from the training module.
+    from src.rl.train import _load_world_catalog_and_template
+
+    catalog, base_template, market_params, disruption_params = (
+        _load_world_catalog_and_template(rl_config)
+    )
+
+    # ------------------------------------------------------------------
+    # Select the policy factory.
+    # ------------------------------------------------------------------
+    policy_space = _POLICY_DISPATCH[args.policy]
+
+    # ------------------------------------------------------------------
+    # Run the study.
+    # ------------------------------------------------------------------
+    print(
+        f"[tuning] Starting study '{args.study_name}' | policy={args.policy} "
+        f"| trials={tuning_config.n_trials} | search_seeds={tuning_config.n_search_seeds} "
+        f"| output={args.output_dir}/{args.study_name}",
+        file=sys.stderr,
+    )
+
+    study = run_study(
+        policy_space,
+        catalog=catalog,
+        base_template=base_template,
+        rl_config=rl_config,
+        tuning_config=tuning_config,
+        study_name=args.study_name,
+        output_dir=args.output_dir,
+    )
+
+    # ------------------------------------------------------------------
+    # Optionally run confirm_top_k.
+    # ------------------------------------------------------------------
+    study_dir = os.path.join(args.output_dir, args.study_name)
+
+    if not args.skip_holdout:
+        confirm_top_k(
+            study,
+            policy_space,
+            catalog=catalog,
+            base_template=base_template,
+            rl_config=rl_config,
+            tuning_config=tuning_config,
+            study_dir=study_dir,
+        )
+
+    # ------------------------------------------------------------------
+    # Print one-line summary to stdout.
+    # ------------------------------------------------------------------
+    best = study.best_trial
+    print(
+        f"study={args.study_name} "
+        f"n_trials={tuning_config.n_trials} "
+        f"best_mean_normalised_return={best.value:.6f} "
+        f"best_params={best.params} "
+        f"output={study_dir}"
+    )
+
+
+if __name__ == "__main__":
+    _cli_main()

@@ -764,3 +764,167 @@ class TestConfirmTopKPairedCRN:
             assert len(cash_vals) == 1, (
                 f"seed={seed}: multiple initial_cash values across labels: {cash_vals.tolist()}"
             )
+
+
+# ---------------------------------------------------------------------------
+# CLI tests (issue 06)
+# ---------------------------------------------------------------------------
+
+
+import subprocess
+import sys
+
+
+class TestCLISmokeFullPipeline:
+    """Invoke the CLI for a full pipeline run and assert all artifacts exist."""
+
+    def test_cli_smoke_full_pipeline(self, tmp_path):
+        """CLI runs to exit 0 and writes all four artifact files.
+
+        Runs: python -m src.tuning.study --policy order_up_to --trials 3
+              --study-name cli_smoke --n-search-seeds 2 --n-holdout-seeds 2
+              --top-k 2 --episode-length 10 --output-dir <tmp>
+        """
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "src.tuning.study",
+                "--policy", "order_up_to",
+                "--trials", "3",
+                "--study-name", "cli_smoke",
+                "--n-search-seeds", "2",
+                "--n-holdout-seeds", "2",
+                "--top-k", "2",
+                "--episode-length", "10",
+                "--output-dir", str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"CLI exited with code {result.returncode}.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+        study_dir = tmp_path / "cli_smoke"
+        for artifact in [
+            "trials.parquet",
+            "per_seed.parquet",
+            "study.json",
+            "holdout.parquet",
+            "holdout_summary.json",
+        ]:
+            assert (study_dir / artifact).exists(), (
+                f"{artifact} not found under {study_dir}"
+            )
+
+    def test_cli_stdout_summary_line(self, tmp_path):
+        """CLI stdout contains study name, n_trials, best_mean_normalised_return, best_params, output."""
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "src.tuning.study",
+                "--policy", "order_up_to",
+                "--trials", "2",
+                "--study-name", "cli_stdout",
+                "--n-search-seeds", "1",
+                "--n-holdout-seeds", "1",
+                "--top-k", "1",
+                "--episode-length", "5",
+                "--output-dir", str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"CLI exited {result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        # The stdout summary line must contain all required tokens.
+        stdout = result.stdout
+        assert "study=cli_stdout" in stdout, f"Missing study= in stdout: {stdout!r}"
+        assert "n_trials=" in stdout, f"Missing n_trials= in stdout: {stdout!r}"
+        assert "best_mean_normalised_return=" in stdout, (
+            f"Missing best_mean_normalised_return= in stdout: {stdout!r}"
+        )
+        assert "best_params=" in stdout, f"Missing best_params= in stdout: {stdout!r}"
+        assert "output=" in stdout, f"Missing output= in stdout: {stdout!r}"
+
+
+class TestCLISkipHoldout:
+    """--skip-holdout writes only the three search-phase artifacts."""
+
+    def test_cli_skip_holdout(self, tmp_path):
+        """With --skip-holdout, only trials.parquet, per_seed.parquet, study.json are written."""
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "src.tuning.study",
+                "--policy", "order_up_to",
+                "--trials", "2",
+                "--study-name", "cli_skip",
+                "--n-search-seeds", "1",
+                "--episode-length", "5",
+                "--skip-holdout",
+                "--output-dir", str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"CLI exited {result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+        study_dir = tmp_path / "cli_skip"
+        # These three must exist.
+        for artifact in ["trials.parquet", "per_seed.parquet", "study.json"]:
+            assert (study_dir / artifact).exists(), f"{artifact} missing under {study_dir}"
+
+        # These two must NOT exist.
+        assert not (study_dir / "holdout.parquet").exists(), (
+            "holdout.parquet should not be written when --skip-holdout is set"
+        )
+        assert not (study_dir / "holdout_summary.json").exists(), (
+            "holdout_summary.json should not be written when --skip-holdout is set"
+        )
+
+
+class TestCLIPolicyDispatch:
+    """Each of the four --policy values runs to exit 0 and writes study.json with the right policy_class_name."""
+
+    _POLICY_CLASS_MAP = {
+        "order_up_to": "OrderUpToPolicy",
+        "reorder_point": "ReorderPointPolicy",
+        "periodic_order_up_to": "PeriodicOrderUpToPolicy",
+        "periodic_reorder": "PeriodicReorderPolicy",
+    }
+
+    @pytest.mark.parametrize("policy_name,expected_class", list(_POLICY_CLASS_MAP.items()))
+    def test_cli_policy_dispatch(self, policy_name, expected_class, tmp_path):
+        """CLI runs to exit 0 for each policy variant and records the right class name."""
+        study_name = f"dispatch_{policy_name}"
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "src.tuning.study",
+                "--policy", policy_name,
+                "--trials", "1",
+                "--study-name", study_name,
+                "--n-search-seeds", "1",
+                "--episode-length", "5",
+                "--skip-holdout",
+                "--output-dir", str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"CLI exited {result.returncode} for --policy {policy_name}.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+        study_json_path = tmp_path / study_name / "study.json"
+        assert study_json_path.exists(), f"study.json missing for policy={policy_name}"
+
+        with open(study_json_path, encoding="utf-8") as fh:
+            meta = json.load(fh)
+
+        assert meta["policy_class_name"] == expected_class, (
+            f"policy={policy_name}: expected policy_class_name={expected_class!r}, "
+            f"got {meta['policy_class_name']!r}"
+        )

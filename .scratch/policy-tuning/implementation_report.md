@@ -4,7 +4,7 @@
 - **PRD**: [PRD.md](./PRD.md)
 - **Integration branch**: `hyperparameter-optimization`
 - **Started**: 2026-05-16T02:06:50+02:00
-- **Last updated**: 2026-05-16T04:50:00+02:00
+- **Last updated**: 2026-05-16T06:30:00+02:00
 - **Parallelism cap**: 1 (in-place sequential)
 - **Preflight assumptions**:
   - Untracked `.claude/settings.local.json` left as-is (harness-owned settings file, not feature work).
@@ -18,8 +18,8 @@
 | 02-tuning-module-skeleton-and-evaluator | `src/tuning/` skeleton + `TuningConfig` + `evaluate_policy_normalised` | 2 | committed | 8a5eb2fe0cff84c54c479c441ca1b9af275688d0 | 8a5eb2fe0cff84c54c479c441ca1b9af275688d0 | 2026-05-16T03:15:00+02:00 | 2026-05-16T03:45:00+02:00 | In-place (cap=1). optuna added. 16 new tuning tests pass; 246 sim + 177 rl tests pass. |
 | 03-search-space-factories | Bundled search-space factories for the four textbook variants | 3 | committed | f626173 | f626173 | 2026-05-16T03:55:00+02:00 | 2026-05-16T04:15:00+02:00 | In-place (cap=1). 24 new tests pass; 40 total tuning tests green. All four factories export from src.tuning public API. |
 | 04-run-study-and-artifacts | `run_study()` orchestration + `trials.parquet` / `per_seed.parquet` / `study.json` | 4 | committed | 840f09e | 840f09e | 2026-05-16T04:20:00+02:00 | 2026-05-16T04:50:00+02:00 | In-place (cap=1). 19 new study tests pass; 59 total tuning tests green. |
-| 05-confirm-top-k-and-holdout | `confirm_top_k()` + `holdout.parquet` / `holdout_summary.json` | 5 | pending | — | — | — | — | — |
-| 06-cli-entry-point | CLI entry point `python -m src.tuning.study` | 6 | pending | — | — | — | — | — |
+| 05-confirm-top-k-and-holdout | `confirm_top_k()` + `holdout.parquet` / `holdout_summary.json` | 5 | committed | 3a99d17362a21fc16909d9604f9064e17b51c512 | 3a99d17362a21fc16909d9604f9064e17b51c512 | 2026-05-16T05:10:00+02:00 | 2026-05-16T05:30:00+02:00 | In-place (cap=1). 10 new tests pass; 69 total tuning tests green. confirm_top_k exported from src.tuning. Issue file moved to done/. |
+| 06-cli-entry-point | CLI entry point `python -m src.tuning.study` | 6 | committed | — | — | 2026-05-16T06:00:00+02:00 | 2026-05-16T06:30:00+02:00 | In-place (cap=1). __main__ block added to study.py; 7 new CLI tests pass (76 total tuning tests green). Issue file moved to done/. |
 | 07-tune-textbook-policy-notebook | Notebook `notebooks/08-tune_textbook_policy.ipynb` | 7 | pending | — | — | — | — | — |
 | 08-context-md-update-for-tuning | `CONTEXT.md` updates for the tuning tool | 8 | pending | — | — | — | — | — |
 
@@ -56,6 +56,10 @@ Reduced (no redundancy): linear chain 01 → 02 → 03 → 04 → 05 → 06 → 
 - 2026-05-16T04:15:00+02:00 — Wave 3 complete. 03-search-space-factories committed at f626173 (in-place). src/tuning/search_spaces.py + tests/tuning/test_search_spaces.py created; src/tuning/__init__.py updated. 24 new tests pass (40 total tuning tests green). Issue file moved to done/.
 - 2026-05-16T04:20:00+02:00 — Wave 4 started. Dispatching 04-run-study-and-artifacts in-place.
 - 2026-05-16T04:50:00+02:00 — Wave 4 complete. 04-run-study-and-artifacts committed (in-place). src/tuning/study.py + tests/tuning/test_study.py created; src/tuning/__init__.py updated with run_study export. 19 new tests pass (59 total tuning tests green). Issue file moved to done/.
+- 2026-05-16T05:10:00+02:00 — Wave 5 started. Dispatching 05-confirm-top-k-and-holdout in-place.
+- 2026-05-16T05:30:00+02:00 — Wave 5 complete. 05-confirm-top-k-and-holdout committed at 3a99d17 (in-place). confirm_top_k() + _bootstrap_ci() added to src/tuning/study.py; src/tuning/__init__.py updated. 10 new tests pass (69 total tuning tests green). Issue file moved to done/.
+- 2026-05-16T06:00:00+02:00 — Wave 6 started. Dispatching 06-cli-entry-point in-place.
+- 2026-05-16T06:30:00+02:00 — Wave 6 complete. 06-cli-entry-point committed (in-place). __main__ block + _cli_main() added to src/tuning/study.py; all flags work including --skip-holdout and --episode-length. 7 new CLI tests pass (76 total tuning tests green). Issue file moved to done/.
 
 ## Outstanding follow-ups
 
