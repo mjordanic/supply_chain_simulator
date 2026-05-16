@@ -4,7 +4,7 @@
 - **PRD**: [PRD.md](./PRD.md)
 - **Integration branch**: `hyperparameter-optimization`
 - **Started**: 2026-05-16T02:06:50+02:00
-- **Last updated**: 2026-05-16T06:30:00+02:00
+- **Last updated**: 2026-05-16T07:00:00+02:00
 - **Parallelism cap**: 1 (in-place sequential)
 - **Preflight assumptions**:
   - Untracked `.claude/settings.local.json` left as-is (harness-owned settings file, not feature work).
@@ -20,7 +20,7 @@
 | 04-run-study-and-artifacts | `run_study()` orchestration + `trials.parquet` / `per_seed.parquet` / `study.json` | 4 | committed | 840f09e | 840f09e | 2026-05-16T04:20:00+02:00 | 2026-05-16T04:50:00+02:00 | In-place (cap=1). 19 new study tests pass; 59 total tuning tests green. |
 | 05-confirm-top-k-and-holdout | `confirm_top_k()` + `holdout.parquet` / `holdout_summary.json` | 5 | committed | 3a99d17362a21fc16909d9604f9064e17b51c512 | 3a99d17362a21fc16909d9604f9064e17b51c512 | 2026-05-16T05:10:00+02:00 | 2026-05-16T05:30:00+02:00 | In-place (cap=1). 10 new tests pass; 69 total tuning tests green. confirm_top_k exported from src.tuning. Issue file moved to done/. |
 | 06-cli-entry-point | CLI entry point `python -m src.tuning.study` | 6 | committed | 7c302a2d046aa5fa00dea6a1c0a2a72a7e6a9466 | 7c302a2d046aa5fa00dea6a1c0a2a72a7e6a9466 | 2026-05-16T06:00:00+02:00 | 2026-05-16T06:30:00+02:00 | In-place (cap=1). __main__ block added to study.py; 7 new CLI tests pass (76 total tuning tests green). Issue file moved to done/. |
-| 07-tune-textbook-policy-notebook | Notebook `notebooks/08-tune_textbook_policy.ipynb` | 7 | pending | — | — | — | — | — |
+| 07-tune-textbook-policy-notebook | Notebook `notebooks/08-tune_textbook_policy.ipynb` | 7 | in-progress | — | — | 2026-05-16T07:00:00+02:00 | — | In-place (cap=1). Wave 7 dispatched. |
 | 08-context-md-update-for-tuning | `CONTEXT.md` updates for the tuning tool | 8 | pending | — | — | — | — | — |
 
 ## Dependency graph
@@ -60,6 +60,7 @@ Reduced (no redundancy): linear chain 01 → 02 → 03 → 04 → 05 → 06 → 
 - 2026-05-16T05:30:00+02:00 — Wave 5 complete. 05-confirm-top-k-and-holdout committed at 3a99d17 (in-place). confirm_top_k() + _bootstrap_ci() added to src/tuning/study.py; src/tuning/__init__.py updated. 10 new tests pass (69 total tuning tests green). Issue file moved to done/.
 - 2026-05-16T06:00:00+02:00 — Wave 6 started. Dispatching 06-cli-entry-point in-place.
 - 2026-05-16T06:30:00+02:00 — Wave 6 complete. 06-cli-entry-point committed (in-place). __main__ block + _cli_main() added to src/tuning/study.py; all flags work including --skip-holdout and --episode-length. 7 new CLI tests pass (76 total tuning tests green). Issue file moved to done/.
+- 2026-05-16T07:00:00+02:00 — Wave 7 started. Dispatching 07-tune-textbook-policy-notebook in-place.
 
 ## Outstanding follow-ups
 
