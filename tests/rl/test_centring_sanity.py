@@ -2,9 +2,9 @@
 
 Asserts that the RL env with a constant zero action produces trajectories
 whose ordering decisions are structurally equivalent to
-``PeriodicOrderUpToPolicy(R=1, cover_horizon_ticks=10, safety_lead_ticks=2)``
-when evaluated against the same inventory position and the same demand-rate
-estimate.
+``PeriodicOrderUpToPolicy(R=1, cover_horizon_ticks=10,
+safety_lead_pct_of_lag=2/3)`` when evaluated against the same inventory
+position and the same demand-rate estimate.
 
 Design rationale
 ----------------
@@ -17,9 +17,10 @@ The decoder computes::
     requested[pid] = max(0, 15 * effective_rate[pid] - (inventory[pid] + pending[pid]))
 
 Meanwhile ``PeriodicOrderUpToPolicy(R=1, cover_horizon_ticks=10,
-safety_lead_ticks=2)`` with delivery_lag=3 targets::
+safety_lead_pct_of_lag=2/3)`` with delivery_lag=3 targets::
 
-    S = (delivery_lag + safety_lead_ticks + cover_horizon_ticks) * rate
+    effective_safety_ticks = round(2/3 × 3) = 2
+    S = (delivery_lag + effective_safety_ticks + cover_horizon_ticks) * rate
       = (3 + 2 + 10) * rate = 15 * rate
 
     qty[pid] = max(0, round(S - position))

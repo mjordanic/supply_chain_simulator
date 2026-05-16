@@ -42,7 +42,8 @@ Textbook reorder-policy family:
 All four concrete policies share a single demand-units framing so the
 reorder formulas are scale-invariant in capacity:
 
-    s = (delivery_lag + safety_lead_ticks) × rate
+    effective_safety_ticks = round(safety_lead_pct_of_lag × delivery_lag)
+    s = (delivery_lag + effective_safety_ticks) × rate
     S = s + cover_horizon_ticks × rate
 
 where ``rate`` is the censored-sales rate estimate over the recent
@@ -52,7 +53,7 @@ Three private module-level helpers extracted for unit-testability:
 
 - ``_estimate_rate`` — censored-sales rate estimator (windowed mean of
   realised sales; censoring detection lives in ``_has_stockout`` and is
-  applied by the caller via ``stockout_safety_bonus_ticks``).
+  applied by the caller via the effective safety horizon).
 - ``_has_stockout`` — detects whether a pid had any stockout tick in
   the recent window (sales > 0 AND sales == inv-before-settle).
 - ``_allocate_two_pass_fair_share`` — two-pass fair-share + water-fill
@@ -717,7 +718,7 @@ def _estimate_rate(
     sales_log: dict[str, list[int]],
     demand_window: int,
     inv_before_settle: dict[str, list[int]],
-    stockout_safety_bonus_ticks: int = 0,
+    stockout_safety_bonus_ticks: int = 0,  # retained for test compatibility; unused internally
 ) -> dict[str, float]:
     """Estimate the per-pid demand rate from censored sales history.
 
@@ -726,8 +727,8 @@ def _estimate_rate(
     — on a stockout tick the realised qty is at most the on-hand stock,
     so the true demand can be strictly larger. This function intentionally
     does NOT attempt to uncensor; the response to censoring is to extend
-    the safety horizon (``stockout_safety_bonus_ticks``) at the caller
-    site, which is the textbook practice.
+    the effective safety horizon at the caller site (via
+    ``stockout_safety_bonus_pct_of_lag``), which is the textbook practice.
 
     Args:
         sales_log: per-pid list of historical sales quantities (most
@@ -740,10 +741,12 @@ def _estimate_rate(
             grow an uncensoring step later without a call-site churn.
             Stockout detection lives in ``_has_stockout`` and is applied
             by the caller.
-        stockout_safety_bonus_ticks: vestigial in this function — the
+        stockout_safety_bonus_ticks: unused in this function — the
             estimator always returns the plain censored mean. Caller is
             responsible for bumping the safety horizon when
-            ``_has_stockout`` reports a censored window.
+            ``_has_stockout`` reports a censored window. Retained in the
+            signature so existing unit tests that pass it explicitly
+            continue to work without modification.
 
     Returns:
         dict mapping each pid to its estimated rate (float). Pids absent
@@ -1016,6 +1019,44 @@ def _allocate_two_pass_fair_share(
 class TextbookReorderPolicy(Policy):
     """Abstract base for the textbook reorder-policy family.
 
+    Why these denominators
+    ----------------------
+    **EOQ cycle length (``cover_horizon_ticks``).** The EOQ result for the
+    optimal order cycle is ``T* = sqrt(2K / (D·h))``, where ``K`` is the
+    fixed ordering cost, ``D`` is demand rate, and ``h`` is holding cost
+    per unit per time. Lead time does not appear in this formula: the
+    optimal cycle length is independent of how long the supplier takes to
+    deliver. Consequently ``cover_horizon_ticks`` is expressed as an
+    absolute number of ticks and is the same for every SKU regardless of
+    its individual delivery lag.
+
+    **Safety stock (``safety_lead_pct_of_lag``).** The textbook newsvendor
+    result for safety stock under normally-distributed demand is
+    ``SS = z · σ · sqrt(L)``, where ``z`` is the service-level multiplier,
+    ``σ`` is demand standard deviation per unit time, and ``L`` is lead time.
+    Safety stock therefore scales with lead time, not independently of it.
+    A SKU with ``lag=10`` needs roughly ``sqrt(10/1) ≈ 3×`` more safety stock
+    than one with ``lag=1`` under the same demand volatility.
+
+    **Linear approximation.** For the deterministic-demand ``rate × ticks``
+    framing used throughout this policy family, the analogous approximation
+    is ``SS ≈ k · L · rate``, where ``k`` is the safety fraction. This
+    matches the rest of the policy's ``ticks × rate`` structure and preserves
+    the qualitative invariant that safety scales with lead time. The safety
+    fraction ``safety_lead_pct_of_lag`` is therefore multiplied by the
+    per-pid ``delivery_lag`` inside ``decide()`` to compute the effective
+    safety horizon in ticks:
+
+        effective_safety_ticks = round(safety_lead_pct_of_lag × delivery_lag[pid])
+        effective_bonus_ticks  = round(stockout_safety_bonus_pct_of_lag × delivery_lag[pid])
+        s = (delivery_lag + effective_safety_ticks + effective_bonus_ticks) × rate
+        S = s + cover_horizon_ticks × rate
+
+    The default ``safety_lead_pct_of_lag = 2/3`` reproduces the old
+    ``safety_lead_ticks = 2`` behaviour at the canonical ``delivery_lag=3``
+    scale (``round(2/3 × 3) = 2``), so trajectories on uniform-lag worlds
+    are bit-identical to pre-ADR-0008 behaviour. See ADR 0008.
+
     Subclasses provide two decision hooks:
 
     - ``_trigger(pid, step, position, s) -> bool``: should this SKU
@@ -1041,9 +1082,9 @@ class TextbookReorderPolicy(Policy):
     3. For every known active pid: compute ``position`` (on-hand +
        in-transit) and ``rate`` (censored-sales mean over the last
        ``demand_window`` ticks).
-    4. If ``stockout_safety_bonus_ticks > 0`` and the recent window
-       contains any stockout tick, extend the safety horizon for this
-       tick by the bonus.
+    4. If ``stockout_safety_bonus_pct_of_lag > 0`` and the recent window
+       contains any stockout tick, extend the effective safety horizon for
+       this tick by ``round(stockout_safety_bonus_pct_of_lag × delivery_lag)``.
     5. Call ``_trigger_with_safety`` → ``_quantity_with_levels`` to get
        the per-pid desired qty.
     6. Run ``_allocate_two_pass_fair_share`` for a feasible allocation
@@ -1051,12 +1092,7 @@ class TextbookReorderPolicy(Policy):
     7. Emit the action dict (flat ``base_prices``; no dynamic pricing,
        no promotions, no catalog churn).
 
-    Demand-units framing of the levels:
-
-        s = (delivery_lag + effective_safety) × rate
-        S = s + cover_horizon_ticks × rate
-
-    Both are recomputed every tick from the latest rate estimate, so
+    Both levels are recomputed every tick from the latest rate estimate, so
     they self-adjust as demand drifts and are scale-invariant in
     capacity by construction.
     """
@@ -1066,9 +1102,9 @@ class TextbookReorderPolicy(Policy):
         *,
         policy_seed: int | None = None,
         cover_horizon_ticks: int = 10,
-        safety_lead_ticks: int = 2,
+        safety_lead_pct_of_lag: float = 2 / 3,
         opening_budget_pct: float = 0.50,
-        stockout_safety_bonus_ticks: int = 0,
+        stockout_safety_bonus_pct_of_lag: float = 0.0,
         min_qty: int = 0,
     ) -> None:
         super().__init__(policy_seed=policy_seed)
@@ -1076,12 +1112,15 @@ class TextbookReorderPolicy(Policy):
         # Cycle length in ticks. Drives ``S - s`` for the order-up-to
         # quantity and ``Q`` for the rate-derived (s,Q) default. Bigger
         # horizon ⇒ fewer-larger orders (good when ordering cost is high
-        # relative to holding cost).
+        # relative to holding cost). Independent of lead time (EOQ result).
         self.cover_horizon_ticks = cover_horizon_ticks
-        # Extra safety-stock horizon beyond the delivery lag, in ticks.
-        # Translates to ``safety_lead_ticks × rate`` extra units of
-        # protection against demand variability during the lead time.
-        self.safety_lead_ticks = safety_lead_ticks
+        # Safety fraction: multiplied by the per-pid delivery_lag to give
+        # the effective extra safety ticks beyond the lead time.
+        # ``effective_safety_ticks = round(safety_lead_pct_of_lag × lag)``.
+        # Default 2/3 reproduces ``safety_lead_ticks=2`` at the canonical
+        # lag=3 scale (round(2/3 × 3) = 2) — bit-identical on uniform-lag
+        # worlds, correct on heterogeneous-lag worlds. See ADR 0008.
+        self.safety_lead_pct_of_lag = safety_lead_pct_of_lag
         # Fraction of cash to spend on the very first order for each
         # newly-observed pid. Sized as
         # ``opening_budget_pct × balance / K_active / unit_cost[pid]``
@@ -1089,9 +1128,10 @@ class TextbookReorderPolicy(Policy):
         # store doesn't blow the budget on the first tick.
         self.opening_budget_pct = opening_budget_pct
         # When > 0, a stockout in the recent ``demand_window`` extends
-        # the effective safety horizon by this many ticks for this tick
-        # only. Stays off (0) by default — purely opt-in adaptiveness.
-        self.stockout_safety_bonus_ticks = stockout_safety_bonus_ticks
+        # the effective safety horizon for this tick only by
+        # ``round(stockout_safety_bonus_pct_of_lag × delivery_lag)``.
+        # Stays off (0.0) by default — purely opt-in adaptiveness.
+        self.stockout_safety_bonus_pct_of_lag = stockout_safety_bonus_pct_of_lag
         # Allocator floor on non-pilot orders: an allocation strictly
         # between 0 and ``min_qty`` gets folded to 0. Set to 0 (default)
         # to stay textbook-pure (no minimum order quantity).
@@ -1274,25 +1314,31 @@ class TextbookReorderPolicy(Policy):
                 sales_log={pid: self.sales_log[pid]},
                 demand_window=demand_window,
                 inv_before_settle={pid: self.inv_before_settle_log.get(pid, [])},
-                stockout_safety_bonus_ticks=self.stockout_safety_bonus_ticks,
             )
             # ``rate`` is the censored-sales mean. May undershoot true
             # demand on a recently stocked-out pid — handled by the
             # safety-bonus branch below.
             rate = rates.get(pid, 0.0)
 
+            # Per-pid safety horizon in ticks: the fraction of this pid's
+            # delivery lag. Computed with round() so the result is an
+            # integer number of ticks, consistent with the rest of the
+            # ``ticks × rate`` framing.
+            effective_safety = round(self.safety_lead_pct_of_lag * delivery_lag)
+
             # Stockout-adaptive safety bump (opt-in). Extends the safety
             # horizon for this tick only — does not persist into future
             # ticks. The textbook response to censored demand: don't
             # uncensor the rate, widen the buffer.
-            effective_safety = self.safety_lead_ticks
-            if self.stockout_safety_bonus_ticks > 0 and _has_stockout(
+            if self.stockout_safety_bonus_pct_of_lag > 0 and _has_stockout(
                 pid,
                 self.sales_log,
                 self.inv_before_settle_log,
                 demand_window,
             ):
-                effective_safety += self.stockout_safety_bonus_ticks
+                effective_safety += round(
+                    self.stockout_safety_bonus_pct_of_lag * delivery_lag
+                )
 
             # Trigger and quantity hooks — subclasses override either
             # ``_trigger`` / ``_quantity`` (simple) or
@@ -1390,7 +1436,8 @@ class OrderUpToPolicy(TextbookReorderPolicy):
 
     Reorder levels (demand-units framing):
 
-        s = (delivery_lag + safety_lead_ticks) × rate
+        effective_safety_ticks = round(safety_lead_pct_of_lag × delivery_lag[pid])
+        s = (delivery_lag + effective_safety_ticks) × rate
         S = s + cover_horizon_ticks × rate
 
     Both levels are computed per tick from the current rate estimate and
@@ -1434,7 +1481,8 @@ class ReorderPointPolicy(TextbookReorderPolicy):
 
     Reorder levels (demand-units framing):
 
-        s = (delivery_lag + safety_lead_ticks) × rate
+        effective_safety_ticks = round(safety_lead_pct_of_lag × delivery_lag[pid])
+        s = (delivery_lag + effective_safety_ticks) × rate
         Q = cover_horizon_ticks × rate    when Q=None (default)
         Q = self.Q                         when Q is an explicit int
 
@@ -1492,7 +1540,8 @@ class PeriodicOrderUpToPolicy(TextbookReorderPolicy):
 
     Reorder level (demand-units framing):
 
-        S = (delivery_lag + safety_lead_ticks + cover_horizon_ticks) × rate
+        effective_safety_ticks = round(safety_lead_pct_of_lag × delivery_lag[pid])
+        S = (delivery_lag + effective_safety_ticks + cover_horizon_ticks) × rate
 
     Note this is the "effective S" that ``_quantity_with_levels``
     computes as ``s + cover_horizon_ticks × rate``, which expands to the
@@ -1581,7 +1630,8 @@ class PeriodicReorderPolicy(TextbookReorderPolicy):
 
     Reorder levels (demand-units framing):
 
-        s = (delivery_lag + safety_lead_ticks) × rate
+        effective_safety_ticks = round(safety_lead_pct_of_lag × delivery_lag[pid])
+        s = (delivery_lag + effective_safety_ticks) × rate
         S = s + cover_horizon_ticks × rate
 
     Additional kwargs beyond those on ``TextbookReorderPolicy``:

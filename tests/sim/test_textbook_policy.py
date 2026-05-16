@@ -158,12 +158,12 @@ def test_order_up_to_instantiates_with_no_args():
 
 
 def test_order_up_to_default_kwargs():
-    """Default kwarg values match the spec."""
+    """Default kwarg values match the spec (ADR 0008 renames)."""
     p = OrderUpToPolicy()
     assert p.cover_horizon_ticks == 10
-    assert p.safety_lead_ticks == 2
+    assert abs(p.safety_lead_pct_of_lag - 2 / 3) < 1e-9
     assert abs(p.opening_budget_pct - 0.50) < 1e-9
-    assert p.stockout_safety_bonus_ticks == 0
+    assert abs(p.stockout_safety_bonus_pct_of_lag - 0.0) < 1e-9
     assert p.min_qty == 0
 
 
@@ -274,7 +274,7 @@ def test_order_up_to_no_order_when_position_above_s():
     delivery_lag = DELIVERY_LAG
     policy = OrderUpToPolicy(
         policy_seed=0,
-        safety_lead_ticks=safety_lead,
+        safety_lead_pct_of_lag=safety_lead / delivery_lag,
         cover_horizon_ticks=cover_horizon,
         opening_budget_pct=0.0,  # disable pilot
     )
@@ -309,7 +309,7 @@ def test_order_up_to_oscillates_between_s_and_S():
 
     policy = OrderUpToPolicy(
         policy_seed=0,
-        safety_lead_ticks=safety_lead,
+        safety_lead_pct_of_lag=safety_lead / delivery_lag,
         cover_horizon_ticks=cover_horizon,
         opening_budget_pct=0.5,
     )
@@ -501,7 +501,7 @@ def test_reorder_point_quantity_is_fixed_Q():
         policy_seed=0,
         Q=fixed_Q,
         opening_budget_pct=0.5,
-        safety_lead_ticks=0,
+        safety_lead_pct_of_lag=0.0,
         cover_horizon_ticks=10,
     )
     template = _mini_template(
@@ -543,7 +543,7 @@ def test_reorder_point_quantity_is_rate_derived_when_Q_is_None():
         policy_seed=0,
         Q=None,
         opening_budget_pct=0.5,
-        safety_lead_ticks=0,
+        safety_lead_pct_of_lag=0.0,
         cover_horizon_ticks=cover_horizon,
     )
     template = _mini_template(
@@ -582,7 +582,7 @@ def test_periodic_order_up_to_orders_only_on_review_ticks():
         policy_seed=0,
         review_interval=review_interval,
         opening_budget_pct=0.5,
-        safety_lead_ticks=SAFETY_LEAD,
+        safety_lead_pct_of_lag=SAFETY_LEAD / DELIVERY_LAG,
         cover_horizon_ticks=COVER_HORIZON,
     )
     template = _mini_template(
@@ -635,7 +635,7 @@ def test_periodic_order_up_to_brings_position_to_S():
         policy_seed=0,
         review_interval=review_interval,
         opening_budget_pct=0.5,
-        safety_lead_ticks=safety_lead,
+        safety_lead_pct_of_lag=safety_lead / delivery_lag,
         cover_horizon_ticks=cover_horizon,
     )
     template = _mini_template(
@@ -691,7 +691,7 @@ def test_reorder_point_no_order_when_position_above_s():
     policy = ReorderPointPolicy(
         policy_seed=0,
         opening_budget_pct=0.0,  # disable pilot
-        safety_lead_ticks=2,
+        safety_lead_pct_of_lag=2 / 3,  # round(2/3 × 3) = 2 at lag=3
         cover_horizon_ticks=10,
     )
     template = _mini_template(
@@ -718,7 +718,7 @@ def test_periodic_order_up_to_no_negative_order_when_above_S():
         review_interval=review_interval,
         # large pilot to ensure position >> S on first review ticks
         opening_budget_pct=0.5,
-        safety_lead_ticks=SAFETY_LEAD,
+        safety_lead_pct_of_lag=SAFETY_LEAD / DELIVERY_LAG,
         cover_horizon_ticks=COVER_HORIZON,
     )
     template = _mini_template(
@@ -849,7 +849,7 @@ def test_periodic_reorder_no_order_on_non_review_tick():
         policy_seed=0,
         review_interval=review_interval,
         opening_budget_pct=0.5,
-        safety_lead_ticks=SAFETY_LEAD,
+        safety_lead_pct_of_lag=SAFETY_LEAD / DELIVERY_LAG,
         cover_horizon_ticks=COVER_HORIZON,
     )
     template = _mini_template(
@@ -886,7 +886,7 @@ def test_periodic_reorder_no_order_on_review_tick_when_above_s():
         policy_seed=0,
         review_interval=review_interval,
         opening_budget_pct=0.5,  # pilot fills capacity to ensure position >> s
-        safety_lead_ticks=SAFETY_LEAD,
+        safety_lead_pct_of_lag=SAFETY_LEAD / DELIVERY_LAG,
         cover_horizon_ticks=COVER_HORIZON,
     )
     template = _mini_template(
@@ -926,7 +926,7 @@ def test_periodic_reorder_fires_when_both_conditions_met():
         policy_seed=0,
         review_interval=review_interval,
         opening_budget_pct=0.5,
-        safety_lead_ticks=safety_lead,
+        safety_lead_pct_of_lag=safety_lead / delivery_lag,
         cover_horizon_ticks=cover_horizon,
     )
     template = _mini_template(
@@ -1006,3 +1006,175 @@ def test_periodic_reorder_crn_self_consistency():
         json.dumps(_jsonable(r2), sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     assert h1 == h2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADR 0008 — safety_lead_pct_of_lag reparameterisation tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_safety_pct_of_lag_per_sku():
+    """Per-SKU safety horizon scales with delivery_lag (ADR 0008 fix).
+
+    Calls ``decide()`` directly with a synthetic two-SKU observation where
+    ``delivery_lags = {"P1": 1, "P2": 10}`` and pre-populated sales logs
+    (so rate ≈ 5 for both pids). Verifies that the steady-state order-up-to
+    level S differs proportionally:
+
+        effective_safety_ticks = round(2/3 * lag)
+        P1 (lag=1):  effective_safety = round(2/3) = 1
+        P2 (lag=10): effective_safety = round(20/3) = 7
+
+        s_P1 = (1+1) * 5 = 10,  S_P1 = (1+1+10) * 5 = 60
+        s_P2 = (10+7) * 5 = 85, S_P2 = (10+7+10) * 5 = 135
+
+    When both pids start with position=0, the order quantity equals S.
+    The ratio S_P2 / S_P1 = 135 / 60 = 2.25 — well above the ≥1.8 threshold.
+    """
+    rate = 5.0
+    lag1, lag10 = 1, 10
+
+    policy = OrderUpToPolicy(
+        policy_seed=0,
+        opening_budget_pct=0.0,  # no pilot — we inject pre-warmed logs
+        cover_horizon_ticks=10,
+        # default safety_lead_pct_of_lag=2/3
+    )
+
+    # Pre-populate the sales log with 20 ticks of constant demand=5 per pid.
+    # This gives _estimate_rate a clean rate=5 for both pids.
+    n_hist = 20
+    for pid in ("P1", "P2"):
+        policy.sales_log[pid] = [int(rate)] * n_hist
+        policy.inv_before_settle_log[pid] = [100] * n_hist  # never stocked out
+
+    # Synthetic observation: both pids have position=0 so the first order = S.
+    obs = {
+        "current_sim_step": 50,
+        "active_products": ["P1", "P2"],
+        "inventory": {"P1": 0, "P2": 0},
+        "outstanding_orders": {"P1": 0, "P2": 0},
+        "balance": 1_000_000.0,
+        "unit_costs": {"P1": 1.0, "P2": 1.0},
+        "base_prices": {"P1": 10.0, "P2": 10.0},
+        "max_capacity": 10_000,
+        "delivery_lags": {"P1": float(lag1), "P2": float(lag10)},
+        "sales": {"P1": int(rate), "P2": int(rate)},
+    }
+
+    action = policy.decide(obs)
+    orders = action["order"]
+
+    qty_p1 = orders.get("P1", 0)
+    qty_p2 = orders.get("P2", 0)
+
+    # Both should fire (position=0 < s for any positive rate and lag).
+    assert qty_p1 > 0, f"P1 (lag=1) should have fired an order, got 0"
+    assert qty_p2 > 0, f"P2 (lag=10) should have fired an order, got 0"
+
+    # P2's order should be substantially larger (S_P2 / S_P1 ≈ 2.25).
+    assert qty_p2 > qty_p1, (
+        f"lag=10 order qty ({qty_p2}) should exceed lag=1 ({qty_p1}). "
+        f"Safety horizon must scale with delivery_lag."
+    )
+    ratio = qty_p2 / max(1, qty_p1)
+    assert ratio >= 1.8, (
+        f"Expected lag=10 order to be >= 1.8x lag=1 order. "
+        f"Got ratio={ratio:.2f} (P1={qty_p1}, P2={qty_p2}). "
+        f"Expected S_P1≈60, S_P2≈135."
+    )
+
+
+def test_safety_pct_of_lag_default_equivalence():
+    """Default safety_lead_pct_of_lag=2/3 gives CRN-identical runs at lag=3.
+
+    ADR 0008 guarantee: at the canonical lag=3 scale, round(2/3 * 3) = 2,
+    reproducing the old safety_lead_ticks=2 default. Two back-to-back runs
+    with the new default must produce the same hash (self-consistency).
+    """
+    import hashlib
+    import json
+
+    from src.sim.data_exporter import _jsonable
+
+    def _run() -> dict:
+        policy = OrderUpToPolicy(policy_seed=0)
+        template = _mini_template(init_stock_pct=0.0, delivery_lag=3)
+        scenario = Scenario(
+            catalog=_mini_catalog(),
+            market=_constant_market(demand=5.0),
+            disruption=_no_disruption(),
+            item_lifecycle=_no_lifecycle(),
+            stores=[StoreInstance(template=template, init_seed=1, policy=policy)],
+            n_steps=50,
+            start_date=datetime(2024, 1, 1),
+            world_seed=42,
+        )
+        return Runner(scenario).run()
+
+    r1 = _run()
+    r2 = _run()
+    h1 = hashlib.sha256(
+        json.dumps(_jsonable(r1), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    h2 = hashlib.sha256(
+        json.dumps(_jsonable(r2), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert h1 == h2, (
+        f"CRN self-consistency violated after rename. h1={h1}, h2={h2}"
+    )
+
+
+def test_no_safety_lead_ticks_kwarg():
+    """Passing the old kwarg names raises TypeError (ADR 0008 hard rename).
+
+    No compatibility alias — old kwargs fail loudly so the migration is
+    auditable from grep.
+    """
+    with pytest.raises(TypeError):
+        OrderUpToPolicy(safety_lead_ticks=2)
+
+    with pytest.raises(TypeError):
+        OrderUpToPolicy(stockout_safety_bonus_ticks=1)
+
+
+def test_safety_pct_of_lag_monotonic_in_safety():
+    """Increasing safety_lead_pct_of_lag produces monotonically larger order totals.
+
+    At lag=3, safety_lead_pct_of_lag=0.0 -> 1.0 -> 3.0 gives
+    effective_safety_ticks of 0, 3, 9 respectively. The order-up-to level S
+    grows monotonically, so total orders over 50 ticks should too.
+    """
+    demand = 5.0
+    n_steps = 50
+    delivery_lag = 3
+
+    def _run_total_orders(pct: float) -> int:
+        policy = OrderUpToPolicy(
+            policy_seed=0,
+            safety_lead_pct_of_lag=pct,
+            opening_budget_pct=0.5,
+        )
+        template = _mini_template(
+            init_stock_pct=0.0,
+            capacity=50_000,
+            balance=10_000_000.0,
+            delivery_lag=delivery_lag,
+        )
+        log = _run_scenario(policy, n_steps=n_steps, template=template, demand=demand)
+        store_log = log["stores"][0]
+        pid = list(store_log["products"].keys())[0]
+        return sum(store_log["products"][pid]["order_quantity"])
+
+    orders_0 = _run_total_orders(0.0)
+    orders_1 = _run_total_orders(1.0)
+    orders_3 = _run_total_orders(3.0)
+
+    assert orders_0 <= orders_1, (
+        f"safety_lead_pct_of_lag=1.0 should produce >= orders than 0.0. "
+        f"orders_0={orders_0}, orders_1={orders_1}"
+    )
+    assert orders_1 <= orders_3, (
+        f"safety_lead_pct_of_lag=3.0 should produce >= orders than 1.0. "
+        f"orders_1={orders_1}, orders_3={orders_3}"
+    )

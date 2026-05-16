@@ -172,7 +172,8 @@ class RLConfig:
     """Order-up-to target (in lead-times) when ``order_raw = 0``.
 
     Matches ``OrderUpToPolicy.S / rate`` at the default policy kwargs
-    (``delivery_lag + safety_lead_ticks + cover_horizon_ticks = 3 + 2 + 10``).
+    (``delivery_lag + round(safety_lead_pct_of_lag × lag) + cover_horizon_ticks
+    = 3 + round(2/3 × 3) + 10 = 3 + 2 + 10 = 15`` at the canonical lag=3 scale).
     """
 
     target_half_span_lead_times: int = 15
