@@ -1,9 +1,9 @@
 """Optuna study orchestration and artifact serialisation for policy tuning.
 
-``run_study`` is the top-level entry point: it builds a shared ``EpisodeSpec``
-list (CRN at the trial level), runs ``n_trials`` Optuna trials calling
-``evaluate_policy_normalised`` for each, and writes three artifact files to
-``{output_dir}/{study_name}/``:
+``run_study`` is the top-level entry point: it builds a shared
+``TuningEpisodeSpec`` list (CRN at the trial level), runs ``n_trials`` Optuna
+trials calling ``evaluate_policy_normalised`` for each, and writes three
+artifact files to ``{output_dir}/{study_name}/``:
 
   - ``trials.parquet``   — one row per trial, all documented columns.
   - ``per_seed.parquet`` — long format, one row per (trial, seed).
@@ -12,43 +12,49 @@ list (CRN at the trial level), runs ``n_trials`` Optuna trials calling
 ``confirm_top_k`` re-evaluates the top-K search trials plus the published
 default on a disjoint held-out seed set, and writes:
 
-  - ``holdout.parquet``        — one row per (label, seed).
-  - ``holdout_summary.json``   — bootstrap confidence intervals + headline uplift.
+  - ``holdout.parquet``       — one row per (label, seed).
+  - ``holdout_summary.json``  — bootstrap CIs + headline uplift.
 
 CRN guarantee
 -------------
 The same ``eval_specs`` list is built once before ``study.optimize`` is called
-and is closed over by the trial objective.  Every trial therefore evaluates on
-bit-identical world trajectories for each seed; differences in aggregate KPIs
-between trials are attributable to the policy kwargs alone.
+and is closed over by the trial objective. Every trial therefore evaluates on
+bit-identical world trajectories for each seed; differences between trials are
+attributable to the policy kwargs alone.
 
 The holdout specs are built once in ``confirm_top_k`` and reused for all K+1
-policy evaluations (same CRN paired comparison on the held-out seeds).
+policy evaluations.
 
 Artifact portability
 --------------------
-The Parquet files are written with ``pandas``.  They load cleanly with only
-``pandas`` + ``pyarrow`` — no Optuna import required at read time.  The JSON
-file is written with the standard library ``json`` module.
+The Parquet files are written with ``pandas``. They load cleanly with only
+``pandas`` + ``pyarrow`` — no Optuna import required at read time.
 """
 
 from __future__ import annotations
 
-import dataclasses
+import argparse
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import optuna
 
-from src.rl.configs.default import RLConfig
-from src.rl.episode_sampler import EpisodeSpec, sample_episode
 from src.sim.policy import Policy
 from src.sim.scenario import StoreTemplate, Ware
 from src.tuning.config import TuningConfig
+from src.tuning.episode import TuningEpisodeSpec, sample_episode
 from src.tuning.evaluator import evaluate_policy_normalised
+from src.tuning.search_spaces import (
+    order_up_to_space,
+    periodic_order_up_to_space,
+    periodic_reorder_space,
+    reorder_point_space,
+)
+from src.tuning.world_loader import load_world
 
 
 # ---------------------------------------------------------------------------
@@ -59,30 +65,26 @@ from src.tuning.evaluator import evaluate_policy_normalised
 def _build_eval_specs(
     catalog: list[Ware],
     base_template: StoreTemplate,
-    rl_config: RLConfig,
     tuning_config: TuningConfig,
-) -> list[EpisodeSpec]:
-    """Build the shared CRN eval-spec list for the search phase.
+    seed_offset: int,
+    n_seeds: int,
+    *,
+    market_params: Any = None,
+    disruption_params: Any = None,
+) -> list[TuningEpisodeSpec]:
+    """Build a CRN-paired list of episode specs.
 
-    Seeds are taken from ``[tuning_config.seed_offset, seed_offset +
-    n_search_seeds)``.  The list is built once at study start and reused for
-    every trial objective call.
+    Seeds taken from ``[seed_offset, seed_offset + n_seeds)``.
     """
-    import dataclasses
-
-    # Override episode_length in the config so specs reflect the tuning horizon.
-    rl_config_with_length = dataclasses.replace(
-        rl_config,
-        episode_length=tuning_config.episode_length,
-    )
-    specs: list[EpisodeSpec] = []
-    for i in range(tuning_config.n_search_seeds):
-        seed = tuning_config.seed_offset + i
+    specs: list[TuningEpisodeSpec] = []
+    for i in range(n_seeds):
         spec = sample_episode(
             catalog=catalog,
             base_template=base_template,
-            config=rl_config_with_length,
-            episode_seed=seed,
+            config=tuning_config,
+            episode_seed=seed_offset + i,
+            market_params=market_params,
+            disruption_params=disruption_params,
         )
         specs.append(spec)
     return specs
@@ -107,18 +109,8 @@ def _get_git_sha() -> str:
 def _introspect_policy_class_name(
     policy_space: Callable[[optuna.Trial], Policy],
 ) -> str:
-    """Return a best-effort class name for the policy produced by policy_space.
-
-    Probes the factory by creating a FixedTrial with a minimal parameter set
-    that is common across all bundled factories.  If introspection fails
-    (custom factory with non-standard params), returns the factory's
-    ``__name__`` instead.
-    """
-    # We probe with a small set of known-common params.  The probe may fail
-    # for unusual factories; we catch that and fall back.
+    """Best-effort class name for the policy produced by ``policy_space``."""
     try:
-        # Use a FixedTrial with a generous default parameter set that covers
-        # all four bundled factories.
         probe_params = {
             "cover_horizon_ticks": 10,
             "safety_lead_pct_of_lag": 0.667,
@@ -135,10 +127,7 @@ def _introspect_policy_class_name(
 
 
 def _extract_search_space_from_trial(trial: optuna.Trial) -> dict[str, dict[str, Any]]:
-    """Return a ``{param_name: {type, low, high}}`` dict from a completed trial.
-
-    Reads ``trial.distributions`` (always populated after the trial completes).
-    """
+    """Return a ``{param_name: {type, low, high}}`` dict from a completed trial."""
     import optuna.distributions as od
 
     result: dict[str, dict[str, Any]] = {}
@@ -194,50 +183,35 @@ def run_study(
     *,
     catalog: list[Ware],
     base_template: StoreTemplate,
-    rl_config: RLConfig,
     tuning_config: TuningConfig,
     study_name: str,
     output_dir: str = "runs/tuning",
+    market_params: Any = None,
+    disruption_params: Any = None,
 ) -> optuna.Study:
     """Run an Optuna study and write artifact files to disk.
 
     Parameters
     ----------
     policy_space:
-        Trial-callback factory: ``f(trial) -> Policy``.  Called once per
-        trial inside the Optuna objective.  All four bundled factories in
-        ``src.tuning.search_spaces`` are valid here; custom factories
-        following the same signature are equally valid.
+        Trial-callback factory: ``f(trial) -> Policy``. Called once per trial.
     catalog:
         Full product universe passed to ``sample_episode``.
     base_template:
         Non-episodic ``StoreTemplate`` knobs (region, delivery lag, …).
-    rl_config:
-        ``RLConfig`` instance; ``episode_length`` is overridden by
-        ``tuning_config.episode_length`` when building eval specs.
     tuning_config:
         Immutable study configuration; see ``TuningConfig`` for all fields.
     study_name:
-        Human-readable name for this study.  Used as the output sub-directory
-        name under ``output_dir``.
+        Human-readable study name; used as the output sub-directory.
     output_dir:
-        Root directory for artifact output.  Artifacts land at
-        ``{output_dir}/{study_name}/``.
+        Root output directory. Artifacts land at ``{output_dir}/{study_name}/``.
+    market_params, disruption_params:
+        Optional sim parameter overrides (e.g. from a loaded world).
 
     Returns
     -------
     optuna.Study
-        The completed in-memory Optuna study.  Callers can inspect
-        ``study.best_trial``, ``study.trials``, etc. without re-reading
-        from disk.
-
-    Side effects
-    ------------
-    Writes three files to ``{output_dir}/{study_name}/``:
-
-    - ``trials.parquet``
-    - ``per_seed.parquet``
-    - ``study.json``
+        The completed in-memory Optuna study.
     """
     import pandas as pd
 
@@ -246,7 +220,15 @@ def run_study(
     # ------------------------------------------------------------------
     # 1. Build shared eval specs (CRN at the trial level).
     # ------------------------------------------------------------------
-    eval_specs = _build_eval_specs(catalog, base_template, rl_config, tuning_config)
+    eval_specs = _build_eval_specs(
+        catalog,
+        base_template,
+        tuning_config,
+        seed_offset=tuning_config.seed_offset,
+        n_seeds=tuning_config.n_search_seeds,
+        market_params=market_params,
+        disruption_params=disruption_params,
+    )
 
     # ------------------------------------------------------------------
     # 2. Create Optuna study (in-memory; no SQLite).
@@ -254,30 +236,27 @@ def run_study(
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(
         direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=tuning_config.sampler_seed),
+        # sampler=optuna.samplers.TPESampler(seed=tuning_config.sampler_seed),
+        sampler=optuna.samplers.RandomSampler(seed=tuning_config.sampler_seed),
         storage=None,
     )
 
     # ------------------------------------------------------------------
     # 3. Define the trial objective (closure over eval_specs).
     # ------------------------------------------------------------------
-    # Accumulate per-seed rows across all trials into a shared list so
-    # per_seed.parquet can be built in one pass after optimize().
     per_seed_rows: list[dict[str, Any]] = []
 
     def objective(trial: optuna.Trial) -> float:
         policy = policy_space(trial)
         kpis = evaluate_policy_normalised(
-            lambda p=policy: p,  # return the already-constructed instance
+            lambda p=policy: p,
             eval_specs,
-            config=rl_config,
         )
-        # Stash the full KPI dict in trial user_attrs for the artifact writer.
         trial.set_user_attr("kpis", kpis)
         return kpis["mean_normalised_return"]
 
     # ------------------------------------------------------------------
-    # 4. Run the study (sequential; n_jobs=1; exceptions surface loudly).
+    # 4. Run the study.
     # ------------------------------------------------------------------
     study.optimize(
         objective,
@@ -295,15 +274,13 @@ def run_study(
     os.makedirs(study_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 6. Build trials DataFrame.
+    # 6. Build trials DataFrame + per_seed rows in one pass.
     # ------------------------------------------------------------------
-    # Collect per-seed rows while iterating trials (one pass).
     trials_rows: list[dict[str, Any]] = []
 
     for t in study.trials:
         kpis: dict[str, Any] = t.user_attrs.get("kpis", {})
 
-        # Duration
         if t.datetime_start is not None and t.datetime_complete is not None:
             duration_s = (t.datetime_complete - t.datetime_start).total_seconds()
         else:
@@ -323,13 +300,11 @@ def run_study(
             "mean_revenue": kpis.get("mean_revenue"),
             "mean_mean_price_pct_of_msrp": kpis.get("mean_mean_price_pct_of_msrp"),
         }
-        # Add one column per search-space parameter.
         for param_name, param_value in t.params.items():
             row[param_name] = param_value
 
         trials_rows.append(row)
 
-        # Accumulate per-seed rows.
         n_seeds = tuning_config.n_search_seeds
         ps_net_profit = kpis.get("per_seed_net_profit", [None] * n_seeds)
         ps_initial_cash = kpis.get("per_seed_initial_cash", [None] * n_seeds)
@@ -340,7 +315,7 @@ def run_study(
         ps_revenue = kpis.get("per_seed_revenue", [None] * n_seeds)
         ps_price_pct = kpis.get("per_seed_mean_price_pct_of_msrp", [None] * n_seeds)
 
-        for i, spec in enumerate(eval_specs):
+        for i, _spec in enumerate(eval_specs):
             seed = tuning_config.seed_offset + i
             net_profit_i = ps_net_profit[i] if i < len(ps_net_profit) else None
             initial_cash_i = ps_initial_cash[i] if i < len(ps_initial_cash) else None
@@ -375,8 +350,6 @@ def run_study(
     # ------------------------------------------------------------------
     # 8. Build and write study.json.
     # ------------------------------------------------------------------
-    # Introspect the search space from the best trial's distributions
-    # (or the first completed trial if best_trial is not defined).
     search_space: dict[str, dict[str, Any]] = {}
     for t in study.trials:
         if t.distributions:
@@ -401,6 +374,7 @@ def run_study(
         "finished_at": finished_at,
         "git_sha": _get_git_sha(),
         "policy_class_name": _introspect_policy_class_name(policy_space),
+        "world_archetype": tuning_config.world_archetype,
     }
 
     with open(os.path.join(study_dir, "study.json"), "w", encoding="utf-8") as fh:
@@ -429,20 +403,6 @@ _HOLDOUT_PARQUET_COLUMNS = [
     "mean_price_pct_of_msrp",
 ]
 
-_HOLDOUT_SUMMARY_FIELDS = [
-    "tuned_best_label",
-    "tuned_best_mean_net_profit",
-    "tuned_best_ci_low",
-    "tuned_best_ci_high",
-    "default_mean_net_profit",
-    "default_ci_low",
-    "default_ci_high",
-    "headline_uplift",
-    "headline_uplift_ci_low",
-    "headline_uplift_ci_high",
-    "n_holdout_seeds",
-]
-
 
 def _bootstrap_ci(
     values: list[float],
@@ -450,19 +410,7 @@ def _bootstrap_ci(
     ci: float = 0.95,
     seed: int = 0,
 ) -> tuple[float, float]:
-    """Return (ci_low, ci_high) via percentile bootstrap.
-
-    Parameters
-    ----------
-    values:
-        Per-seed numeric values.
-    n_resamples:
-        Number of bootstrap resamples.
-    ci:
-        Coverage probability (default 0.95 → 95% CI).
-    seed:
-        RNG seed for reproducibility.
-    """
+    """Return (ci_low, ci_high) via percentile bootstrap."""
     import random
 
     rng = random.Random(seed)
@@ -489,9 +437,10 @@ def confirm_top_k(
     *,
     catalog: list[Ware],
     base_template: StoreTemplate,
-    rl_config: RLConfig,
     tuning_config: TuningConfig,
     study_dir: str,
+    market_params: Any = None,
+    disruption_params: Any = None,
 ) -> dict[str, Any]:
     """Re-evaluate the top-K search trials plus the published default on held-out seeds.
 
@@ -499,35 +448,15 @@ def confirm_top_k(
     ``mean_normalised_return`` (descending), re-instantiates each policy via
     ``optuna.trial.FixedTrial(trial.params)`` passed to ``policy_space``, and
     evaluates them on ``tuning_config.n_holdout_seeds`` CRN seeds starting at
-    ``tuning_config.holdout_seed_offset`` — disjoint from the search seeds.
+    ``tuning_config.holdout_seed_offset``.
 
     The published default (``OrderUpToPolicy()`` with no kwargs) is evaluated
-    on the *same* holdout seeds for CRN paired comparison.
+    on the same holdout seeds for CRN paired comparison.
 
-    Writes two artifact files:
-
-    - ``holdout.parquet``       — one row per (label, seed).
-      Columns: same as ``per_seed.parquet`` + ``label``.
-      Row count: ``(top_k_for_holdout + 1) × n_holdout_seeds``.
-    - ``holdout_summary.json``  — bootstrap CIs + headline uplift.
-
-    Parameters
-    ----------
-    study:
-        The completed ``optuna.Study`` returned by ``run_study``.
-    policy_space:
-        The same trial-callback factory used to run the original study.
-        Re-invoked via ``FixedTrial`` to reconstruct the K best policies.
-    catalog, base_template, rl_config, tuning_config:
-        Same arguments as ``run_study``.
-    study_dir:
-        Absolute path to the study artifact directory (typically
-        ``{output_dir}/{study_name}/``).  Artefacts are written here.
-
-    Returns
-    -------
-    dict
-        The ``holdout_summary.json`` payload (all documented fields).
+    The headline (``tuned_best_label``) is always ``tuned_rank_1`` — the
+    search winner. Picking best-of-top-K on the holdout would reintroduce a
+    winner's-curse bias. Other ranks are still written to ``holdout.parquet``
+    for transparency / sensitivity analysis.
     """
     import pandas as pd
     from src.sim.policy import OrderUpToPolicy
@@ -535,31 +464,20 @@ def confirm_top_k(
     # ------------------------------------------------------------------
     # 1. Build holdout eval specs (disjoint from search seeds).
     # ------------------------------------------------------------------
-    import dataclasses as _dc
-
-    rl_config_with_length = _dc.replace(
-        rl_config,
-        episode_length=tuning_config.episode_length,
+    holdout_specs = _build_eval_specs(
+        catalog,
+        base_template,
+        tuning_config,
+        seed_offset=tuning_config.holdout_seed_offset,
+        n_seeds=tuning_config.n_holdout_seeds,
+        market_params=market_params,
+        disruption_params=disruption_params,
     )
-    holdout_specs: list[EpisodeSpec] = []
-    from src.rl.episode_sampler import sample_episode as _sample_episode
-    for i in range(tuning_config.n_holdout_seeds):
-        seed = tuning_config.holdout_seed_offset + i
-        spec = _sample_episode(
-            catalog=catalog,
-            base_template=base_template,
-            config=rl_config_with_length,
-            episode_seed=seed,
-        )
-        holdout_specs.append(spec)
 
     # ------------------------------------------------------------------
     # 2. Select top-K completed trials by mean_normalised_return.
     # ------------------------------------------------------------------
-    completed = [
-        t for t in study.trials
-        if t.value is not None
-    ]
+    completed = [t for t in study.trials if t.value is not None]
     if not completed:
         raise ValueError("confirm_top_k: no completed trials found in study.")
 
@@ -568,7 +486,7 @@ def confirm_top_k(
     top_k_trials = sorted_trials[:top_k]
 
     # ------------------------------------------------------------------
-    # 3. Evaluate each top-K trial + the published default on holdout specs.
+    # 3. Evaluate each top-K trial + the published default.
     # ------------------------------------------------------------------
     holdout_rows: list[dict[str, Any]] = []
     per_label_net_profit: dict[str, list[float]] = {}
@@ -578,15 +496,11 @@ def confirm_top_k(
         policy_factory: Callable[[], Policy],
         trial_id: int | None,
     ) -> None:
-        kpis = evaluate_policy_normalised(
-            policy_factory,
-            holdout_specs,
-            config=rl_config,
-        )
+        kpis = evaluate_policy_normalised(policy_factory, holdout_specs)
         net_profits: list[float] = kpis["per_seed_net_profit"]
         per_label_net_profit[label] = net_profits
 
-        for i, spec in enumerate(holdout_specs):
+        for i, _spec in enumerate(holdout_specs):
             seed = tuning_config.holdout_seed_offset + i
             net_profit_i = kpis["per_seed_net_profit"][i]
             initial_cash_i = kpis["per_seed_initial_cash"][i]
@@ -606,7 +520,6 @@ def confirm_top_k(
                 "mean_price_pct_of_msrp": kpis["per_seed_mean_price_pct_of_msrp"][i],
             })
 
-    # Evaluate top-K trials.
     for rank, trial in enumerate(top_k_trials, start=1):
         label = f"tuned_rank_{rank}"
         fixed_params = dict(trial.params)
@@ -619,12 +532,7 @@ def confirm_top_k(
 
         _evaluate_and_collect(label, _make_factory(fixed_params), trial.number)
 
-    # Evaluate published default (OrderUpToPolicy with no kwargs).
-    _evaluate_and_collect(
-        "default",
-        lambda: OrderUpToPolicy(),
-        None,
-    )
+    _evaluate_and_collect("default", lambda: OrderUpToPolicy(), None)
 
     # ------------------------------------------------------------------
     # 4. Write holdout.parquet.
@@ -634,14 +542,9 @@ def confirm_top_k(
     holdout_df.to_parquet(os.path.join(study_dir, "holdout.parquet"), index=False)
 
     # ------------------------------------------------------------------
-    # 5. Compute bootstrap CIs.
+    # 5. Bootstrap CIs + summary.
     # ------------------------------------------------------------------
-    # Find the label with the best mean net profit among the tuned ranks.
-    tuned_labels = [f"tuned_rank_{r}" for r in range(1, top_k + 1)]
-    best_label = max(
-        tuned_labels,
-        key=lambda lbl: sum(per_label_net_profit.get(lbl, [0.0])) / max(1, len(per_label_net_profit.get(lbl, [0.0]))),
-    )
+    best_label = "tuned_rank_1"
     tuned_best_profits = per_label_net_profit[best_label]
     default_profits = per_label_net_profit["default"]
 
@@ -651,17 +554,12 @@ def confirm_top_k(
     tuned_ci_low, tuned_ci_high = _bootstrap_ci(tuned_best_profits, seed=0)
     default_ci_low, default_ci_high = _bootstrap_ci(default_profits, seed=1)
 
-    # Paired uplift: per-seed differences.
     paired_uplift = [
-        t - d
-        for t, d in zip(tuned_best_profits, default_profits)
+        t - d for t, d in zip(tuned_best_profits, default_profits)
     ]
     headline_uplift = sum(paired_uplift) / max(1, len(paired_uplift))
     uplift_ci_low, uplift_ci_high = _bootstrap_ci(paired_uplift, seed=2)
 
-    # ------------------------------------------------------------------
-    # 6. Write holdout_summary.json.
-    # ------------------------------------------------------------------
     summary: dict[str, Any] = {
         "tuned_best_label": best_label,
         "tuned_best_mean_net_profit": tuned_mean,
@@ -702,18 +600,6 @@ def _cli_main(argv: list[str] | None = None) -> None:
 
     See ``--help`` for all flags.
     """
-    import argparse
-    import dataclasses as _dc
-    import sys
-
-    from src.tuning.config import TuningConfig
-    from src.tuning.search_spaces import (
-        order_up_to_space,
-        periodic_order_up_to_space,
-        periodic_reorder_space,
-        reorder_point_space,
-    )
-
     _POLICY_DISPATCH = {
         "order_up_to": order_up_to_space,
         "reorder_point": reorder_point_space,
@@ -734,7 +620,6 @@ def _cli_main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    # Required
     parser.add_argument(
         "--policy",
         required=True,
@@ -747,7 +632,6 @@ def _cli_main(argv: list[str] | None = None) -> None:
         help="Human-readable study name; also used as the output sub-directory.",
     )
 
-    # Optional overrides for TuningConfig fields
     parser.add_argument(
         "--trials",
         type=int,
@@ -798,18 +682,16 @@ def _cli_main(argv: list[str] | None = None) -> None:
         help=f"Episode length in ticks (default: {_defaults.episode_length}).",
     )
 
-    # World selection
     parser.add_argument(
         "--world",
-        default="rl_train",
+        default=_defaults.world_archetype,
         metavar="ARCHETYPE",
         help=(
-            "World archetype; selects catalog + base template via the same "
-            "resolution logic as the RL training pipeline (default: rl_train)."
+            f"World archetype (default: {_defaults.world_archetype}). "
+            f"Resolved against data/worlds/<archetype>/world.json."
         ),
     )
 
-    # Output
     parser.add_argument(
         "--output-dir",
         default="runs/tuning",
@@ -817,7 +699,6 @@ def _cli_main(argv: list[str] | None = None) -> None:
         help="Root output directory (default: runs/tuning).",
     )
 
-    # Skip holdout
     parser.add_argument(
         "--skip-holdout",
         action="store_true",
@@ -827,9 +708,6 @@ def _cli_main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
 
-    # ------------------------------------------------------------------
-    # Build TuningConfig with flag overrides.
-    # ------------------------------------------------------------------
     tuning_config = TuningConfig(
         n_trials=args.trials,
         n_search_seeds=args.n_search_seeds,
@@ -838,34 +716,17 @@ def _cli_main(argv: list[str] | None = None) -> None:
         seed_offset=args.seed_offset,
         sampler_seed=args.sampler_seed,
         top_k_for_holdout=args.top_k,
+        world_archetype=args.world,
     )
 
-    # ------------------------------------------------------------------
-    # Load world (catalog + base template) using the same resolution logic
-    # as the RL training pipeline.
-    # ------------------------------------------------------------------
-    from src.rl.configs.default import RLConfig
+    catalog, base_template, market_params, disruption_params = load_world(tuning_config)
 
-    rl_config = _dc.replace(RLConfig(), world_archetype=args.world)
-
-    # Reuse the world-loading helper from the training module.
-    from src.rl.train import _load_world_catalog_and_template
-
-    catalog, base_template, market_params, disruption_params = (
-        _load_world_catalog_and_template(rl_config)
-    )
-
-    # ------------------------------------------------------------------
-    # Select the policy factory.
-    # ------------------------------------------------------------------
     policy_space = _POLICY_DISPATCH[args.policy]
 
-    # ------------------------------------------------------------------
-    # Run the study.
-    # ------------------------------------------------------------------
     print(
         f"[tuning] Starting study '{args.study_name}' | policy={args.policy} "
         f"| trials={tuning_config.n_trials} | search_seeds={tuning_config.n_search_seeds} "
+        f"| world={tuning_config.world_archetype} "
         f"| output={args.output_dir}/{args.study_name}",
         file=sys.stderr,
     )
@@ -874,15 +735,13 @@ def _cli_main(argv: list[str] | None = None) -> None:
         policy_space,
         catalog=catalog,
         base_template=base_template,
-        rl_config=rl_config,
         tuning_config=tuning_config,
         study_name=args.study_name,
         output_dir=args.output_dir,
+        market_params=market_params,
+        disruption_params=disruption_params,
     )
 
-    # ------------------------------------------------------------------
-    # Optionally run confirm_top_k.
-    # ------------------------------------------------------------------
     study_dir = os.path.join(args.output_dir, args.study_name)
 
     if not args.skip_holdout:
@@ -891,14 +750,12 @@ def _cli_main(argv: list[str] | None = None) -> None:
             policy_space,
             catalog=catalog,
             base_template=base_template,
-            rl_config=rl_config,
             tuning_config=tuning_config,
             study_dir=study_dir,
+            market_params=market_params,
+            disruption_params=disruption_params,
         )
 
-    # ------------------------------------------------------------------
-    # Print one-line summary to stdout.
-    # ------------------------------------------------------------------
     best = study.best_trial
     print(
         f"study={args.study_name} "

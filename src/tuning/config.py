@@ -1,69 +1,105 @@
 """TuningConfig — immutable configuration dataclass for hyperparameter tuning studies.
 
-All defaults are documented in ADR 0009.  ``TuningConfig()`` (no args)
-produces a valid configuration for a full production study.  For smoke
-tests and CI, override ``n_trials``, ``n_search_seeds``, and
-``episode_length`` to shrink the run.
+Fully self-contained: holds every knob the tuning module needs (episode shape,
+randomisation distributions, simulator settings, world archetype, study
+parameters). No dependency on any RL config.
 
 Seed offset design
 ------------------
-The default offsets are chosen to be disjoint from all other seed ranges
-in the project:
+The default offsets are chosen to be disjoint from any other seed ranges used
+elsewhere in the project:
 
-- Training: seeds ``[0, total_env_steps)``.
-- CRN paired-eval: ``eval_seed_offset = 10_000_000`` (default in ``RLConfig``).
-- Two-scale eval: ``eval_seed_offset + 1_000_000 = 11_000_000``.
-- Tuning search: ``seed_offset = 12_000_000``.
-- Tuning holdout: ``holdout_seed_offset = 13_000_000``.
+- Tuning search:  ``seed_offset = 12_000_000``
+- Tuning holdout: ``holdout_seed_offset = 13_000_000``
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
+
+from src.sim.distributions import Distribution
+
+
+def _default_capacity_dist() -> Distribution:
+    """``LogUniform(100, 10_000)`` — per-episode capacity distribution.
+
+    Log-uniform over two orders of magnitude so a single study spans
+    small-store and flagship deployments.
+    """
+    from src.sim.distributions import LogUniform
+
+    return LogUniform(100, 10_000)
+
+
+def _default_balance_dist() -> Distribution:
+    """``LogUniform(10_000, 1_000_000)`` — per-episode opening balance distribution."""
+    from src.sim.distributions import LogUniform
+
+    return LogUniform(10_000, 1_000_000)
 
 
 @dataclass(frozen=True)
 class TuningConfig:
-    """Immutable configuration for one Optuna-based policy tuning study.
+    """Immutable configuration for one Optuna-based policy tuning study."""
 
-    Fields
-    ------
-    n_trials:
-        Number of Optuna trials (TPE proposals) to run. Default 150.
-    n_search_seeds:
-        Number of CRN seeds used to evaluate each trial during the search
-        phase. Mean normalised return over these seeds is the objective.
-        Default 16.
-    n_holdout_seeds:
-        Number of CRN seeds used in the post-search confirmation phase
-        (``confirm_top_k``).  Disjoint from ``n_search_seeds`` by
-        construction (different ``holdout_seed_offset``). Default 32.
-    episode_length:
-        Number of ticks per episode. Default 365 (one calendar year at
-        daily resolution).
-    seed_offset:
-        First seed for the search-phase eval set.  Must be disjoint from
-        the training seed space (``[0, total_env_steps)``) and from the
-        CRN eval ranges (10_000_000 and 11_000_000). Default 12_000_000.
-    holdout_seed_offset:
-        First seed for the holdout-phase eval set.  Must be disjoint from
-        ``seed_offset`` and all other ranges. Default 13_000_000.
-    sampler_seed:
-        Seed for Optuna's TPESampler.  Fixed so the proposal sequence is
-        reproducible across study restarts with the same config. Default 42.
-    top_k_for_holdout:
-        How many top-ranked search trials to re-evaluate on the holdout
-        set in ``confirm_top_k``.  Default 5.
-    """
-
-    n_trials: int = 150
-    n_search_seeds: int = 16
-    n_holdout_seeds: int = 32
+    # ------------------------------------------------------------------
+    # Episode shape
+    # ------------------------------------------------------------------
     episode_length: int = 365
-    seed_offset: int = 12_000_000       # disjoint from training (0) and from two-scale eval (10_000_000 + 1_000_000)
+    """Number of ticks per episode (one calendar year at daily resolution)."""
+
+    K_active: int = 5
+    """Number of active SKUs per episode (sampled from the catalog)."""
+
+    K_catalog: int = 100
+    """Catalog size used by the synthetic fallback when no world cache is found."""
+
+    # ------------------------------------------------------------------
+    # Episode randomisation
+    # ------------------------------------------------------------------
+    capacity_dist: Distribution = field(default_factory=_default_capacity_dist)
+    balance_dist: Distribution = field(default_factory=_default_balance_dist)
+
+    # ------------------------------------------------------------------
+    # Simulator knobs (forwarded into the StoreTemplate)
+    # ------------------------------------------------------------------
+    delivery_lag: int = 3
+    holding_rate: float = 0.01
+    order_fee: float = 50.0
+
+    # ------------------------------------------------------------------
+    # Study parameters
+    # ------------------------------------------------------------------
+    n_trials: int = 150
+    """Number of Optuna trials (TPE proposals) to run."""
+
+    n_search_seeds: int = 16
+    """CRN seeds used to evaluate each trial during the search phase."""
+
+    n_holdout_seeds: int = 32
+    """CRN seeds used in the post-search confirmation phase."""
+
+    seed_offset: int = 12_000_000
+    """First seed for the search-phase eval set."""
+
     holdout_seed_offset: int = 13_000_000
+    """First seed for the holdout-phase eval set (disjoint from search)."""
+
     sampler_seed: int = 42
+    """Seed for Optuna's TPESampler."""
+
     top_k_for_holdout: int = 5
+    """Number of top-ranked search trials to re-evaluate on the holdout set."""
+
+    # ------------------------------------------------------------------
+    # World
+    # ------------------------------------------------------------------
+    world_archetype: str = "fashion_retail_250"
+    """Archetype label resolved against ``data/worlds/<archetype>/world.json``."""
+
+    world_cache_path: Optional[str] = None
+    """Optional explicit path to a cached ``world.json``; overrides auto-lookup."""
 
 
 __all__ = ["TuningConfig"]
