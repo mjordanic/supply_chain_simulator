@@ -107,7 +107,7 @@ def _load_world_from_file(
     path: Path, config: RLConfig
 ) -> tuple[list[Any], StoreTemplate, MarketParams, DisruptionParams]:
     """Load catalog, StoreTemplate, MarketParams, and DisruptionParams from a cached world.json."""
-    from src.llm.world_builder import World
+    from src.sim.world import World
 
     world = World.from_json(path)
     catalog = world.catalog

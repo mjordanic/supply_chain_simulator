@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from src.llm.world_builder import World
+from src.sim.world import World
 from src.sim.distributions import Constant, Normal, Uniform
 from src.sim.scenario import MarketParams, StoreTemplate, Ware
 

@@ -21,7 +21,8 @@ from typing import Any
 
 import pytest
 
-from src.llm.world_builder import BUILDER_VERSION, World, WorldBuilder
+from src.llm.world_builder import BUILDER_VERSION, WorldBuilder
+from src.sim.world import World
 from src.sim.distributions import Constant, Normal, Uniform
 from src.sim.scenario import MarketParams, StoreTemplate, Ware, _ware_from_dict
 

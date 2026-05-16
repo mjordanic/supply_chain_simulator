@@ -19,7 +19,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.llm.world_builder import LLMBuildAbortedError, World, load_or_build_world
+from src.llm.world_builder import LLMBuildAbortedError, load_or_build_world
+from src.sim.world import World
 from src.sim.distributions import Constant, Normal, Uniform
 from src.sim.scenario import MarketParams, StoreTemplate, Ware
 

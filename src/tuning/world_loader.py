@@ -63,7 +63,7 @@ def load_world(
 def _load_from_file(
     path: Path, config: "TuningConfig"
 ) -> tuple[list[Ware], StoreTemplate, MarketParams, DisruptionParams]:
-    from src.llm.world_builder import World
+    from src.sim.world import World
 
     world = World.from_json(path)
     catalog = world.catalog

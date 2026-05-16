@@ -36,10 +36,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
 
 if TYPE_CHECKING:
-    # Avoid the runtime import cycle: ``src.llm.world_builder`` imports
-    # from this module, so we only pull ``World`` in for static type
-    # checking.
-    from src.llm.world_builder import World
+    # ``World`` is in ``src.sim.world``; no import cycle. Kept under
+    # TYPE_CHECKING so the type annotation works without eager import.
+    from src.sim.world import World
 
 from src.sim.distributions import (
     Distribution,

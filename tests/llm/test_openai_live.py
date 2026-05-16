@@ -44,7 +44,8 @@ from src.llm.schemas import (
     StoreTemplateList,
     Taxonomy,
 )
-from src.llm.world_builder import World, WorldBuilder, allocate_skeletons
+from src.llm.world_builder import WorldBuilder, allocate_skeletons
+from src.sim.world import World
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,

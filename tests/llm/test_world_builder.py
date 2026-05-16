@@ -39,7 +39,8 @@ from src.llm.schemas import (
     Taxonomy,
     TaxonomyCategory,
 )
-from src.llm.world_builder import World, WorldBuilder, allocate_skeletons
+from src.llm.world_builder import WorldBuilder, allocate_skeletons
+from src.sim.world import World
 from src.sim.scenario import MarketParams, StoreTemplate
 
 
