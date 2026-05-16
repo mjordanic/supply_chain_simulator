@@ -1,4 +1,4 @@
-"""Tests for src/sim/metrics.py (formerly src/rl/metrics.py).
+"""Tests for src/sim/metrics.py.
 
 Covers:
   - service_level: hand-crafted slice with known sales/demand
@@ -67,20 +67,20 @@ def _simple_slice(
 
 
 def test_service_level_known_values():
-    """sales=10, demand=15 across 5 ticks × 2 SKUs → 100/150 ≈ 0.6667."""
+    """sales=10, demand=15 across 5 ticks x 2 SKUs -> 100/150 ~= 0.6667."""
     rs = _simple_slice(n_ticks=5, n_skus=2, sales_val=10.0, demand_val=15.0)
     sl = service_level(rs)
     assert sl == pytest.approx(10.0 / 15.0, abs=1e-6)
 
 
 def test_service_level_perfect_fulfillment():
-    """sales == demand → service_level == 1.0."""
+    """sales == demand -> service_level == 1.0."""
     rs = _simple_slice(sales_val=10.0, demand_val=10.0)
     assert service_level(rs) == pytest.approx(1.0)
 
 
 def test_service_level_zero_demand():
-    """Zero demand → service_level uses max(1, demand) ⇒ no divide-by-zero."""
+    """Zero demand -> service_level uses max(1, demand) => no divide-by-zero."""
     rs = _simple_slice(sales_val=0.0, demand_val=0.0)
     sl = service_level(rs)
     assert math.isfinite(sl)
@@ -88,7 +88,7 @@ def test_service_level_zero_demand():
 
 
 def test_service_level_empty_slice():
-    """Empty RunSlice → service_level returns 0.0 (finite)."""
+    """Empty RunSlice -> service_level returns 0.0 (finite)."""
     rs = RunSlice()
     sl = service_level(rs)
     assert math.isfinite(sl)
@@ -104,7 +104,7 @@ def test_stockout_rate_known_fraction():
     """K of T ticks have inventory=0; rate should be K/(T*n_skus)."""
     n_ticks = 10
     n_skus = 2
-    # 3 ticks have zero inventory for ALL SKUs → 3*2 zeros out of 10*2=20
+    # 3 ticks have zero inventory for ALL SKUs -> 3*2 zeros out of 10*2=20
     inv_rows: list[list[float]] = []
     for t in range(n_ticks):
         if t < 3:
@@ -118,19 +118,19 @@ def test_stockout_rate_known_fraction():
 
 def test_stockout_rate_partial_skus():
     """Only some SKUs have zero inventory in a tick."""
-    # 1 tick, 3 SKUs: [0, 5, 0] → 2 zeros / 3 total
+    # 1 tick, 3 SKUs: [0, 5, 0] -> 2 zeros / 3 total
     rs = RunSlice(inventory=[[0.0, 5.0, 0.0]])
     assert stockout_rate(rs) == pytest.approx(2.0 / 3.0, abs=1e-6)
 
 
 def test_stockout_rate_no_stockouts():
-    """All positive inventory → stockout_rate == 0.0."""
+    """All positive inventory -> stockout_rate == 0.0."""
     rs = _simple_slice(inventory_val=10.0)
     assert stockout_rate(rs) == pytest.approx(0.0)
 
 
 def test_stockout_rate_empty_slice():
-    """Empty RunSlice → stockout_rate returns 0.0 (finite)."""
+    """Empty RunSlice -> stockout_rate returns 0.0 (finite)."""
     rs = RunSlice()
     rate = stockout_rate(rs)
     assert math.isfinite(rate)
@@ -196,7 +196,7 @@ def test_profit_decomposition_keys():
 
 
 def test_profit_decomposition_empty_slice():
-    """Empty RunSlice → all values are 0.0 (finite), no exceptions."""
+    """Empty RunSlice -> all values are 0.0 (finite), no exceptions."""
     rs = RunSlice()
     decomp = profit_decomposition(rs)
     for k, v in decomp.items():
@@ -210,14 +210,14 @@ def test_profit_decomposition_empty_slice():
 
 
 def test_mean_price_pct_of_msrp_known_value():
-    """price=18, msrp=20 → 18/20=0.9 for all cells → mean=0.9."""
+    """price=18, msrp=20 -> 18/20=0.9 for all cells -> mean=0.9."""
     rs = _simple_slice(price_val=18.0, msrp_val=20.0)
     assert mean_price_pct_of_msrp(rs) == pytest.approx(0.9, abs=1e-6)
 
 
 def test_mean_price_pct_varying():
     """Mix of price/msrp ratios: mean computed correctly."""
-    # Tick 0: [1.0, 0.5]; Tick 1: [0.5, 1.0]  → mean = (1+0.5+0.5+1)/4 = 0.75
+    # Tick 0: [1.0, 0.5]; Tick 1: [0.5, 1.0]  -> mean = (1+0.5+0.5+1)/4 = 0.75
     rs = RunSlice(
         price=[[10.0, 5.0], [5.0, 10.0]],
         msrp=[[10.0, 10.0], [10.0, 10.0]],
@@ -226,7 +226,7 @@ def test_mean_price_pct_varying():
 
 
 def test_mean_price_pct_empty_slice():
-    """Empty RunSlice → returns 1.0 (graceful fallback, finite)."""
+    """Empty RunSlice -> returns 1.0 (graceful fallback, finite)."""
     rs = RunSlice()
     v = mean_price_pct_of_msrp(rs)
     assert math.isfinite(v)
@@ -239,21 +239,21 @@ def test_mean_price_pct_empty_slice():
 
 
 def test_inventory_turnover_known_value():
-    """sales=10 per cell, inventory=5 per cell; 5 ticks × 2 SKUs.
-    total_sales = 100; mean_inv = 5.0 → turnover = 100/5 = 20.
+    """sales=10 per cell, inventory=5 per cell; 5 ticks x 2 SKUs.
+    total_sales = 100; mean_inv = 5.0 -> turnover = 100/5 = 20.
     """
     rs = _simple_slice(n_ticks=5, n_skus=2, sales_val=10.0, inventory_val=5.0)
     assert inventory_turnover(rs) == pytest.approx(100.0 / 5.0, abs=1e-6)
 
 
 def test_inventory_turnover_zero_inventory():
-    """Zero mean inventory → uses max(1, mean_inv) = 1 → turnover = total_sales."""
+    """Zero mean inventory -> uses max(1, mean_inv) = 1 -> turnover = total_sales."""
     rs = _simple_slice(n_ticks=2, n_skus=1, sales_val=7.0, inventory_val=0.0)
     assert inventory_turnover(rs) == pytest.approx(14.0 / 1.0, abs=1e-6)
 
 
 def test_inventory_turnover_empty_slice():
-    """Empty RunSlice → returns 0.0 (finite)."""
+    """Empty RunSlice -> returns 0.0 (finite)."""
     rs = RunSlice()
     v = inventory_turnover(rs)
     assert math.isfinite(v)
@@ -263,6 +263,7 @@ def test_inventory_turnover_empty_slice():
 # ---------------------------------------------------------------------------
 # aggregate_episode
 # ---------------------------------------------------------------------------
+
 
 _EXPECTED_AGGREGATE_KEYS = {
     "service_level",
@@ -312,7 +313,7 @@ def test_aggregate_episode_values_agree_with_individual_calls():
 
 
 def test_aggregate_episode_empty_slice_all_finite():
-    """Empty RunSlice → all aggregate values are finite (no NaN/inf)."""
+    """Empty RunSlice -> all aggregate values are finite (no NaN/inf)."""
     rs = RunSlice()
     for k, v in aggregate_episode(rs).items():
         assert math.isfinite(v), f"aggregate key={k} value={v} not finite"
@@ -324,7 +325,7 @@ def test_aggregate_episode_empty_slice_all_finite():
 
 
 def test_all_zero_demand_no_exception():
-    """Slice where all demand is 0 — must not raise."""
+    """Slice where all demand is 0 -- must not raise."""
     rs = RunSlice(
         sales=[[0.0, 0.0]] * 10,
         demand=[[0.0, 0.0]] * 10,
@@ -340,4 +341,4 @@ def test_all_zero_demand_no_exception():
     for k, v in agg.items():
         assert math.isfinite(v), f"key={k} value={v} not finite on zero-demand slice"
     assert agg["service_level"] == pytest.approx(0.0)
-    assert agg["stockout_rate"] == pytest.approx(1.0)  # all inventory=0 → all stockouts
+    assert agg["stockout_rate"] == pytest.approx(1.0)  # all inventory=0 -> all stockouts

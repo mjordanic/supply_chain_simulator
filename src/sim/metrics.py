@@ -1,13 +1,17 @@
-"""Pure-function business-metrics module for RL episodes.
+"""Pure-function business-metrics module for simulation episodes.
 
-All functions are deterministic and stateless — no I/O, no global state,
-no DataFrame coupling.  ``RunSlice`` is a plain dataclass populated from
-the env's per-tick ``info`` dicts; aggregation happens entirely in memory.
+Single source of truth for active-subset KPI machinery. Pure data + math:
+no runtime imports from ``src.tuning``, ``src.rl``, or ``src.llm``.
 
 Public surface
 --------------
 RunSlice
     Dataclass collecting per-active-SKU per-tick traces for one episode.
+
+aggregate_episode(run_slice) → dict[str, float]
+    Bundled flat dict (service_level, stockout_rate, mean_price_pct_of_msrp,
+    inventory_turnover, revenue, holding_cost, order_cost, order_fees,
+    net_profit) used as the per-seed KPI payload.
 
 service_level(run_slice) → float
     sum(sales) / max(1, sum(demand)) — fraction of demand fulfilled.
@@ -25,9 +29,6 @@ inventory_turnover(run_slice) → float
 profit_decomposition(run_slice) → dict[str, float]
     Totals for revenue, holding_cost, order_cost, order_fees, net_profit.
     net_profit = revenue - (holding_cost + order_cost + order_fees).
-
-aggregate_episode(run_slice) → dict[str, float]
-    All of the above bundled into one flat dict for one episode.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ from typing import Dict, List
 
 @dataclass
 class RunSlice:
-    """Per-active-SKU per-tick traces for one RL episode.
+    """Per-active-SKU per-tick traces for one episode.
 
     Each field is a list-of-lists: outer index is tick (0 … T-1), inner
     index is active-SKU position (0 … K-1).  Alternatively, callers may

@@ -16,7 +16,7 @@ from src.sim.policy import Policy
 from src.sim.scenario import StoreInstance
 from src.sim.store import Store
 from src.tuning.episode import TuningEpisodeSpec
-from src.tuning.metrics import RunSlice, aggregate_episode
+from src.sim.metrics import RunSlice, aggregate_episode
 
 
 def _build_world(spec: TuningEpisodeSpec):

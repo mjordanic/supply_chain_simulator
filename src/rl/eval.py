@@ -43,7 +43,7 @@ import numpy as np
 from src.rl.configs.default import RLConfig
 from src.rl.encoders import compute_effective_rate, decode_action, encode_observation
 from src.rl.episode_sampler import EpisodeSpec, sample_episode
-from src.rl.metrics import RunSlice, aggregate_episode
+from src.sim.metrics import RunSlice, aggregate_episode
 from src.sim.event_engine import EventEngine
 from src.sim.item_registry import ItemRegistry
 from src.sim.market import Market
