@@ -1,8 +1,8 @@
 """Gymnasium-compatible RL environment wrapping the supply-chain simulator.
 
-``RLEnv`` exposes the simulator's ``Market`` / ``EventEngine`` /
-``ItemRegistry`` / ``Store`` subsystems through the Gymnasium ``Env``
-interface (``reset`` / ``step`` / ``observation_space`` / ``action_space``).
+``RLEnv`` exposes the simulator's two-phase tick API through the Gymnasium
+``Env`` interface (``reset`` / ``step`` / ``observation_space`` /
+``action_space``).
 
 Design decisions
 ----------------
@@ -10,9 +10,14 @@ Design decisions
   ``episode_sampler.sample_episode``. The episode seed is derived from the
   user-supplied ``seed`` argument (or drawn from the env's own RNG when
   ``seed=None``).
-- The tick order inside ``step()`` mirrors ``Runner.run()`` exactly so the
-  world simulation is bit-identical to a Runner-based run given the same
-  world seed. The Runner is NOT imported or modified here.
+- ``reset()`` constructs the ``Simulation`` bundle via
+  ``build_world(scenario, policy_overrides=[RLPolicy()])``. The ``RLPolicy``
+  instance is reachable via ``sim.stores[0].policy`` so ``step()`` can call
+  ``set_pending_action`` before phase 2 fires.
+- The tick order inside ``step()`` uses the two-phase sim API:
+  ``sim.tick_world()`` → encode obs → run actor → decode →
+  ``RLPolicy.set_pending_action(...)`` → ``sim.tick_decide_and_settle()``.
+  This is bit-identical to a Runner-based run given the same world seed.
 - Promotions are disabled for the lifetime of an episode (``RLPolicy``
   always returns ``promotions={}``, and ``assortment`` is frozen via
   ``activate=[]`` / ``deactivate=[]``).
@@ -26,10 +31,9 @@ Design decisions
 
 from __future__ import annotations
 
-import math
 from collections import deque
 from random import Random
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 import gymnasium as gym
@@ -44,31 +48,14 @@ from src.rl.encoders import (
     action_dim,
 )
 from src.rl.episode_sampler import EpisodeSpec, sample_episode
-from src.sim.event_engine import EventEngine
-from src.sim.item_registry import ItemRegistry
-from src.sim.market import Market
 from src.sim.policy import RLPolicy
+from src.sim.runner import Simulation, build_world
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     MarketParams,
-    StoreInstance,
     Ware,
 )
-from src.sim.store import Store
-
-
-def _make_delivery_callback(store: Store, pid: str, qty: int):
-    """Bind ``(store, pid, qty)`` into a zero-arg delivery callback.
-
-    Same pattern as ``Runner._make_delivery_callback`` — a factory keeps
-    each callback's closure independent across loop iterations.
-    """
-
-    def _callback() -> None:
-        store.deliver(pid, qty)
-
-    return _callback
 
 
 class RLEnv(gym.Env):
@@ -144,10 +131,7 @@ class RLEnv(gym.Env):
 
         # Live episode state (populated by reset).
         self._episode_spec: EpisodeSpec | None = None
-        self._market: Market | None = None
-        self._event_engine: EventEngine | None = None
-        self._item_registry: ItemRegistry | None = None
-        self._store: Store | None = None
+        self._sim: Simulation | None = None
         self._rl_policy: RLPolicy | None = None
 
         # Step counter within the current episode.
@@ -221,42 +205,18 @@ class RLEnv(gym.Env):
 
         scenario = spec.scenario
 
-        # Build world subsystems in the same order as Runner.__init__.
-        from random import Random as _Random
-
-        world_rng = _Random(scenario.world_seed)
-
-        self._item_registry = ItemRegistry(
-            scenario.item_lifecycle,
-            scenario.catalog,
-            world_rng,
-        )
-        self._market = Market(
-            scenario.market,
-            world_rng,
-            scenario.start_date,
-            registry=self._item_registry,
-        )
-        self._event_engine = EventEngine(scenario.disruption, world_rng)
-
-        # Build the RLPolicy shim.
+        # Build the RLPolicy shim (must be done before build_world so the
+        # policy_overrides list can reference it).
         self._rl_policy = RLPolicy()
 
-        # Build the single Store from the episode's StoreInstance.
-        # The episode has exactly one store in its scenario.
-        si: StoreInstance = scenario.stores[0]
-        self._store = Store(
-            si.template,
-            si.init_seed,
-            self._rl_policy,
-            scenario.catalog,
-            freshness_alpha=self._item_registry.default_freshness_alpha,
-            freshness_decay=self._item_registry.default_freshness_decay,
-            item_registry=self._item_registry,
-        )
+        # Construct the Simulation bundle via the shared factory.
+        # policy_overrides=[self._rl_policy] attaches the RL shim to store 0.
+        self._sim = build_world(scenario, policy_overrides=[self._rl_policy])
+
+        store = self._sim.stores[0]
 
         # Record opening balance for the cash-normalisation feature.
-        self._initial_cash = float(self._store.balance)
+        self._initial_cash = float(store.balance)
 
         # Derive the market-demand prior for cold-start ordering.
         # scenario.market is a MarketParams; its base_demand field is always
@@ -295,17 +255,14 @@ class RLEnv(gym.Env):
     ) -> tuple[np.ndarray, float, bool, bool, dict]:
         """Advance one simulation tick and return the RL transition.
 
-        The tick order mirrors ``Runner.run()`` exactly:
+        Uses the two-phase sim API:
 
-        1. ``market.tick()``
-        2. ``event_engine.tick(market)``
-        3. ``item_registry.tick()``
-        4. Set pending action on ``RLPolicy`` via ``encoders.decode_action``
-        5. ``store.decide(store.observe(...))``
-        6. Dispatch orders (same as ``Runner._dispatch_orders``)
-        7. Settle demand (same as ``Runner._process_demand``), accumulate reward
-        8. Build next observation via ``encoders.encode_observation``
-        9. Increment step counter; terminate when step == episode_length.
+        1. ``sim.tick_world()`` — advance market, event_engine, item_registry.
+        2. Decode action and set it on ``RLPolicy`` via ``set_pending_action``.
+        3. ``sim.tick_decide_and_settle()`` — store observe → decide → dispatch
+           → demand (``decide()`` reads the pending action set in step 2).
+        4. Compute reward from balance delta, update sales history.
+        5. Build next observation and check for episode termination.
 
         Parameters
         ----------
@@ -316,28 +273,20 @@ class RLEnv(gym.Env):
         -------
         obs, reward, terminated, truncated, info
         """
-        if self._store is None:
+        if self._sim is None:
             raise RuntimeError("RLEnv.step() called before reset().")
 
-        store = self._store
-        market = self._market
-        event_engine = self._event_engine
-        item_registry = self._item_registry
+        sim = self._sim
+        store = sim.stores[0]
         rl_policy = self._rl_policy
 
         # Balance before this tick — used to compute reward later.
         balance_before: float = float(store.balance)
 
-        # --- 1. market.tick() ---
-        market.tick()
+        # --- Phase 1: advance the world (market, events, lifecycle) ---
+        active_events = sim.tick_world()
 
-        # --- 2. event_engine.tick(market) ---
-        event_engine.tick(market)
-
-        # --- 3. item_registry.tick() ---
-        item_registry.tick()
-
-        # --- 4. Decode action and set it on the RLPolicy shim ---
+        # --- Decode action and set it on the RLPolicy shim ---
         # Compute effective rate once per tick; shared by both decode_action
         # (order qty) and encode_observation (slot-13 demand-units feature).
         self._effective_rate = compute_effective_rate(
@@ -362,18 +311,11 @@ class RLEnv(gym.Env):
         action_dict["promotions"] = {}
         rl_policy.set_pending_action(action_dict)
 
-        # --- 5. store.decide(store.observe(...)) ---
-        obs_dict = store.observe(market.current_step(), item_registry)
-        decisions = store.decide(obs_dict)
+        # --- Phase 2: per-store observe → decide → dispatch → settle demand ---
+        # RLPolicy.decide() reads the pending action set just above.
+        sim.tick_decide_and_settle(active_events)
 
-        # --- 6. Dispatch orders ---
-        self._dispatch_orders(store, decisions)
-
-        # --- 7. Settle demand, accumulate reward ---
-        self._process_demand(store, decisions)
-
-        # Reward = balance delta attributable to this tick (over ALL catalog
-        # products that settled). This equals total profit for the tick.
+        # Reward = balance delta attributable to this tick.
         balance_after: float = float(store.balance)
         reward: float = balance_after - balance_before
 
@@ -382,11 +324,11 @@ class RLEnv(gym.Env):
             if pid in self._sales_history:
                 self._sales_history[pid].append(qty)
 
-        # --- 8. Build next observation ---
+        # --- Build next observation ---
         self._step_count += 1
         obs = self._build_observation()
 
-        # --- 9. Termination check ---
+        # --- Termination check ---
         terminated: bool = self._step_count >= self.config.episode_length
         truncated: bool = False
 
@@ -415,12 +357,26 @@ class RLEnv(gym.Env):
 
     # ------------------------------------------------------------------ private helpers
 
+    @property
+    def _store(self):
+        """Backward-compatible accessor for the single store in the simulation.
+
+        Tests reference ``env._store`` directly. This property exposes
+        ``self._sim.stores[0]`` under the legacy name so those tests continue
+        to work without modification.
+        """
+        if self._sim is None:
+            return None
+        return self._sim.stores[0]
+
     def _build_observation(self) -> np.ndarray:
         """Encode the current store/market/registry state into the obs tensor."""
+        sim = self._sim
+        store = sim.stores[0]
         return encode_observation(
-            self._store,
-            self._market,
-            self._item_registry,
+            store,
+            sim.market,
+            sim.item_registry,
             step=self._step_count,
             slot_perm=self._slot_perm,
             K_active=self.config.K_active,
@@ -429,48 +385,6 @@ class RLEnv(gym.Env):
             effective_rate=self._effective_rate if self._effective_rate else None,
             max_inventory_lt=self.config.max_inventory_lt,
         )
-
-    def _dispatch_orders(self, store: Store, action: dict) -> None:
-        """Schedule delivery callbacks for positive-qty orders.
-
-        Verbatim port of ``Runner._dispatch_orders``.
-        """
-        orders = action.get("order", {})
-        if not orders:
-            return
-        current_step = self._market.current_step()
-        supply = self._market.market_state[store.region]["market_supply"]
-        supply_factor = max(self._market.params.supply_factor_min, supply)
-        for pid, qty in orders.items():
-            if qty <= 0:
-                continue
-            base_lead = store.delivery_lags[pid]
-            adjusted_lead = int(base_lead / supply_factor)
-            arrival_time = current_step + adjusted_lead
-            self._event_engine.schedule(
-                event_type="order_arrival",
-                delay=arrival_time,
-                callback=_make_delivery_callback(store, pid, qty),
-            )
-
-    def _process_demand(self, store: Store, action: dict) -> None:
-        """Sample realised demand and settle accounting for all catalog products.
-
-        Verbatim port of ``Runner._process_demand``. Every product gets a
-        ``world_rng`` draw regardless of active status — this is
-        load-bearing for CRN across episodes sharing the same world seed.
-        """
-        prices = action.get("price", {})
-        orders = action.get("order", {})
-        current_step = self._market.current_step()
-        for pid in list(store.inventory.keys()):
-            price = prices.get(pid, store.prices[pid])
-            order_qty = orders.get(pid, 0)
-            demand = self._market.sample_demand(
-                pid, store, price, current_step=current_step
-            )
-            store.settle(pid, demand=demand, price=price, order_qty=order_qty)
-            store.prices[pid] = price
 
     def render(self) -> None:
         """No-op render (no visual output supported)."""
