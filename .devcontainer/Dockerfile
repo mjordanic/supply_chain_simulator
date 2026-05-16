@@ -7,6 +7,8 @@ ARG CLAUDE_CODE_VERSION=latest
 ARG PYTHON_VERSION=3.12
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+  bubblewrap \
+  socat \
   less \
   git \
   procps \
