@@ -4,7 +4,7 @@
 - **PRD**: [PRD.md](./PRD.md)
 - **Integration branch**: `hyperparameter-optimization`
 - **Started**: 2026-05-16T02:06:50+02:00
-- **Last updated**: 2026-05-16T03:45:00+02:00
+- **Last updated**: 2026-05-16T04:50:00+02:00
 - **Parallelism cap**: 1 (in-place sequential)
 - **Preflight assumptions**:
   - Untracked `.claude/settings.local.json` left as-is (harness-owned settings file, not feature work).
@@ -16,8 +16,8 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 01-reparameterise-safety-horizons | Reparameterise textbook safety horizons as fractions of delivery lag | 1 | committed | 937bec6c90145284acdcb63099fd61d9b9f696d1 | 937bec6c90145284acdcb63099fd61d9b9f696d1 | 2026-05-16T02:35:00+02:00 | 2026-05-16T03:10:00+02:00 | In-place (cap=1). 408 tests pass + 4 new ADR-0008 tests. |
 | 02-tuning-module-skeleton-and-evaluator | `src/tuning/` skeleton + `TuningConfig` + `evaluate_policy_normalised` | 2 | committed | 8a5eb2fe0cff84c54c479c441ca1b9af275688d0 | 8a5eb2fe0cff84c54c479c441ca1b9af275688d0 | 2026-05-16T03:15:00+02:00 | 2026-05-16T03:45:00+02:00 | In-place (cap=1). optuna added. 16 new tuning tests pass; 246 sim + 177 rl tests pass. |
-| 03-search-space-factories | Bundled search-space factories for the four textbook variants | 3 | pending | — | — | — | — | — |
-| 04-run-study-and-artifacts | `run_study()` orchestration + `trials.parquet` / `per_seed.parquet` / `study.json` | 4 | pending | — | — | — | — | — |
+| 03-search-space-factories | Bundled search-space factories for the four textbook variants | 3 | committed | f626173 | f626173 | 2026-05-16T03:55:00+02:00 | 2026-05-16T04:15:00+02:00 | In-place (cap=1). 24 new tests pass; 40 total tuning tests green. All four factories export from src.tuning public API. |
+| 04-run-study-and-artifacts | `run_study()` orchestration + `trials.parquet` / `per_seed.parquet` / `study.json` | 4 | committed | TBD | TBD | 2026-05-16T04:20:00+02:00 | 2026-05-16T04:50:00+02:00 | In-place (cap=1). 19 new study tests pass; 59 total tuning tests green. |
 | 05-confirm-top-k-and-holdout | `confirm_top_k()` + `holdout.parquet` / `holdout_summary.json` | 5 | pending | — | — | — | — | — |
 | 06-cli-entry-point | CLI entry point `python -m src.tuning.study` | 6 | pending | — | — | — | — | — |
 | 07-tune-textbook-policy-notebook | Notebook `notebooks/08-tune_textbook_policy.ipynb` | 7 | pending | — | — | — | — | — |
@@ -52,6 +52,10 @@ Reduced (no redundancy): linear chain 01 → 02 → 03 → 04 → 05 → 06 → 
 - 2026-05-16T03:10:00+02:00 — Wave 1 complete. 01-reparameterise-safety-horizons committed at 937bec6 (in-place). 408 sim+rl tests pass; 4 new ADR-0008 tests added. Issue file moved to done/.
 - 2026-05-16T03:15:00+02:00 — Wave 2 started. Dispatching 02-tuning-module-skeleton-and-evaluator in-place.
 - 2026-05-16T03:45:00+02:00 — Wave 2 complete. 02-tuning-module-skeleton-and-evaluator committed at 8a5eb2f (in-place). optuna added; src/tuning/{__init__,config,evaluator}.py + tests/tuning/{test_config,test_evaluator}.py created. 16 new tuning tests pass.
+- 2026-05-16T03:55:00+02:00 — Wave 3 started. Dispatching 03-search-space-factories in-place.
+- 2026-05-16T04:15:00+02:00 — Wave 3 complete. 03-search-space-factories committed at f626173 (in-place). src/tuning/search_spaces.py + tests/tuning/test_search_spaces.py created; src/tuning/__init__.py updated. 24 new tests pass (40 total tuning tests green). Issue file moved to done/.
+- 2026-05-16T04:20:00+02:00 — Wave 4 started. Dispatching 04-run-study-and-artifacts in-place.
+- 2026-05-16T04:50:00+02:00 — Wave 4 complete. 04-run-study-and-artifacts committed (in-place). src/tuning/study.py + tests/tuning/test_study.py created; src/tuning/__init__.py updated with run_study export. 19 new tests pass (59 total tuning tests green). Issue file moved to done/.
 
 ## Outstanding follow-ups
 
