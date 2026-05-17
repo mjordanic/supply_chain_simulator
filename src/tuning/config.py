@@ -21,22 +21,49 @@ from typing import Optional
 from src.sim.distributions import Distribution
 
 
-def _default_capacity_dist() -> Distribution:
-    """``LogUniform(100, 10_000)`` — per-episode capacity distribution.
+# ---------------------------------------------------------------------------
+# Default distributions — toggle ONE block at a time.
+# ---------------------------------------------------------------------------
 
-    Log-uniform over two orders of magnitude so a single study spans
-    small-store and flagship deployments.
-    """
+# --- Sports cars (sports_cars_100) ---------------------------------
+def _default_capacity_dist() -> Distribution:
+    """``LogUniform(50, 500)`` — sports car flagship store scale."""
     from src.sim.distributions import LogUniform
 
-    return LogUniform(100, 10_000)
+    return LogUniform(50, 500)
 
 
 def _default_balance_dist() -> Distribution:
-    """``LogUniform(10_000, 1_000_000)`` — per-episode opening balance distribution."""
+    """``LogUniform(1_000_000, 100_000_000)`` — sports car opening balance scale."""
     from src.sim.distributions import LogUniform
 
-    return LogUniform(10_000, 1_000_000)
+    return LogUniform(1_000_000, 100_000_000)
+
+
+def _default_init_stock_pct_dist() -> Distribution:
+    """``Uniform(0.2, 1.0)`` — per-episode starting inventory fraction of capacity."""
+    from src.sim.distributions import Uniform
+
+    return Uniform(0.2, 1.0)
+
+
+# --- Fashion retail (fashion_retail_250) ---------------------------
+# def _default_capacity_dist() -> Distribution:
+#     """``LogUniform(100, 10_000)`` — per-episode capacity distribution.
+#
+#     Log-uniform over two orders of magnitude so a single study spans
+#     small-store and flagship deployments.
+#     """
+#     from src.sim.distributions import LogUniform
+#
+#     return LogUniform(100, 10_000)
+#
+#
+# def _default_balance_dist() -> Distribution:
+#     """``LogUniform(10_000, 1_000_000)`` — per-episode opening balance distribution."""
+#     from src.sim.distributions import LogUniform
+#
+#     return LogUniform(10_000, 1_000_000)
 
 
 @dataclass(frozen=True)
@@ -60,6 +87,7 @@ class TuningConfig:
     # ------------------------------------------------------------------
     capacity_dist: Distribution = field(default_factory=_default_capacity_dist)
     balance_dist: Distribution = field(default_factory=_default_balance_dist)
+    init_stock_pct_dist: Distribution = field(default_factory=_default_init_stock_pct_dist)
 
     # ------------------------------------------------------------------
     # Simulator knobs (forwarded into the StoreTemplate)
@@ -95,7 +123,10 @@ class TuningConfig:
     # ------------------------------------------------------------------
     # World
     # ------------------------------------------------------------------
-    world_archetype: str = "fashion_retail_250"
+    # --- Sports cars ---
+    world_archetype: str = "sports_cars_100"
+    # --- Fashion retail ---
+    # world_archetype: str = "fashion_retail_250"
     """Archetype label resolved against ``data/worlds/<archetype>/world.json``."""
 
     world_cache_path: Optional[str] = None

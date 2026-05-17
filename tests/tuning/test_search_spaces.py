@@ -50,7 +50,6 @@ def test_order_up_to_space_constructs():
         {
             "cover_horizon_ticks": 10,
             "safety_lead_pct_of_lag": 0.5,
-            "opening_budget_pct": 0.5,
             "stockout_safety_bonus_pct_of_lag": 0.0,
         }
     )
@@ -59,7 +58,7 @@ def test_order_up_to_space_constructs():
     assert isinstance(policy, OrderUpToPolicy)
     assert policy.cover_horizon_ticks == 10
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.5)
-    assert policy.opening_budget_pct == pytest.approx(0.5)
+    assert policy.opening_budget_pct == pytest.approx(0.8)
     assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(0.0)
 
 
@@ -89,7 +88,6 @@ def test_reorder_point_space_constructs():
         {
             "cover_horizon_ticks": 7,
             "safety_lead_pct_of_lag": 1.0,
-            "opening_budget_pct": 0.4,
             "stockout_safety_bonus_pct_of_lag": 0.5,
             "Q": 15,
         }
@@ -99,7 +97,7 @@ def test_reorder_point_space_constructs():
     assert isinstance(policy, ReorderPointPolicy)
     assert policy.cover_horizon_ticks == 7
     assert policy.safety_lead_pct_of_lag == pytest.approx(1.0)
-    assert policy.opening_budget_pct == pytest.approx(0.4)
+    assert policy.opening_budget_pct == pytest.approx(0.8)
     assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(0.5)
     assert policy.Q == 15
 
@@ -130,7 +128,6 @@ def test_periodic_order_up_to_space_constructs():
         {
             "cover_horizon_ticks": 14,
             "safety_lead_pct_of_lag": 0.667,
-            "opening_budget_pct": 0.5,
             "stockout_safety_bonus_pct_of_lag": 0.0,
             "review_interval": 7,
         }
@@ -140,7 +137,7 @@ def test_periodic_order_up_to_space_constructs():
     assert isinstance(policy, PeriodicOrderUpToPolicy)
     assert policy.cover_horizon_ticks == 14
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.667)
-    assert policy.opening_budget_pct == pytest.approx(0.5)
+    assert policy.opening_budget_pct == pytest.approx(0.8)
     assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(0.0)
     assert policy.review_interval == 7
 
@@ -171,7 +168,6 @@ def test_periodic_reorder_space_constructs():
         {
             "cover_horizon_ticks": 10,
             "safety_lead_pct_of_lag": 0.5,
-            "opening_budget_pct": 0.6,
             "stockout_safety_bonus_pct_of_lag": 1.0,
             "review_interval": 5,
         }
@@ -181,7 +177,7 @@ def test_periodic_reorder_space_constructs():
     assert isinstance(policy, PeriodicReorderPolicy)
     assert policy.cover_horizon_ticks == 10
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.5)
-    assert policy.opening_budget_pct == pytest.approx(0.6)
+    assert policy.opening_budget_pct == pytest.approx(0.8)
     assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(1.0)
     assert policy.review_interval == 5
 
@@ -245,24 +241,6 @@ _ORDER_UP_TO_BOUNDARY_CASES = [
             "cover_horizon_ticks": 10,
             "safety_lead_pct_of_lag": 3.0,
             "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-        },
-    ),
-    (
-        "opening_budget_pct_low",
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.05,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-        },
-    ),
-    (
-        "opening_budget_pct_high",
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.95,
             "stockout_safety_bonus_pct_of_lag": 0.0,
         },
     ),
@@ -377,13 +355,11 @@ def test_all_factories_use_documented_ranges():
     shared_low = {
         "cover_horizon_ticks": 1,
         "safety_lead_pct_of_lag": 0.0,
-        "opening_budget_pct": 0.05,
         "stockout_safety_bonus_pct_of_lag": 0.0,
     }
     shared_high = {
         "cover_horizon_ticks": 30,
         "safety_lead_pct_of_lag": 3.0,
-        "opening_budget_pct": 0.95,
         "stockout_safety_bonus_pct_of_lag": 2.0,
     }
 

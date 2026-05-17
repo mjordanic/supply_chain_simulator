@@ -813,7 +813,7 @@ def _load_policy_fn(checkpoint_path: str, config: RLConfig) -> PolicyFn:
         )
 
     import torch
-    from src.rl.agents.actor_critic import Actor
+    from src.rl.agents.ppo import Actor
 
     from src.rl.encoders import observation_dim, action_dim
 

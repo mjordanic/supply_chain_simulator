@@ -599,7 +599,7 @@ def test_build_market_domain_params_merges_handset_defaults() -> None:
     assert params.price_elasticity == -1.5
     assert params.regions == ["US"]
     # Hand-set math defaults:
-    assert params.cycle_amp == 0.0
+    assert params.cycle_amp == 0.0065
     assert params.demand_factor_min == 0.1
     assert params.cross_inv_lo == 0.3
     # Init demand/supply default to midpoint of the clamp band.

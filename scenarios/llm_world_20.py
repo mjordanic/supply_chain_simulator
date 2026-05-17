@@ -104,20 +104,31 @@ _template = replace(
 )
 
 
-# Cover the same horizon as the store's delivery lead time. The template's
-# ``delivery_lag`` is a scalar in this world; if it were a ``Distribution``
-# we'd need to sample it (with the store's ``init_seed``) instead.
+# Cover the same horizon as the store's delivery lead time. Guard
+# against the Distribution case — if the LLM ever emits a sampled
+# delivery_lag, the caller must sample it (with the store's
+# ``init_seed``) rather than silently casting to int.
+if not isinstance(_template.delivery_lag, (int, float)):
+    raise TypeError(
+        f"delivery_lag must be scalar for this scenario, got "
+        f"{type(_template.delivery_lag).__name__}"
+    )
 _COVER_HORIZON_TICKS = int(_template.delivery_lag)
 
 
-# Policy factory: one ``OrderUpToPolicy`` per store (fresh instance so
-# per-policy RNG state is independent across stores).
+# Policy factory: one ``OrderUpToPolicy`` per store. A fresh instance
+# per store is REQUIRED for the TextbookReorderPolicy family — the
+# rate-estimator logs (``sales_log`` / ``inv_before_settle_log``) are
+# keyed by ``pid`` only, so sharing one instance across stores would
+# conflate their per-pid sales into a single log and corrupt the rate
+# estimate. Distinct ``policy_seed`` per store also keeps any
+# ``policy_rng`` draws independent.
 def _build_policy(seed: int) -> OrderUpToPolicy:
     return OrderUpToPolicy(policy_seed=seed,
         cover_horizon_ticks=_COVER_HORIZON_TICKS,
-        safety_lead_ticks=int(_COVER_HORIZON_TICKS*1),
+        safety_lead_pct_of_lag=1.0,
         opening_budget_pct=0.50,
-        stockout_safety_bonus_ticks=int(_COVER_HORIZON_TICKS*1),
+        stockout_safety_bonus_pct_of_lag=1.0,
         min_qty=0)
 
 

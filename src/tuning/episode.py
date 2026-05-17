@@ -46,6 +46,7 @@ def sample_episode(
         capacity_dist=config.capacity_dist,
         balance_dist=config.balance_dist,
         episode_seed=episode_seed,
+        init_stock_pct_dist=config.init_stock_pct_dist,
         market_params=market_params,
         disruption_params=disruption_params,
         lifecycle_params=lifecycle_params,

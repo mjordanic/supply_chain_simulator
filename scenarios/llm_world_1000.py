@@ -110,8 +110,13 @@ _template = replace(
 )
 
 
-# Policy factory: one ``OrderUpToPolicy`` per store (fresh instance so
-# per-policy RNG state is independent across stores).
+# Policy factory: one ``OrderUpToPolicy`` per store. A fresh instance
+# per store is REQUIRED for the TextbookReorderPolicy family — the
+# rate-estimator logs (``sales_log`` / ``inv_before_settle_log``) are
+# keyed by ``pid`` only, so sharing one instance across stores would
+# conflate their per-pid sales into a single log and corrupt the rate
+# estimate. Distinct ``policy_seed`` per store also keeps any
+# ``policy_rng`` draws independent.
 def _build_policy(seed: int) -> OrderUpToPolicy:
     return OrderUpToPolicy(policy_seed=seed)
 

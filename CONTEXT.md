@@ -130,6 +130,9 @@ For loaded worlds, `disruption_params.regions` is adjusted to match `world.marke
 
 Config-adapters: `src.tuning.world_loader.load_world(config)` and `src.rl.train._load_world_catalog_and_template(config)` are now thin shims (~10 lines each) that unpack their respective Config objects and call this function.
 
+**Metrics** (`src/sim/metrics.py`)
+Canonical home for `RunSlice` (frozen per-tick active-subset trace dataclass), `aggregate_episode(run_slice) -> dict[str, float]`, and the five KPI helpers (`service_level`, `stockout_rate`, `mean_price_pct_of_msrp`, `inventory_turnover`, `profit_decomposition`). Pure data + math; no runtime deps on `src.tuning`, `src.rl`, or `src.llm`. Consumed by `src.tuning.rollout.run_policy_episode` and `src.rl.eval.evaluate`; both projects compute identical KPIs from identical state-machine outputs, so any apparent divergence reflects policy behaviour, not metric drift. See ADR 0010.
+
 **WorldBuilder** (`src/llm/world_builder.py`)
 LLM-driven world generator that produces a `World` artifact for an archetype string (e.g. `"fashion_retail"`). Four stages: taxonomy (LLM) → catalog (deterministic Python skeleton allocator + LLM naming, including per-`Ware` lifecycle and freshness parameters per category) → store templates (LLM, per region — including `init_active_products` rosters and `init_freshness` mode) → market domain params (LLM authors the domain slice; math defaults are hand-set). Each LLM call is parsed through a Pydantic schema in `src/llm/schemas.py`; on `ValidationError`, the failure is fed back into the next prompt for self-correction (default 3 retries). Consumed by scenario authors who want a generated catalog/market instead of hand-coding one. Policies, disruption parameters, and seeds remain author-supplied.
 
@@ -148,3 +151,4 @@ The canonical script entry point is `load_or_build_world(name, build_fn, *, base
 - [ADR 0007](docs/adr/0007-rl-scale-invariance-package.md) — RL scale-invariance package: order-up-to action decoder, demand-units inventory feature, log-uniform domain randomisation.
 - [ADR 0008](docs/adr/0008-safety-horizons-as-fraction-of-delivery-lag.md) — Reparameterise textbook safety horizons as fractions of delivery lag (fix per-SKU mis-scaling).
 - [ADR 0009](docs/adr/0009-policy-hyperparameter-tuning-tool.md) — Policy hyperparameter tuning tool (Optuna-based).
+- [ADR 0010](docs/adr/0010-sim-as-base-for-ml-layers.md) — `src/sim/` is the canonical home for rollout primitives (metrics, episode sampler, world loader, World artifact, two-phase tick API); `src/tuning/` and `src/rl/` are sibling consumers.

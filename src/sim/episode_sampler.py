@@ -96,6 +96,7 @@ _SUB_SEED_PARAMS: dict[str, tuple[int, int]] = {
     "capacity":   (0x6C62_272E, 0x0000_0002),
     "balance":    (0x517C_C1B7, 0x0000_0003),
     "world":      (0x27D4_EB2F, 0x0000_0004),
+    "init_stock": (0x85EB_CA6B, 0x0000_0006),
 }
 _MASK_32 = 0xFFFF_FFFF
 
@@ -195,6 +196,7 @@ def sample_episode(
     capacity_dist: Any,
     balance_dist: Any,
     episode_seed: int,
+    init_stock_pct_dist: Any | None = None,
     market_params: MarketParams | None = None,
     disruption_params: DisruptionParams | None = None,
     lifecycle_params: ItemLifecycleParams | None = None,
@@ -250,6 +252,12 @@ def sample_episode(
     balance_rng = Random(balance_seed)
     balance = balance_dist.sample(balance_rng)
 
+    if init_stock_pct_dist is not None:
+        init_stock_seed = _derive_seed(episode_seed, "init_stock")
+        init_stock_pct = float(init_stock_pct_dist.sample(Random(init_stock_seed)))
+    else:
+        init_stock_pct = 0.0
+
     # --- sample active subset (without replacement) ---
     assortment_rng = Random(assortment_seed)
     all_pids = [w.product_id for w in catalog]
@@ -271,7 +279,7 @@ def sample_episode(
         region=base_template.region,
         capacity=int(capacity),
         init_balance=float(balance),
-        init_stock_pct=0.0,
+        init_stock_pct=init_stock_pct,
         delivery_lag=base_template.delivery_lag,
         holding_rate=base_template.holding_rate,
         order_fee=base_template.order_fee,

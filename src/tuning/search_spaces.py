@@ -29,15 +29,20 @@ Tunable ranges:
 
     cover_horizon_ticks          int   [1, 30]    — EOQ cycle in ticks
     safety_lead_pct_of_lag       float [0.0, 3.0] — safety fraction of lag
-    opening_budget_pct           float [0.05, 0.95]
     stockout_safety_bonus_pct_of_lag float [0.0, 2.0]
     Q                            int   [1, 30]    — ReorderPoint fixed qty
     review_interval              int   [1, 14]    — periodic cadence in ticks
+
+Pinned (not tuned):
+
+    opening_budget_pct           float 0.8  — stores already start with stock
 """
 
 from __future__ import annotations
 
 import optuna
+
+_OPENING_BUDGET_PCT_PINNED = 0.8
 
 
 def order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
@@ -50,7 +55,6 @@ def order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
 
         cover_horizon_ticks          int   [1, 30]
         safety_lead_pct_of_lag       float [0.0, 3.0]
-        opening_budget_pct           float [0.05, 0.95]
         stockout_safety_bonus_pct_of_lag float [0.0, 2.0]
     """
     from src.sim.policy import OrderUpToPolicy
@@ -58,7 +62,7 @@ def order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     return OrderUpToPolicy(
         cover_horizon_ticks=trial.suggest_int("cover_horizon_ticks", 1, 30),
         safety_lead_pct_of_lag=trial.suggest_float("safety_lead_pct_of_lag", 0.0, 3.0),
-        opening_budget_pct=trial.suggest_float("opening_budget_pct", 0.05, 0.95),
+        opening_budget_pct=_OPENING_BUDGET_PCT_PINNED,
         stockout_safety_bonus_pct_of_lag=trial.suggest_float(
             "stockout_safety_bonus_pct_of_lag", 0.0, 2.0
         ),
@@ -75,7 +79,6 @@ def reorder_point_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
 
         cover_horizon_ticks          int   [1, 30]
         safety_lead_pct_of_lag       float [0.0, 3.0]
-        opening_budget_pct           float [0.05, 0.95]
         stockout_safety_bonus_pct_of_lag float [0.0, 2.0]
         Q                            int   [1, 30]
     """
@@ -84,7 +87,7 @@ def reorder_point_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     return ReorderPointPolicy(
         cover_horizon_ticks=trial.suggest_int("cover_horizon_ticks", 1, 30),
         safety_lead_pct_of_lag=trial.suggest_float("safety_lead_pct_of_lag", 0.0, 3.0),
-        opening_budget_pct=trial.suggest_float("opening_budget_pct", 0.05, 0.95),
+        opening_budget_pct=_OPENING_BUDGET_PCT_PINNED,
         stockout_safety_bonus_pct_of_lag=trial.suggest_float(
             "stockout_safety_bonus_pct_of_lag", 0.0, 2.0
         ),
@@ -102,7 +105,6 @@ def periodic_order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
 
         cover_horizon_ticks          int   [1, 30]
         safety_lead_pct_of_lag       float [0.0, 3.0]
-        opening_budget_pct           float [0.05, 0.95]
         stockout_safety_bonus_pct_of_lag float [0.0, 2.0]
         review_interval              int   [1, 14]
     """
@@ -111,7 +113,7 @@ def periodic_order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     return PeriodicOrderUpToPolicy(
         cover_horizon_ticks=trial.suggest_int("cover_horizon_ticks", 1, 30),
         safety_lead_pct_of_lag=trial.suggest_float("safety_lead_pct_of_lag", 0.0, 3.0),
-        opening_budget_pct=trial.suggest_float("opening_budget_pct", 0.05, 0.95),
+        opening_budget_pct=_OPENING_BUDGET_PCT_PINNED,
         stockout_safety_bonus_pct_of_lag=trial.suggest_float(
             "stockout_safety_bonus_pct_of_lag", 0.0, 2.0
         ),
@@ -130,7 +132,6 @@ def periodic_reorder_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
 
         cover_horizon_ticks          int   [1, 30]
         safety_lead_pct_of_lag       float [0.0, 3.0]
-        opening_budget_pct           float [0.05, 0.95]
         stockout_safety_bonus_pct_of_lag float [0.0, 2.0]
         review_interval              int   [1, 14]
     """
@@ -139,7 +140,7 @@ def periodic_reorder_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     return PeriodicReorderPolicy(
         cover_horizon_ticks=trial.suggest_int("cover_horizon_ticks", 1, 30),
         safety_lead_pct_of_lag=trial.suggest_float("safety_lead_pct_of_lag", 0.0, 3.0),
-        opening_budget_pct=trial.suggest_float("opening_budget_pct", 0.05, 0.95),
+        opening_budget_pct=_OPENING_BUDGET_PCT_PINNED,
         stockout_safety_bonus_pct_of_lag=trial.suggest_float(
             "stockout_safety_bonus_pct_of_lag", 0.0, 2.0
         ),

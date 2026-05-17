@@ -13,9 +13,10 @@ Multi-agent retail market simulation. Each store runs its own decision policy in
 7. [Example scenarios](#example-scenarios)
 8. [Common Random Numbers and reproducibility](#common-random-numbers-and-reproducibility)
 9. [LLM world builder](#llm-world-builder)
-10. [Reinforcement Learning (PPO)](#reinforcement-learning-ppo)
-11. [Testing](#testing)
-12. [Further reading](#further-reading)
+10. [Policy hyperparameter tuning](#policy-hyperparameter-tuning)
+11. [Reinforcement Learning (PPO)](#reinforcement-learning-ppo)
+12. [Testing](#testing)
+13. [Further reading](#further-reading)
 
 ## Quickstart
 
@@ -38,21 +39,42 @@ scenarios/                      runnable example Scenario modules
   example_llm_world_offline.py  same pipeline driven by a CannedClient (no network)
   llm_world_100.py              100-item LLM world, 3 stores
   llm_world_1000.py             1000-item LLM world, 5 stores, 2000-step run
-src/sim/                        core simulator
+src/sim/                        canonical simulator + rollout primitives (ADR 0010)
   scenario.py                   Scenario dataclass + load_catalog() / make_stores() helpers
-  runner.py                     simulation loop (observe → decide → advance → log)
+  runner.py                     Runner + Simulation / build_world / TickResult (two-phase tick API)
   store.py                      Store with full accounting (delegates step-0 setup to StoreInitializer)
   store_initializer.py          pure init_store_state seam (bit-identity contract)
-  policy.py                     Policy ABC + HeuristicPolicy + OrderUpToPolicy + textbook family
+  policy.py                     Policy ABC + HeuristicPolicy + TextbookReorderPolicy family
   market.py                     regional demand/supply (composes stage × freshness × season × promo × cross)
   event_engine.py               stochastic disruptions + scheduled deliveries
   item_registry.py              catalog + per-item lifecycle/freshness/stock-share state
   lifecycle_clock.py            pure advance_stage() over [introduction, growth, maturity, decline, dead]
   freshness_curve.py            pure m(τ) = 1 + α · exp(−τ/β) multiplier
-  distributions.py              Constant / Uniform / Normal / Choice
+  distributions.py              Constant / Uniform / Normal / Choice / LogUniform
+  metrics.py                    RunSlice + aggregate_episode + KPI helpers (shared by tuning + RL)
+  episode_sampler.py            EpisodeSpec + sample_episode + default-params factories
+  world.py                      World dataclass (catalog + market + store_templates) + JSON I/O
+  world_loader.py               cache_path → archetype → synthetic fallback resolver
   data_exporter.py              parquet + JSON + PNG writer
+src/tuning/                     Optuna-based policy hyperparameter tuner (ADR 0009)
+  config.py                     TuningConfig — frozen study configuration
+  episode.py                    Config-adapter over src/sim/episode_sampler
+  world_loader.py               Config-adapter over src/sim/world_loader
+  rollout.py                    run_policy_episode (delegates per-tick state machine to Simulation.tick)
+  evaluator.py                  evaluate_policy_normalised — single-policy CRN evaluator
+  search_spaces.py              bundled trial-callback factories for the four textbook variants
+  study.py                      run_study + confirm_top_k + `python -m src.tuning.study` CLI
+src/rl/                         PPO training stack (ADR 0004, ADR 0007)
+  configs/default.py            RLConfig — frozen dataclass; every knob the stack reads
+  episode_sampler.py            RLEpisodeSpec(spec, slot_permutation); 5th seed stream over sim's sampler
+  encoders.py                   encode_observation() / decode_action() — obs / action layout
+  env.py                        RLEnv: Gymnasium wrapper composing build_world + Simulation.tick
+  eval.py                       build_eval_seeds() / evaluate() — CRN-paired RL vs Baseline
+  agents/ppo.py                 CleanRL-style PPO + Actor / Critic MLPs + RolloutBuffer
+  train.py                      argparse driver that wires the pieces together
 src/llm/                        LLM world builder
-  world_builder.py              pipeline orchestrator + World artifact + load_or_build_world cache
+  world_builder.py              pipeline orchestrator + load_or_build_world cache
+                                (re-exports `World` from src/sim/world.py)
   schemas.py                    Pydantic schemas (Taxonomy, Catalog, Correlations, FreshnessSet,
                                 StoreTemplateList, MarketDomain, plus RelatedRef / ItemRelations /
                                 ItemFreshness / SeasonWindow / TaxonomyCategory / StoreTemplateSpec)
@@ -427,6 +449,136 @@ scenario = Scenario(
 
 `LLMClient` is a `Protocol` (`src/llm/openai_client.py`), so tests inject a fake client implementing `structured_completion(*, system, user, schema)` rather than hitting the network. See `tests/llm/` for examples.
 
+## Policy hyperparameter tuning
+
+`src/tuning/` is an Optuna-based hyperparameter tuner for any `Policy` subclass. It frames tuning as a measurement instrument — *how much profit headroom exists above the published textbook defaults?* — rather than per-world baseline construction. Trials run the policy on a fixed CRN seed set with log-uniform domain randomisation across capacity and balance; the objective is mean `net_profit / initial_cash` (dimensionless, scale-comparable across two orders of magnitude of store size). See [docs/adr/0009-policy-hyperparameter-tuning-tool.md](docs/adr/0009-policy-hyperparameter-tuning-tool.md) for the framing and [docs/adr/0010-sim-as-base-for-ml-layers.md](docs/adr/0010-sim-as-base-for-ml-layers.md) for the sim-layer rollout primitives it consumes.
+
+### Layout
+
+```
+src/tuning/
+  config.py         TuningConfig — every knob the study reads (n_trials, seed offsets, distributions, world archetype)
+  episode.py        Config-adapter — unpacks TuningConfig and calls src/sim/episode_sampler.sample_episode
+  world_loader.py   Config-adapter — unpacks TuningConfig and calls src/sim/world_loader.load_world
+  rollout.py        run_policy_episode(policy, spec) — one episode via build_world + Simulation.tick
+  evaluator.py      evaluate_policy_normalised(factory, specs) — single-policy CRN evaluator
+  search_spaces.py  bundled trial-callback factories: order_up_to_space, reorder_point_space,
+                    periodic_order_up_to_space, periodic_reorder_space
+  study.py          run_study(...) + confirm_top_k(...) + `python -m src.tuning.study` CLI
+```
+
+Custom policies write their own ~10-line trial-callback factory (`f(trial) -> Policy`) and pass it to `run_study`; the four bundled factories cover the textbook variants.
+
+### Quickstart
+
+Run a 150-trial study against the canonical fashion-retail world, then re-evaluate the top-5 winners on a disjoint 32-seed held-out set:
+
+```bash
+uv run python -m src.tuning.study \
+  --policy order_up_to \
+  --trials 150 \
+  --study-name order_up_to_v1
+```
+
+Each trial evaluates on 16 CRN seeds (default; `--n-search-seeds`) at 365-tick episodes (`--episode-length`); world cache resolved via `--world` (default `fashion_retail_250` → `data/worlds/fashion_retail_250/world.json`). Sequential runtime is ~40–80 min on a laptop. To skip the holdout phase, pass `--skip-holdout`. All flags:
+
+```bash
+uv run python -m src.tuning.study --help
+```
+
+### Output layout
+
+Artifacts land under `runs/tuning/<study-name>/`:
+
+```
+runs/tuning/<study-name>/
+  trials.parquet         one row per trial: kpis + sampled params
+  per_seed.parquet       long format: one row per (trial, seed) with per-seed KPIs
+  study.json             study metadata + search-space spec + best trial + git SHA
+  holdout.parquet        top-K winners + published default re-evaluated on holdout seeds
+  holdout_summary.json   bootstrap CIs + headline paired uplift (tuned − default)
+```
+
+`trials.parquet` columns: `trial_id`, `state`, `datetime_start`, `datetime_complete`, `duration_s`, `mean_normalised_return`, `mean_net_profit`, `mean_service_level`, `mean_stockout_rate`, `mean_inventory_turnover`, `mean_revenue`, `mean_mean_price_pct_of_msrp`, plus one column per sampled hyperparameter.
+
+`per_seed.parquet` columns: `trial_id`, `seed`, `capacity`, `initial_cash`, `net_profit`, `normalised_return`, `service_level`, `stockout_rate`, `inventory_turnover`, `revenue`, `mean_price_pct_of_msrp`.
+
+The Parquet files load with just `pandas` + `pyarrow` — no Optuna import needed at read time.
+
+### Programmatic use
+
+`run_study` returns the in-memory `optuna.Study`; the API is also accessible directly:
+
+```python
+from src.tuning import (
+    TuningConfig,
+    order_up_to_space,
+    run_study,
+    confirm_top_k,
+    load_world,
+)
+
+config = TuningConfig(n_trials=150, n_search_seeds=16)
+catalog, base_template, market_params, disruption_params = load_world(config)
+
+study = run_study(
+    order_up_to_space,
+    catalog=catalog,
+    base_template=base_template,
+    tuning_config=config,
+    study_name="order_up_to_v1",
+    market_params=market_params,
+    disruption_params=disruption_params,
+)
+
+summary = confirm_top_k(
+    study,
+    order_up_to_space,
+    catalog=catalog,
+    base_template=base_template,
+    tuning_config=config,
+    study_dir="runs/tuning/order_up_to_v1",
+    market_params=market_params,
+    disruption_params=disruption_params,
+)
+
+print(summary["headline_uplift"])  # paired (tuned − default) on holdout
+```
+
+For a tiny smoke run that doesn't need a world cache:
+
+```python
+demo = TuningConfig(n_trials=10, n_search_seeds=4, episode_length=60)
+catalog, base_template, _, _ = load_world(demo)  # synthetic fallback when cache missing
+study = run_study(order_up_to_space, catalog=catalog, base_template=base_template,
+                  tuning_config=demo, study_name="demo", output_dir="/tmp/demo_tuning")
+```
+
+### Analysis notebook
+
+`notebooks/08-tune_textbook_policy.ipynb` walks through a finished study: optimisation trajectory, tuned-vs-default headline with bootstrap CIs, parameter-sensitivity scatters, fANOVA importances, Pareto front (profit vs service level), and per-capacity-bucket robustness. It loads `runs/tuning/order_up_to_v1/` and runs an additional 10-trial live demo against `/tmp/demo_tuning/` so the API is exercised end-to-end without re-running the full study.
+
+### CRN guarantee
+
+Every trial in a study evaluates on the same eval-specs list, built once before `study.optimize` is called and closed over by the trial objective. Two trials sampling identical kwargs on identical seeds therefore produce bit-identical trajectories — differences between trials are attributable to the policy kwargs alone, exactly the property `eval/paired_uplift` provides for RL. The search seeds (`seed_offset = 12_000_000`) and holdout seeds (`holdout_seed_offset = 13_000_000`) are disjoint from each other and from the RL training and eval ranges.
+
+### CLI flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--policy` | required | One of `order_up_to`, `reorder_point`, `periodic_order_up_to`, `periodic_reorder` |
+| `--study-name` | required | Output sub-directory under `--output-dir` |
+| `--trials` | 150 | Number of Optuna trials |
+| `--n-search-seeds` | 16 | CRN seeds for the search phase |
+| `--n-holdout-seeds` | 32 | CRN seeds for the holdout phase |
+| `--seed-offset` | 12_000_000 | First search-phase seed |
+| `--sampler-seed` | 42 | Optuna sampler seed |
+| `--top-k` | 5 | Number of top trials re-evaluated on holdout |
+| `--episode-length` | 365 | Ticks per episode (one calendar year) |
+| `--world` | fashion_retail_250 | World archetype; resolved against `data/worlds/<archetype>/world.json` |
+| `--output-dir` | runs/tuning | Root output directory |
+| `--skip-holdout` | off | Write only the three search artifacts; skip `confirm_top_k` |
+
 ## Reinforcement Learning (PPO)
 
 `src/rl/` is a self-contained PPO training stack that wraps the simulator as a Gymnasium environment, trains a continuous-control policy on pricing and ordering decisions, and evaluates the trained policy against `OrderUpToPolicy` with Common Random Numbers (CRN) so all world variance cancels in the comparison. For the architectural decisions behind the env (randomised assortment per episode, slot-shuffled observations, hidden market state, frozen assortment within episode) see [docs/adr/0004-rl-training-env.md](docs/adr/0004-rl-training-env.md).
@@ -436,14 +588,15 @@ scenario = Scenario(
 ```
 src/rl/
   configs/default.py      RLConfig — frozen dataclass; every knob the stack reads
-  episode_sampler.py      sample_episode(catalog, template, config, seed) → EpisodeSpec
+  episode_sampler.py      RLEpisodeSpec(spec, slot_permutation); composes src/sim/episode_sampler
   encoders.py             encode_observation() / decode_action() — single source of truth for the obs / action layout
-  env.py                  RLEnv: Gymnasium wrapper around Market / EventEngine / ItemRegistry / Store
-  metrics.py              RunSlice + business KPIs (service_level, stockout_rate, turnover, profit decomposition)
+  env.py                  RLEnv: Gymnasium wrapper; reset via build_world, step via Simulation two-phase API
   eval.py                 build_eval_seeds() / evaluate() — CRN-paired RL vs Baseline
   agents/ppo.py           CleanRL-style PPO + Actor / Critic MLPs + RolloutBuffer
   train.py                argparse driver that wires the pieces together
 ```
+
+`RunSlice` + `aggregate_episode` + KPI helpers live in `src/sim/metrics.py` (shared with tuning). Per ADR 0010, the per-tick state machine has exactly one implementation — `Simulation.tick_decide_and_settle()` in `src/sim/runner.py` — and the RL env, eval, and tuning rollout are all sibling consumers.
 
 The `Actor` and `Critic` boundary in `agents/ppo.py` is the only place a future heavier model (transformer, attention-over-SKUs) needs to change; the env, encoder, sampler, and eval harness all stay the same.
 

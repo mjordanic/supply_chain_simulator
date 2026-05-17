@@ -110,6 +110,8 @@ class World:
                 "seasonality": w.seasonality,
                 "freshness_alpha": w.freshness_alpha,
                 "freshness_decay": w.freshness_decay,
+                "init_stage": w.init_stage,
+                "stage_change_probs": w.stage_change_probs,
                 "init_stock_share": w.init_stock_share,
                 "related_products": list(w.related_products),
             })

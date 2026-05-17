@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.sim.distributions import Constant
 from src.sim.policy import NoopPolicy, OrderUpToPolicy
 from src.sim.scenario import StoreTemplate, load_catalog
 from src.tuning.config import TuningConfig
@@ -58,12 +59,17 @@ def _make_base_template(
 
 
 def _make_short_config(episode_length: int = 5) -> TuningConfig:
-    """Return a TuningConfig with a very short episode for fast tests."""
+    """Return a TuningConfig with a very short episode for fast tests.
+
+    init_stock_pct pinned to 0.0 so NoopPolicy yields zero profit (used by
+    the dimensionless-normalisation tests below).
+    """
     return TuningConfig(
         episode_length=episode_length,
         K_active=5,
         n_trials=1,
         n_search_seeds=2,
+        init_stock_pct_dist=Constant(0.0),
     )
 
 
