@@ -1052,10 +1052,9 @@ class TextbookReorderPolicy(Policy):
         s = (delivery_lag + effective_safety_ticks + effective_bonus_ticks) × rate
         S = s + cover_horizon_ticks × rate
 
-    The default ``safety_lead_pct_of_lag = 2/3`` reproduces the old
-    ``safety_lead_ticks = 2`` behaviour at the canonical ``delivery_lag=3``
-    scale (``round(2/3 × 3) = 2``), so trajectories on uniform-lag worlds
-    are bit-identical to pre-ADR-0008 behaviour. See ADR 0008.
+    The default ``safety_lead_pct_of_lag = 1/3`` keeps a thin safety
+    buffer (one-third of the per-pid lead time worth of demand) — a
+    plausible textbook starting point for low-volatility demand.
 
     Subclasses provide two decision hooks:
 
@@ -1101,8 +1100,8 @@ class TextbookReorderPolicy(Policy):
         self,
         *,
         policy_seed: int | None = None,
-        cover_horizon_ticks: int = 10,
-        safety_lead_pct_of_lag: float = 2 / 3,
+        cover_horizon_ticks: int = 14,
+        safety_lead_pct_of_lag: float = 1 / 3,
         opening_budget_pct: float = 0.50,
         stockout_safety_bonus_pct_of_lag: float = 0.0,
         min_qty: int = 0,
@@ -1113,13 +1112,15 @@ class TextbookReorderPolicy(Policy):
         # quantity and ``Q`` for the rate-derived (s,Q) default. Bigger
         # horizon ⇒ fewer-larger orders (good when ordering cost is high
         # relative to holding cost). Independent of lead time (EOQ result).
+        # Default 14 ticks ≈ a two-week reorder cycle, a common starting
+        # point in retail-inventory textbooks.
         self.cover_horizon_ticks = cover_horizon_ticks
         # Safety fraction: multiplied by the per-pid delivery_lag to give
         # the effective extra safety ticks beyond the lead time.
         # ``effective_safety_ticks = round(safety_lead_pct_of_lag × lag)``.
-        # Default 2/3 reproduces ``safety_lead_ticks=2`` at the canonical
-        # lag=3 scale (round(2/3 × 3) = 2) — bit-identical on uniform-lag
-        # worlds, correct on heterogeneous-lag worlds. See ADR 0008.
+        # Default 1/3 keeps a thin safety buffer (one-third of the lead
+        # time worth of demand) — defensible textbook starting point for
+        # low-volatility demand. See ADR 0008.
         self.safety_lead_pct_of_lag = safety_lead_pct_of_lag
         # Fraction of cash to spend on the very first order for each
         # newly-observed pid. Sized as

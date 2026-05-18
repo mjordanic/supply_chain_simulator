@@ -158,10 +158,10 @@ def test_order_up_to_instantiates_with_no_args():
 
 
 def test_order_up_to_default_kwargs():
-    """Default kwarg values match the spec (ADR 0008 renames)."""
+    """Default kwarg values match the published textbook starting point."""
     p = OrderUpToPolicy()
-    assert p.cover_horizon_ticks == 10
-    assert abs(p.safety_lead_pct_of_lag - 2 / 3) < 1e-9
+    assert p.cover_horizon_ticks == 14
+    assert abs(p.safety_lead_pct_of_lag - 1 / 3) < 1e-9
     assert abs(p.opening_budget_pct - 0.50) < 1e-9
     assert abs(p.stockout_safety_bonus_pct_of_lag - 0.0) < 1e-9
     assert p.min_qty == 0
