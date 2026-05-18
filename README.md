@@ -11,12 +11,13 @@ Multi-agent retail market simulation. Each store runs its own decision policy in
 5. [Output layout](#output-layout)
 6. [Authoring a scenario](#authoring-a-scenario)
 7. [Example scenarios](#example-scenarios)
-8. [Common Random Numbers and reproducibility](#common-random-numbers-and-reproducibility)
-9. [LLM world builder](#llm-world-builder)
-10. [Policy hyperparameter tuning](#policy-hyperparameter-tuning)
-11. [Reinforcement Learning (PPO)](#reinforcement-learning-ppo)
-12. [Testing](#testing)
-13. [Further reading](#further-reading)
+8. [Visualizing a run](#visualizing-a-run)
+9. [Common Random Numbers and reproducibility](#common-random-numbers-and-reproducibility)
+10. [LLM world builder](#llm-world-builder)
+11. [Policy hyperparameter tuning](#policy-hyperparameter-tuning)
+12. [Reinforcement Learning (PPO)](#reinforcement-learning-ppo)
+13. [Testing](#testing)
+14. [Further reading](#further-reading)
 
 ## Quickstart
 
@@ -322,6 +323,26 @@ uv run python main.py scenarios/example_llm_world_offline.py
 ```
 
 **`scenarios/llm_world_100.py`** / **`scenarios/llm_world_1000.py`** — larger LLM-built worlds (100 and 1000 items). Same cache + consent model as `example_llm_world.py`; the 1000-item scenario also rescales the LLM-authored template for the larger catalog.
+
+## Visualizing a run
+
+`notebooks/04a-deep_dive_active_only.ipynb` is a single-store deep-dive over a run's parquet + run-log artifacts: world view, store financials, decision summary, and per-product cards over the active SKUs. The four headline panels below are rendered from `data/llm_world_250/` (one store, 51-tick run over a 250-item LLM-built fashion-retail world, `OrderUpToPolicy`) — re-runnable via `uv run python scripts/render_readme_simulator_images.py`.
+
+**Market supply / demand per region.** The market dynamics every store sees, with disruption windows shaded by event type. This is the world stream that is held fixed across paired-CRN comparisons.
+
+![Market supply and demand per region](docs/images/sim_market_supply_demand.png)
+
+**Equity composition + cumulative P&L.** Stacked equity (cash + inventory at cost + outstanding orders at cost) on the left axis; cumulative P&L on the right. The dashed equity line equals the stack height — re-arranged so the components are legible.
+
+![Equity composition and cumulative P&L](docs/images/sim_equity_composition.png)
+
+**Revenue vs cost per step.** Per-tick revenue (above zero) decomposed against order cost and holding cost (below zero); the black line is realised step P&L. Order-cost spikes line up with order-quantity bars in the per-product card below.
+
+![Revenue vs cost per step](docs/images/sim_revenue_vs_cost.png)
+
+**Per-product card — `P0333` (Men's Thermal Sleep Shirt).** Top panel: on-hand inventory, outstanding orders, and order-quantity bars against the store's total capacity. Bottom panel: sampled demand vs realised sales; the red band is unmet demand (a stockout). Demand is sampled on every step regardless of active status, so the panel surfaces latent demand on inactive windows too.
+
+![Per-product card for P0333](docs/images/sim_product_P0333.png)
 
 ## Common Random Numbers and reproducibility
 

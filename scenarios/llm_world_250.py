@@ -57,7 +57,7 @@ from src.sim.scenario import (
 _ARCHETYPE = "fashion_retail"
 _N_ITEMS = 250
 _N_STORES = 4
-_N_STEPS = 2000
+_N_STEPS = 50
 
 # Calibration constants (see module docstring for rationale).
 _TARGET_ACTIVE = 10
@@ -86,7 +86,8 @@ _template = replace(
     init_balance=_FLAGSHIP_BALANCE,
     init_active_count=_INIT_ACTIVE_COUNT,
     init_freshness="baseline",
-    init_stock_pct=0.0,
+    init_stock_pct=0.2,
+    holding_rate=0.05,
     order_fee=10.0,
 )
 
