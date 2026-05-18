@@ -62,7 +62,7 @@ _N_STEPS = 2000
 # Calibration constants (see module docstring for rationale).
 _TARGET_ACTIVE = 10
 _FLAGSHIP_CAPACITY = 1000
-_FLAGSHIP_BALANCE = 10000.0
+_FLAGSHIP_BALANCE = 1000.0
 # Higher than _TARGET_ACTIVE so the policy has slack to deactivate slow movers.
 _INIT_ACTIVE_COUNT = 10
 
@@ -112,7 +112,8 @@ _COVER_HORIZON_TICKS = int(_template.delivery_lag)
 # ``policy_rng`` draws independent.
 def _build_policy(seed: int) -> OrderUpToPolicy:
     return OrderUpToPolicy(policy_seed=seed,
-        cover_horizon_ticks=_COVER_HORIZON_TICKS,
+        # cover_horizon_ticks=_COVER_HORIZON_TICKS,
+        cover_horizon_ticks=60,
         safety_lead_pct_of_lag=1.0,
         opening_budget_pct=0.50,
         stockout_safety_bonus_pct_of_lag=1.0,

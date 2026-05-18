@@ -558,6 +558,20 @@ study = run_study(order_up_to_space, catalog=catalog, base_template=base_templat
 
 `notebooks/08-tune_textbook_policy.ipynb` walks through a finished study: optimisation trajectory, tuned-vs-default headline with bootstrap CIs, parameter-sensitivity scatters, fANOVA importances, Pareto front (profit vs service level), and per-capacity-bucket robustness. It loads `runs/tuning/order_up_to_v1/` and runs an additional 10-trial live demo against `/tmp/demo_tuning/` so the API is exercised end-to-end without re-running the full study.
 
+Headline outputs from a 150-trial study against the `fashion_retail_250` world:
+
+**Pareto front — profit vs service level.** Each dot is one trial; red dots are non-dominated; the gold star is the search winner.
+
+![Pareto front: profit vs service level](docs/images/tuning_pareto_front.png)
+
+**Hyperparameter importance (fANOVA).** `safety_lead_pct_of_lag` dominates; `cover_horizon_ticks` is secondary; `stockout_safety_bonus_pct_of_lag` is near-noise.
+
+![Hyperparameter importance](docs/images/tuning_param_importance.png)
+
+**Scale robustness — per-capacity-bucket mean net profit.** Tuned vs published default on the 32 held-out seeds, bucketed into small / medium / large by sampled capacity.
+
+![Per-capacity improvement](docs/images/tuning_per_capacity.png)
+
 ### CRN guarantee
 
 Every trial in a study evaluates on the same eval-specs list, built once before `study.optimize` is called and closed over by the trial objective. Two trials sampling identical kwargs on identical seeds therefore produce bit-identical trajectories — differences between trials are attributable to the policy kwargs alone, exactly the property `eval/paired_uplift` provides for RL. The search seeds (`seed_offset = 12_000_000`) and holdout seeds (`holdout_seed_offset = 13_000_000`) are disjoint from each other and from the RL training and eval ranges.
