@@ -814,6 +814,10 @@ print(f"Episode return: {total:.2f}")
 
 Use the comparison notebook to spot regimes the policy fails in (outliers below the 45° line), and to confirm that aggregate uplift is not driven by one or two lucky seeds.
 
+**Business KPI side-by-side.** Per-KPI mean across the 32 CRN-paired held-out seeds — RL (blue) vs `OrderUpToPolicy` (orange). Rendered from a 1 M-step checkpoint trained on `fashion_retail_250` via `uv run python scripts/render_readme_rl_images.py`. Higher service level + lower stockout rate at comparable turnover and revenue → the policy ordered better; the price-multiplier panel surfaces *how* it's pricing relative to MSRP.
+
+![RL vs OrderUpToPolicy KPIs](docs/images/rl_vs_baseline_kpis.png)
+
 ### CLI flags
 
 `uv run python -m src.rl.train --help` lists every flag. The ones you tune most often:
