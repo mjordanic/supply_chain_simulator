@@ -78,26 +78,28 @@ Two cached worlds ship in `data/worlds/`. Inspect them in `notebooks/02-inspect_
 
 ### `fashion_retail_250` (336 items across 6 categories)
 
-| id | name | category | base | cost | season |
-|---|---|---|---:|---:|---|
-| P0000 | Women's Essential Crewneck Tee | Women's Apparel | 24.00 | 8.00 | spring/summer |
-| P0001 | Women's Ribbed Tank Top | Women's Apparel | 22.00 | 7.50 | summer |
-| P0002 | Women's Relaxed Linen Button-Up Shirt | Women's Apparel | 42.00 | 15.00 | spring/summer |
-| P0086 | Men's Classic Oxford Shirt | Men's Apparel | 54.00 | 20.00 | all_season |
-| P0087 | Men's Slim Fit Chino Pants | Men's Apparel | 59.00 | 22.00 | all_season |
-| P0088 | Men's Performance Polo | Men's Apparel | 39.00 | 14.00 | spring/summer |
-| P0151 | Men's Classic Derby Shoes | Footwear | 98.00 | 38.00 | all_season |
-| P0152 | Women's Everyday Ballet Flats | Footwear | 76.00 | 29.00 | all_season |
-| P0153 | Men's Canvas Low-Top Sneakers | Footwear | 68.00 | 25.00 | spring/summer |
-| P0192 | Women's Leather Tote Bag | Accessories | 118.00 | 46.00 | all_season |
-| P0193 | Men's Reversible Leather Belt | Accessories | 42.00 | 14.50 | all_season |
-| P0194 | Women's Straw Sun Hat | Accessories | 36.00 | 11.50 | summer |
-| P0241 | Kids' Graphic Tee Pack | Kids' Apparel | 24.00 | 7.50 | spring/summer |
-| P0242 | Kids' Denim Overalls | Kids' Apparel | 38.00 | 13.00 | all_season |
-| P0243 | Kids' Fleece Zip Hoodie | Kids' Apparel | 34.00 | 11.50 | fall/winter |
-| P0292 | Kids' Cotton Briefs 6-Pack | Intimates & Sleepwear | 18.00 | 5.50 | all_season |
-| P0293 | Kids' Training Bra | Intimates & Sleepwear | 22.00 | 6.50 | all_season |
-| P0294 | Women's Seamless Briefs 3-Pack | Intimates & Sleepwear | 24.00 | 7.00 | all_season |
+The `related_products` column shows the LLM-authored cross-product correlations: top-3 partner items with correlation weight (∈ [0, 1]) in parentheses. Fashion-only — the `sports_cars_100` catalog above omits this column for table-width reasons.
+
+| id | name | category | base | cost | season | related_products |
+|---|---|---|---:|---:|---|---|
+| P0000 | Women's Essential Crewneck Tee | Women's Apparel | 24.00 | 8.00 | spring/summer | Women's Stretch Skinny Jeans (0.82), Women's Knit Cardigan (0.68), Women's Tailored Blazer (0.42) |
+| P0001 | Women's Ribbed Tank Top | Women's Apparel | 22.00 | 7.50 | summer | Women's High-Rise Bike Shorts (0.66), Women's Stretch Skinny Jeans (0.52), Women's Cropped Hoodie (0.41) |
+| P0002 | Women's Relaxed Linen Button-Up Shirt | Women's Apparel | 42.00 | 15.00 | spring/summer | Women's Wide-Leg Trousers (0.63), Women's Paperbag Waist Shorts (0.58), Women's Pleated Midi Skirt (0.47) |
+| P0086 | Men's Classic Oxford Shirt | Men's Apparel | 54.00 | 20.00 | all_season | Men's Tapered Suit Pants (0.74), Men's Tailored Blazer (0.68), Men's Leather Belt (0.45) |
+| P0087 | Men's Slim Fit Chino Pants | Men's Apparel | 59.00 | 22.00 | all_season | Men's Classic Oxford Shirt (0.62), Men's Piqué Golf Shirt (0.56), Men's Dress Chinos (0.41) |
+| P0088 | Men's Performance Polo | Men's Apparel | 39.00 | 14.00 | spring/summer | Men's Straight-Leg Khaki Pants (0.51), Men's Canvas Low-Top Sneakers (0.46), Men's Leather Boat Shoes (0.34) |
+| P0151 | Men's Classic Derby Shoes | Footwear | 98.00 | 38.00 | all_season | Men's Slim Wool Trousers (0.58), Men's Tailored Dress Shirt (0.54), Men's Wool Blend Overcoat (0.33) |
+| P0152 | Women's Everyday Ballet Flats | Footwear | 76.00 | 29.00 | all_season | Women's Pleated Midi Skirt (0.47), Women's Straight-Leg Ponte Pants (0.44), Women's Knit Cardigan (0.38) |
+| P0153 | Men's Canvas Low-Top Sneakers | Footwear | 68.00 | 25.00 | spring/summer | Men's Relaxed Fit Jeans (0.62), Men's Cotton Crewneck T-Shirt (0.57), Men's Denim Jacket (0.41) |
+| P0192 | Women's Leather Tote Bag | Accessories | 118.00 | 46.00 | all_season | Women's Tailored Blazer (0.48), Women's Straight-Leg Ponte Pants (0.43), Women's Sunglasses (0.42) |
+| P0193 | Men's Reversible Leather Belt | Accessories | 42.00 | 14.50 | all_season | Men's Slim Fit Chino Pants (0.51), Men's Tailored Dress Shirt (0.46), Men's Dress Chinos (0.44) |
+| P0194 | Women's Straw Sun Hat | Accessories | 36.00 | 11.50 | summer | Women's Resort Straw Tote (0.66), Women's Sunglasses (0.57), Women's Espadrille Wedges (0.41) |
+| P0241 | Kids' Graphic Tee Pack | Kids' Apparel | 24.00 | 7.50 | spring/summer | Kids' Denim Overalls (0.48), Kids' Jogger Sweatpants (0.34), Kids' Denim Jacket (0.22) |
+| P0242 | Kids' Denim Overalls | Kids' Apparel | 38.00 | 13.00 | all_season | Kids' Graphic Tee Pack (0.58), Kids' Long Sleeve Tee (0.41), Kids' Denim Jacket (0.24) |
+| P0243 | Kids' Fleece Zip Hoodie | Kids' Apparel | 34.00 | 11.50 | fall/winter | Kids' Jogger Sweatpants (0.72), Kids' Graphic Sweatshirt (0.55), Kids' Knit Beanie (0.31) |
+| P0292 | Kids' Cotton Briefs 6-Pack | Intimates & Sleepwear | 18.00 | 5.50 | all_season | Kids' Training Bra (0.33), Kids' School Socks 5-Pack (0.31), Kids' Pajama Onesie (0.24) |
+| P0293 | Kids' Training Bra | Intimates & Sleepwear | 22.00 | 6.50 | all_season | Kids' Cotton Briefs 6-Pack (0.38), Women's Wireless T-Shirt Bra (0.00) |
+| P0294 | Women's Seamless Briefs 3-Pack | Intimates & Sleepwear | 24.00 | 7.00 | all_season | Women's Wireless T-Shirt Bra (0.61), Women's Lace Bralette (0.45), Women's Seamless Camisole (0.39) |
 
 ## Schemas and validation
 

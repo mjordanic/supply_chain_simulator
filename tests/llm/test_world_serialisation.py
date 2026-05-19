@@ -322,19 +322,19 @@ def test_world_builder_build_populates_five_meta_keys() -> None:
     assert dt.tzinfo is not None
 
 
-def test_world_builder_build_model_none_when_client_has_no_model_id() -> None:
-    """MockClient has no model_id attribute → meta["model"] is None."""
+def test_world_builder_build_model_none_when_client_has_no_model_attr() -> None:
+    """MockClient has no model attribute → meta["model"] is None."""
     client = _MockClient(_make_builder_responses())
-    assert not hasattr(client, "model_id")
+    assert not hasattr(client, "model")
     builder = WorldBuilder("luxury", client)
     world = builder.build(n_items=3)
     assert world.meta["model"] is None
 
 
-def test_world_builder_build_model_from_client_model_id() -> None:
-    """Client exposes model_id → propagated into meta."""
+def test_world_builder_build_model_from_client_model() -> None:
+    """Client exposes model → propagated into meta (matches OpenAIClient.model)."""
     client = _MockClient(_make_builder_responses())
-    client.model_id = "gpt-4o"  # type: ignore[attr-defined]
+    client.model = "gpt-4o"  # type: ignore[attr-defined]
     builder = WorldBuilder("luxury", client)
     world = builder.build(n_items=3)
     assert world.meta["model"] == "gpt-4o"

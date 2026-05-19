@@ -2,7 +2,7 @@
 
 A self-contained PPO training stack that wraps the simulator as a Gymnasium environment, trains a continuous-control policy on pricing and ordering decisions, and evaluates the trained policy against `OrderUpToPolicy` with Common Random Numbers (CRN) so all world variance cancels in the comparison.
 
-For the architectural decisions behind the env (randomised assortment per episode, slot-shuffled observations, hidden market state, frozen assortment within episode) see [ADR 0004](../../docs/adr/0004-rl-training-env.md). For the scale-invariance package (order-up-to action decoder, demand-units inventory feature, log-uniform domain randomisation) see [ADR 0007](../../docs/adr/0007-rl-scale-invariance-package.md).
+Key design choices baked into the env: randomised assortment per episode, slot-shuffled observations, hidden market state, and a frozen assortment for the duration of every episode. A scale-invariance package — order-up-to action decoder, demand-units inventory feature, log-uniform domain randomisation over capacity and balance — lets one trained policy generalise across two orders of magnitude in store size.
 
 ## Contents
 
@@ -29,13 +29,13 @@ src/rl/
   train.py             argparse driver that wires the pieces together
 ```
 
-`RunSlice` + `aggregate_episode` + KPI helpers live in `src/sim/metrics.py` (shared with tuning). Per ADR 0010, the per-tick state machine has exactly one implementation — `Simulation.tick_decide_and_settle()` in `src/sim/runner.py` — and the RL env, eval, and tuning rollout are all sibling consumers.
+`RunSlice` + `aggregate_episode` + KPI helpers live in `src/sim/metrics.py` (shared with tuning). The per-tick state machine has exactly one implementation — `Simulation.tick_decide_and_settle()` in `src/sim/runner.py` — and the RL env, eval, and tuning rollout are all sibling consumers.
 
 The `Actor` and `Critic` boundary in `agents/ppo.py` is the only place a future heavier model (transformer, attention-over-SKUs) needs to change; the env, encoder, sampler, and eval harness all stay the same.
 
 ## Observation and action layout
 
-For `K_active = 5` (default), the flat observation has length `K_active * 13 + 4 = 69`:
+For `K_active = 5` (default), the flat observation has length `K_active * 14 + 4 = 74`:
 
 | Index in slot | Feature | Range |
 | --- | --- | --- |
@@ -48,10 +48,11 @@ For `K_active = 5` (default), the flat observation has length `K_active * 13 + 4
 | 6-10 | lifecycle stage one-hot (introduction, growth, maturity, decline, dead) | {0, 1} |
 | 11 | log1p(ticks since activation) / log1p(360) | [0, 1] |
 | 12 | in-season flag for the current month | {0, 1} |
+| 13 | demand-units inventory: `clip(inv / rate, 0, max_lt) / max_lt` | [0, 1] |
 
 Global block (appended once after all per-SKU slots): `cash / initial_cash`, `total_inventory / capacity`, `sin(2π·step/360)`, `cos(2π·step/360)`.
 
-Action: `2 * K_active` continuous values in `[-1, 1]`. First `K_active` are price multipliers (`[-1, 1]` → `[0.5, 1.5]` × MSRP); second `K_active` are order fractions (`[-1, 1]` → `[0, 1]` × per-SKU free space). `activate`, `deactivate`, and `promotions` are forced to empty for the duration of every episode (ADR 0004, Decision 4).
+Action: `2 * K_active` continuous values in `[-1, 1]`. First `K_active` are price multipliers (`[-1, 1]` → `[0.5, 1.5]` × MSRP); second `K_active` are order fractions (`[-1, 1]` → `[0, 1]` × per-SKU free space). `activate`, `deactivate`, and `promotions` are forced to empty for the duration of every episode — the env locks the assortment at reset so the agent's job is pricing and ordering only.
 
 ## Quickstart
 
@@ -129,7 +130,7 @@ The notebook reads the same `events.out.tfevents.*` files TensorBoard reads, sur
 | `eval/rl_revenue` / `eval/baseline_revenue` | Episode revenue |
 | `eval/rl_net_profit` / `eval/baseline_net_profit` | Revenue − holding − order cost − fees |
 
-`eval/paired_uplift` is the headline number. Because the CRN eval shares `(world_seed, init_seed, capacity, balance, active subset, slot permutation)` between the RL and baseline runs for every seed, world stochasticity is fully cancelled — any observed difference is attributable to the policy alone (ADR 0003, ADR 0004). A positive *and stable* `paired_uplift` means the policy beats `OrderUpToPolicy` on identical worlds, not just on lucky draws.
+`eval/paired_uplift` is the headline number. Because the CRN eval shares `(world_seed, init_seed, capacity, balance, active subset, slot permutation)` between the RL and baseline runs for every seed, world stochasticity is fully cancelled — any observed difference is attributable to the policy alone. A positive *and stable* `paired_uplift` means the policy beats `OrderUpToPolicy` on identical worlds, not just on lucky draws.
 
 ## Checkpoints
 
@@ -246,7 +247,7 @@ Use the comparison notebook to spot regimes the policy fails in (outliers below 
 4. Decode action → set on `RLPolicy` shim (`src/sim/policy.py`)
 5. `store.decide(store.observe(...))`
 6. Dispatch orders (schedule delivery callbacks with adjusted lead time)
-7. Settle demand for every catalog product (CRN cleanliness — see [ADR 0003](../../docs/adr/0003-crn-demand-for-all-products.md))
+7. Settle demand for every catalog product (CRN cleanliness — demand is sampled for every catalog product each tick, not only the active subset, so swapping policies leaves the world stream untouched)
 
 The reward each tick is `balance_after − balance_before`. Total episode return equals the sum of per-tick balance deltas, which is exactly the `net_profit` metric reported by `aggregate_episode(...)`. This is why `eval/paired_uplift` is computed on `net_profit`.
 
@@ -255,8 +256,3 @@ The reward each tick is `balance_after − balance_before`. Total episode return
 ## Further reading
 
 - [`CONTEXT.md`](../../CONTEXT.md) — domain and architecture glossary
-- [ADR 0003](../../docs/adr/0003-crn-demand-for-all-products.md) — CRN demand sampling
-- [ADR 0004](../../docs/adr/0004-rl-training-env.md) — RL training env design
-- [ADR 0006](../../docs/adr/0006-textbook-reorder-policy-family.md) — Textbook reorder family (the comparison anchor)
-- [ADR 0007](../../docs/adr/0007-rl-scale-invariance-package.md) — RL scale-invariance package
-- [ADR 0010](../../docs/adr/0010-sim-as-base-for-ml-layers.md) — `src/sim/` as the canonical home for rollout primitives

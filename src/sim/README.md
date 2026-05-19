@@ -42,7 +42,7 @@ src/sim/
 - **Scenario** — frozen experiment inputs: catalog, market, disruption, item lifecycle, list of `(template, init_seed, policy)` store instances, `n_steps`, `start_date`, `world_seed`.
 - **StoreTemplate** — reusable store profile (region, capacity, balance, lead time, fees, …) plus an optional `init_active_products` roster and an `init_freshness` mode (`"baseline"` for established stores, `"fresh"` for grand-opening). The pair `(template, init_seed)` is the bit-identical step-0 contract: two stores built from the same pair start identical regardless of attached policy.
 - **Policy** — decision logic attached to a store. Every tick it receives an observation and returns an action dict with keys `order`, `price`, `activate`, `deactivate`, `promotions`. `OrderUpToPolicy` is the textbook (s,S) continuous-review policy used as the CRN comparison anchor for RL; `HeuristicPolicy` is the kitchen-sink demonstrator with 20+ kwargs.
-- **Two-layer lifecycle** — every product has a global stage in `[introduction, growth, maturity, decline, dead]` advanced by `LifecycleClock` against the per-stage `stage_change_probs` table; on top of that, every `(store, product)` pair has a freshness curve `m(τ) = 1 + α · exp(−τ / β)` that resets on each `Store.activate_item`. See [ADR 0001](../../docs/adr/0001-two-layer-lifecycle.md) and [ADR 0002](../../docs/adr/0002-per-stage-transitions-and-dead-stage.md).
+- **Two-layer lifecycle** — every product has a global stage in `[introduction, growth, maturity, decline, dead]` advanced by `LifecycleClock` against the per-stage `stage_change_probs` table; on top of that, every `(store, product)` pair has a freshness curve `m(τ) = 1 + α · exp(−τ / β)` that resets on each `Store.activate_item`.
 - **RNG split** — `world_rng` (market, events, item lifecycle), `policy_rng` (policy decisions), and `init_rng` (per-store initial state) never share state. This is what lets policies be compared on identical worlds.
 - **DataExporter** — consumes the run log and writes parquet/JSON/PNG under `data/<scenario_stem>/`.
 
@@ -68,9 +68,9 @@ uv run python scenarios/example_homogeneous.py
 
 Errors `main.py` emits on a bad scenario path:
 
-- `main.py: scenario file not found: <path>` — file does not exist
-- `main.py: <path> does not expose a top-level 'scenario' symbol` — module loaded but no `scenario =` at module level
-- `main.py: <path>.scenario is <type>, expected Scenario` — wrong type
+- `main.py: load_scenario_from_path: scenario file not found: <path>` — file does not exist
+- `main.py: load_scenario_from_path: <path> does not expose a top-level \`scenario\` attribute` — module loaded but no `scenario =` at module level
+- `main.py: load_scenario_from_path: <path>.scenario is <type>, expected Scenario` — wrong type
 
 ## Authoring a scenario
 
@@ -132,10 +132,7 @@ market = MarketParams(
     price_elasticity=-1.5,
     promo_multiplier=1.0,
     demand_factor_min=0.1,
-    demand_divisor=100.0,
     supply_factor_min=0.01,
-    supply_divisor=100.0,
-    demand_range=(80.0, 120.0),
     cross_inv_lo=0.3,
     cross_inv_hi=0.7,
     cross_factor_range=(0.3, 1.6),
@@ -273,6 +270,8 @@ class MyPolicy(Policy):
         #   observation["balance"]            float
         #   observation["max_capacity"]       int | float
         #   observation["current_sim_step"]   int
+        #   observation["region"]             str
+        #   observation["delivery_lags"]      dict[pid, int]
         #   observation["related_products"]   dict[pid, list[(pid, float)]]
         #   observation["promotions"]         dict[pid, dict]
         return {
@@ -319,7 +318,7 @@ All stochastic choices should consume `self.policy_rng` (seeded from the `policy
 
 ### `TextbookReorderPolicy` family
 
-Four textbook inventory rules sharing one base class with a censored-sales rate estimator, a two-pass fair-share allocator across the capacity and cash pools, and a cash-budget "pilot order" cold-start. All four emit `activate=[]`, `deactivate=[]`, `promotions={}`, and `price[pid] = base_price[pid]` — pure inventory policies with exogenous pricing. See [ADR 0006](../../docs/adr/0006-textbook-reorder-policy-family.md) and [ADR 0008](../../docs/adr/0008-safety-horizons-as-fraction-of-delivery-lag.md).
+Four textbook inventory rules sharing one base class with a censored-sales rate estimator, a two-pass fair-share allocator across the capacity and cash pools, and a cash-budget "pilot order" cold-start. All four emit `activate=[]`, `deactivate=[]`, `promotions={}`, and `price[pid] = base_price[pid]` — pure inventory policies with exogenous pricing.
 
 Shared base-class kwargs:
 
@@ -385,8 +384,6 @@ Consequences:
 - Two stores constructed from the same `(template, init_seed)` pair start step 0 bit-identical — the integration tests assert this on the paired-comparison example.
 - Swapping a policy on a scenario does not perturb the world stream, so per-policy outcome differences come from policy decisions alone.
 
-See [ADR 0003](../../docs/adr/0003-crn-demand-for-all-products.md) for the CRN demand-sampling guarantee that makes this property hold within a single run.
-
 ## Visualizing a run
 
 `notebooks/04a-deep_dive_active_only.ipynb` is a single-store deep-dive over a run's parquet + run-log artifacts: world view, store financials, decision summary, and per-product cards over the active SKUs. The four headline panels below are rendered from `data/llm_world_250/` (one store, 51-tick run over a 250-item LLM-built fashion-retail world, `OrderUpToPolicy`) — re-runnable via `uv run python scripts/render_readme_simulator_images.py`.
@@ -410,9 +407,3 @@ See [ADR 0003](../../docs/adr/0003-crn-demand-for-all-products.md) for the CRN d
 ## Further reading
 
 - [`CONTEXT.md`](../../CONTEXT.md) — domain and architecture glossary
-- [ADR 0001](../../docs/adr/0001-two-layer-lifecycle.md) — Lifecycle is two-layer: global PLC × per-store freshness curve
-- [ADR 0002](../../docs/adr/0002-per-stage-transitions-and-dead-stage.md) — Per-stage transition probabilities and a `dead` stage
-- [ADR 0003](../../docs/adr/0003-crn-demand-for-all-products.md) — Demand is sampled for every catalog product each tick (CRN cleanliness)
-- [ADR 0006](../../docs/adr/0006-textbook-reorder-policy-family.md) — Textbook reorder-policy family as the RL comparison anchor
-- [ADR 0008](../../docs/adr/0008-safety-horizons-as-fraction-of-delivery-lag.md) — Safety horizons as fractions of delivery lag
-- [ADR 0010](../../docs/adr/0010-sim-as-base-for-ml-layers.md) — `src/sim/` as the canonical home for rollout primitives

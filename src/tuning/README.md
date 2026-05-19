@@ -2,8 +2,6 @@
 
 An Optuna-based hyperparameter tuner for any `Policy` subclass. It frames tuning as a measurement instrument — *how much profit headroom exists above the published textbook defaults?* — rather than per-world baseline construction. Trials run the policy on a fixed CRN seed set with log-uniform domain randomisation across capacity and balance; the objective is mean `net_profit / initial_cash` (dimensionless, scale-comparable across two orders of magnitude of store size).
 
-See [ADR 0009](../../docs/adr/0009-policy-hyperparameter-tuning-tool.md) for the framing and [ADR 0010](../../docs/adr/0010-sim-as-base-for-ml-layers.md) for the sim-layer rollout primitives it consumes.
-
 ## Contents
 
 1. [Layout](#layout)

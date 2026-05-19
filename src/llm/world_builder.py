@@ -498,7 +498,7 @@ class WorldBuilder:
         meta: dict[str, Any] = {
             "archetype": self.archetype,
             "n_items": n_items,
-            "model": getattr(self.client, "model_id", None),
+            "model": getattr(self.client, "model", None),
             "builder_version": BUILDER_VERSION,
             "built_at": datetime.now(timezone.utc).isoformat(),
         }

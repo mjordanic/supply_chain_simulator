@@ -82,7 +82,6 @@ scenarios/     runnable example scenarios
 notebooks/     exploration + analysis notebooks
 data/          scenario outputs + cached LLM worlds
 runs/          tuning + RL training artifacts
-docs/adr/      architecture decision records
 docs/images/   figures used in READMEs
 tests/         pytest suite
 ```
@@ -90,4 +89,3 @@ tests/         pytest suite
 ## Further reading
 
 - [CONTEXT.md](CONTEXT.md) — domain and architecture glossary
-- [docs/adr/](docs/adr/) — architecture decision records (lifecycle layering, CRN demand sampling, policy framing, …)
