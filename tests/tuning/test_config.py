@@ -21,7 +21,7 @@ class TestTuningConfigDefaults:
         assert cfg.holdout_seed_offset == 13_000_000
         assert cfg.sampler_seed == 42
         assert cfg.top_k_for_holdout == 5
-        assert cfg.world_archetype == "sports_cars_100"
+        assert cfg.world_archetype == "fashion_retail_250"
 
     def test_tuning_config_field_types(self):
         cfg = TuningConfig()
