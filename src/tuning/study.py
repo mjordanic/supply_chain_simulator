@@ -118,6 +118,8 @@ def _introspect_policy_class_name(
             "stockout_safety_bonus_pct_of_lag": 0.0,
             "Q": 5,
             "review_interval": 7,
+            "per_supplier_min_order_floor": 0,
+            "routing_strategy": "cheapest_first",
         }
         trial = optuna.trial.FixedTrial(probe_params)
         policy = policy_space(trial)

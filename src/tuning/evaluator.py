@@ -11,9 +11,21 @@ Design notes
 - Self-contained — does not import anything from the RL package. The
   world-construction and per-tick rollout primitives live in
   ``src.tuning.rollout``.
-- Policy instances built by the factory consume *only* ``policy_rng``;
-  ``world_rng`` and ``init_rng`` are CRN-disjoint. Two trials sampling
-  identical params on identical seeds produce bit-identical trajectories.
+- CRN tuple: four disjoint RNG streams per episode, all derived from
+  ``episode_seed`` via ``_derive_seed``:
+
+    assortment_seed  — which K products are active
+    world_seed       — market / event / lifecycle draws (world_rng)
+    init_seed        — step-0 store state initialisation (init_rng)
+    allocation_seed  — buyer-shuffle order in the graph cascade
+                       (allocation_rng = Random(_derive_seed(world_seed,
+                       "allocation"))).  Added in issue 13 to reflect the
+                       graph engine's per-phase shuffle introduced in
+                       issue 05 (ADR 0016).
+
+  Policy instances built by the factory consume *only* ``policy_rng``
+  (seeded independently). Two trials sampling identical params on
+  identical seeds produce bit-identical trajectories.
 - Normalised return is ``net_profit / initial_cash``. This cancels per-
   episode scale (capacity × unit cost), making the objective comparable
   across the log-uniform capacity distribution.

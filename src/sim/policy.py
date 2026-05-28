@@ -91,9 +91,14 @@ class NoopPolicy(Policy):
 
     Useful for determinism tests where we want to drive the runner
     loop without making any decisions.
+
+    Supports both the legacy Store-engine interface (``decide(observation)``)
+    and the graph-engine IntermediateNode interface
+    (``decide(obs_intermediate, central_table)``).  The second argument is
+    accepted but ignored — the policy never orders anything in either mode.
     """
 
-    def decide(self, observation: Mapping[str, Any]) -> dict[str, Any]:
+    def decide(self, observation: Mapping[str, Any], *args: Any) -> dict[str, Any]:
         """Return ``{}`` — no orders, no prices, no catalog changes."""
         return {}
 
@@ -2212,6 +2217,79 @@ def _default_cheapest_first_strategy(
     return result
 
 
+def _fill_rate_weighted_strategy(
+    pid: str,
+    qty_total: int,
+    supplier_ids: list[str],
+    central_table: Any,
+    *,
+    buyer_min_order_floor: int = 0,
+) -> list[tuple[str, int]]:
+    """Fill-rate-weighted routing strategy for ``_split_across_suppliers``.
+
+    Allocates ``qty_total`` proportionally to each supplier's recent
+    ``fill_rate_recent`` EMA, then rounds to integers (water-fill mop-up).
+    Falls back to cheapest-first when all suppliers have zero fill rate or
+    no offers.
+
+    Respects ``Offer.min_order`` and ``buyer_min_order_floor`` — lines that
+    fall below the effective minimum are redistributed to other suppliers.
+
+    Returns
+    -------
+    list of ``(supplier_id, qty)`` pairs. Only non-zero lines are included.
+    """
+    offers_raw = central_table.snapshot_for_buyer(pid)
+    offers = [(sid, o) for sid, o in offers_raw if sid in supplier_ids]
+    if not offers:
+        return []
+
+    # Build weight = fill_rate_recent × available_qty (never allocate beyond stock).
+    weights = {
+        sid: max(0.0, o.fill_rate_recent) * max(0, o.available_qty)
+        for sid, o in offers
+    }
+    total_weight = sum(weights.values())
+
+    if total_weight <= 0.0:
+        # All suppliers empty or zero fill-rate — fall back to cheapest-first.
+        return _default_cheapest_first_strategy(
+            pid, qty_total, supplier_ids, central_table,
+            buyer_min_order_floor=buyer_min_order_floor,
+        )
+
+    result: list[tuple[str, int]] = []
+    remaining = qty_total
+    offer_map = {sid: o for sid, o in offers}
+
+    # First pass: proportional allocation.
+    allocations: dict[str, int] = {}
+    for sid, o in offers:
+        w = weights[sid] / total_weight
+        raw = w * qty_total
+        qty = min(int(raw), o.available_qty)
+        effective_min = max(o.min_order, buyer_min_order_floor)
+        if effective_min > 0 and qty < effective_min:
+            qty = 0  # reject line — below minimum
+        allocations[sid] = qty
+
+    allocated = sum(allocations.values())
+    leftover = qty_total - allocated
+
+    # Second pass: distribute leftover to cheapest available supplier.
+    if leftover > 0:
+        sorted_by_price = sorted(offers, key=lambda t: t[1].list_price)
+        for sid, o in sorted_by_price:
+            if leftover <= 0:
+                break
+            extra = min(leftover, o.available_qty - allocations.get(sid, 0))
+            if extra > 0:
+                allocations[sid] = allocations.get(sid, 0) + extra
+                leftover -= extra
+
+    return [(sid, qty) for sid, qty in allocations.items() if qty > 0]
+
+
 # ---------------------------------------------------------------------------
 # MultiSupplierTextbookPolicy — multi-supplier base class
 # ---------------------------------------------------------------------------
@@ -2344,6 +2422,10 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
             central_table,
             buyer_min_order_floor=buyer_min_order_floor,
         )
+
+    # Expose fill-rate-weighted routing as a named static method so
+    # search_spaces.py can reference it as a Categorical choice.
+    _routing_fill_rate_weighted = staticmethod(_fill_rate_weighted_strategy)
 
     # ------------------------------------------------------------------
     # IntermediatePolicy.decide

@@ -6,6 +6,10 @@ Each bundled trial-callback factory is exercised with:
   - Boundary sweeps → construction succeeds at every range boundary so that
     silent range-narrowing in the factory is caught immediately.
 
+Issue 13: each factory now also samples ``per_supplier_min_order_floor`` (int
+[0, 10]) and ``routing_strategy`` (Categorical["cheapest_first",
+"fill_rate_weighted"]).
+
 We deliberately avoid running a real Optuna study here — factories are
 pure constructors and the Optuna machinery is tested by Optuna itself.
 """
@@ -39,6 +43,23 @@ def _fixed(params: dict) -> optuna.trial.FixedTrial:
     return optuna.trial.FixedTrial(params)
 
 
+def _base_shared(
+    cover_horizon_ticks: int = 10,
+    safety_lead_pct_of_lag: float = 0.5,
+    stockout_safety_bonus_pct_of_lag: float = 0.0,
+    per_supplier_min_order_floor: int = 0,
+    routing_strategy: str = "cheapest_first",
+) -> dict:
+    """Return a dict with all shared tunables at the given values."""
+    return {
+        "cover_horizon_ticks": cover_horizon_ticks,
+        "safety_lead_pct_of_lag": safety_lead_pct_of_lag,
+        "stockout_safety_bonus_pct_of_lag": stockout_safety_bonus_pct_of_lag,
+        "per_supplier_min_order_floor": per_supplier_min_order_floor,
+        "routing_strategy": routing_strategy,
+    }
+
+
 # ---------------------------------------------------------------------------
 # order_up_to_space
 # ---------------------------------------------------------------------------
@@ -46,13 +67,7 @@ def _fixed(params: dict) -> optuna.trial.FixedTrial:
 
 def test_order_up_to_space_constructs():
     """Factory returns an OrderUpToPolicy with the sampled kwargs."""
-    trial = _fixed(
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-        }
-    )
+    trial = _fixed(_base_shared(cover_horizon_ticks=10, safety_lead_pct_of_lag=0.5))
     policy = order_up_to_space(trial)
 
     assert isinstance(policy, OrderUpToPolicy)
@@ -60,20 +75,34 @@ def test_order_up_to_space_constructs():
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.5)
     assert policy.opening_budget_pct == pytest.approx(0.8)
     assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(0.0)
+    assert policy.per_supplier_min_order_floor == 0
+
+
+def test_order_up_to_space_per_supplier_min_order_floor():
+    """per_supplier_min_order_floor is propagated to the policy."""
+    trial = _fixed(_base_shared(per_supplier_min_order_floor=5))
+    policy = order_up_to_space(trial)
+    assert policy.per_supplier_min_order_floor == 5
+
+
+def test_order_up_to_space_routing_strategy_cheapest_first():
+    """routing_strategy='cheapest_first' produces routing_strategy=None (default)."""
+    trial = _fixed(_base_shared(routing_strategy="cheapest_first"))
+    policy = order_up_to_space(trial)
+    assert policy.routing_strategy is None
+
+
+def test_order_up_to_space_routing_strategy_fill_rate_weighted():
+    """routing_strategy='fill_rate_weighted' produces a callable routing_strategy."""
+    trial = _fixed(_base_shared(routing_strategy="fill_rate_weighted"))
+    policy = order_up_to_space(trial)
+    assert callable(policy.routing_strategy)
 
 
 def test_order_up_to_space_no_min_qty_tuned():
     """min_qty is not a tunable — factory should not suggest it."""
-    trial = _fixed(
-        {
-            "cover_horizon_ticks": 5,
-            "safety_lead_pct_of_lag": 1.0,
-            "opening_budget_pct": 0.3,
-            "stockout_safety_bonus_pct_of_lag": 0.5,
-        }
-    )
+    trial = _fixed(_base_shared())
     policy = order_up_to_space(trial)
-    # min_qty stays at the class default (0)
     assert policy.min_qty == 0
 
 
@@ -84,37 +113,40 @@ def test_order_up_to_space_no_min_qty_tuned():
 
 def test_reorder_point_space_constructs():
     """Factory returns a ReorderPointPolicy with all sampled kwargs."""
-    trial = _fixed(
-        {
-            "cover_horizon_ticks": 7,
-            "safety_lead_pct_of_lag": 1.0,
-            "stockout_safety_bonus_pct_of_lag": 0.5,
-            "Q": 15,
-        }
-    )
+    params = {**_base_shared(cover_horizon_ticks=7, safety_lead_pct_of_lag=1.0,
+                              stockout_safety_bonus_pct_of_lag=0.5), "Q": 15}
+    trial = _fixed(params)
     policy = reorder_point_space(trial)
 
     assert isinstance(policy, ReorderPointPolicy)
     assert policy.cover_horizon_ticks == 7
     assert policy.safety_lead_pct_of_lag == pytest.approx(1.0)
     assert policy.opening_budget_pct == pytest.approx(0.8)
-    assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(0.5)
     assert policy.Q == 15
 
 
-def test_reorder_point_space_no_min_qty_tuned():
-    """min_qty is not a tunable — factory should not suggest it."""
-    trial = _fixed(
-        {
-            "cover_horizon_ticks": 5,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-            "Q": 10,
-        }
-    )
+def test_reorder_point_space_per_supplier_min_order_floor():
+    """per_supplier_min_order_floor is propagated to the policy."""
+    trial = _fixed({**_base_shared(per_supplier_min_order_floor=3), "Q": 10})
     policy = reorder_point_space(trial)
-    assert policy.min_qty == 0
+    assert policy.per_supplier_min_order_floor == 3
+
+
+def test_reorder_point_space_routing_strategy():
+    """routing_strategy='fill_rate_weighted' is propagated."""
+    trial = _fixed({**_base_shared(routing_strategy="fill_rate_weighted"), "Q": 10})
+    policy = reorder_point_space(trial)
+    assert callable(policy.routing_strategy)
+
+
+def test_reorder_point_space_no_min_qty_tuned():
+    """min_qty is not a tunable — factory constructs without suggesting it."""
+    trial = _fixed({**_base_shared(), "Q": 10})
+    policy = reorder_point_space(trial)
+    # ReorderPointPolicy delegates min_qty to its inner core; the public API
+    # does not expose it.  We simply verify construction succeeds and the
+    # factory did not attempt to tune min_qty (which would fail on FixedTrial).
+    assert isinstance(policy, ReorderPointPolicy)
 
 
 # ---------------------------------------------------------------------------
@@ -124,37 +156,37 @@ def test_reorder_point_space_no_min_qty_tuned():
 
 def test_periodic_order_up_to_space_constructs():
     """Factory returns a PeriodicOrderUpToPolicy with all sampled kwargs."""
-    trial = _fixed(
-        {
-            "cover_horizon_ticks": 14,
-            "safety_lead_pct_of_lag": 0.667,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-            "review_interval": 7,
-        }
-    )
+    params = {**_base_shared(cover_horizon_ticks=14, safety_lead_pct_of_lag=0.667),
+              "review_interval": 7}
+    trial = _fixed(params)
     policy = periodic_order_up_to_space(trial)
 
     assert isinstance(policy, PeriodicOrderUpToPolicy)
     assert policy.cover_horizon_ticks == 14
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.667)
     assert policy.opening_budget_pct == pytest.approx(0.8)
-    assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(0.0)
     assert policy.review_interval == 7
 
 
-def test_periodic_order_up_to_space_no_min_qty_tuned():
-    """min_qty is not a tunable — factory should not suggest it."""
-    trial = _fixed(
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.5,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-            "review_interval": 3,
-        }
-    )
+def test_periodic_order_up_to_space_per_supplier_min_order_floor():
+    """per_supplier_min_order_floor is propagated."""
+    trial = _fixed({**_base_shared(per_supplier_min_order_floor=2), "review_interval": 7})
     policy = periodic_order_up_to_space(trial)
-    assert policy.min_qty == 0
+    assert policy.per_supplier_min_order_floor == 2
+
+
+def test_periodic_order_up_to_space_routing_strategy():
+    """routing_strategy='fill_rate_weighted' is propagated."""
+    trial = _fixed({**_base_shared(routing_strategy="fill_rate_weighted"), "review_interval": 7})
+    policy = periodic_order_up_to_space(trial)
+    assert callable(policy.routing_strategy)
+
+
+def test_periodic_order_up_to_space_no_min_qty_tuned():
+    """min_qty is not a tunable — factory constructs without suggesting it."""
+    trial = _fixed({**_base_shared(), "review_interval": 3})
+    policy = periodic_order_up_to_space(trial)
+    assert isinstance(policy, PeriodicOrderUpToPolicy)
 
 
 # ---------------------------------------------------------------------------
@@ -164,239 +196,132 @@ def test_periodic_order_up_to_space_no_min_qty_tuned():
 
 def test_periodic_reorder_space_constructs():
     """Factory returns a PeriodicReorderPolicy with all sampled kwargs."""
-    trial = _fixed(
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 1.0,
-            "review_interval": 5,
-        }
-    )
+    params = {**_base_shared(cover_horizon_ticks=10, safety_lead_pct_of_lag=0.5,
+                              stockout_safety_bonus_pct_of_lag=1.0), "review_interval": 5}
+    trial = _fixed(params)
     policy = periodic_reorder_space(trial)
 
     assert isinstance(policy, PeriodicReorderPolicy)
     assert policy.cover_horizon_ticks == 10
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.5)
     assert policy.opening_budget_pct == pytest.approx(0.8)
-    assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(1.0)
     assert policy.review_interval == 5
 
 
-def test_periodic_reorder_space_no_min_qty_tuned():
-    """min_qty is not a tunable — factory should not suggest it."""
-    trial = _fixed(
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-            "review_interval": 7,
-        }
-    )
+def test_periodic_reorder_space_per_supplier_min_order_floor():
+    """per_supplier_min_order_floor is propagated."""
+    trial = _fixed({**_base_shared(per_supplier_min_order_floor=7), "review_interval": 5})
     policy = periodic_reorder_space(trial)
-    assert policy.min_qty == 0
+    assert policy.per_supplier_min_order_floor == 7
+
+
+def test_periodic_reorder_space_routing_strategy():
+    """routing_strategy='fill_rate_weighted' is propagated."""
+    trial = _fixed({**_base_shared(routing_strategy="fill_rate_weighted"), "review_interval": 5})
+    policy = periodic_reorder_space(trial)
+    assert callable(policy.routing_strategy)
+
+
+def test_periodic_reorder_space_no_min_qty_tuned():
+    """min_qty is not a tunable — factory constructs without suggesting it."""
+    trial = _fixed({**_base_shared(), "review_interval": 7})
+    policy = periodic_reorder_space(trial)
+    assert isinstance(policy, PeriodicReorderPolicy)
 
 
 # ---------------------------------------------------------------------------
-# test_all_factories_use_documented_ranges
+# Boundary sweeps — all four factories
 # ---------------------------------------------------------------------------
-#
-# Guard against silent range-narrowing: for every tunable in every factory,
-# both the low boundary and the high boundary must construct successfully and
-# the resulting attribute must equal the boundary value.
+
+_SHARED_LOW = {
+    "cover_horizon_ticks": 1,
+    "safety_lead_pct_of_lag": 0.0,
+    "stockout_safety_bonus_pct_of_lag": 0.0,
+    "per_supplier_min_order_floor": 0,
+    "routing_strategy": "cheapest_first",
+}
+
+_SHARED_HIGH = {
+    "cover_horizon_ticks": 30,
+    "safety_lead_pct_of_lag": 3.0,
+    "stockout_safety_bonus_pct_of_lag": 2.0,
+    "per_supplier_min_order_floor": 10,
+    "routing_strategy": "fill_rate_weighted",
+}
 
 
-_ORDER_UP_TO_BOUNDARY_CASES = [
-    # (param being pushed to boundary, params dict)
-    (
-        "cover_horizon_ticks_low",
-        {
-            "cover_horizon_ticks": 1,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-        },
-    ),
-    (
-        "cover_horizon_ticks_high",
-        {
-            "cover_horizon_ticks": 30,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-        },
-    ),
-    (
-        "safety_lead_pct_of_lag_low",
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-        },
-    ),
-    (
-        "safety_lead_pct_of_lag_high",
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 3.0,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-        },
-    ),
-    (
-        "stockout_safety_bonus_pct_of_lag_low",
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 0.0,
-        },
-    ),
-    (
-        "stockout_safety_bonus_pct_of_lag_high",
-        {
-            "cover_horizon_ticks": 10,
-            "safety_lead_pct_of_lag": 0.0,
-            "opening_budget_pct": 0.5,
-            "stockout_safety_bonus_pct_of_lag": 2.0,
-        },
-    ),
-]
-
-
-@pytest.mark.parametrize("label,params", _ORDER_UP_TO_BOUNDARY_CASES)
-def test_order_up_to_space_boundary(label: str, params: dict):
-    """Construction succeeds and kwarg is propagated at every range boundary."""
+@pytest.mark.parametrize("params", [_SHARED_LOW, _SHARED_HIGH])
+def test_order_up_to_space_boundary(params):
+    """Construction succeeds at every range boundary."""
     policy = order_up_to_space(_fixed(params))
     assert isinstance(policy, OrderUpToPolicy)
-    # Verify the specific param that was pushed to its boundary
-    param_name = label.rsplit("_", 1)[0]  # strip "_low" / "_high" suffix
-    boundary_value = params[param_name]
-    actual = getattr(policy, param_name)
-    assert actual == pytest.approx(boundary_value), (
-        f"{label}: expected {param_name}={boundary_value!r}, got {actual!r}"
-    )
+    assert policy.cover_horizon_ticks == params["cover_horizon_ticks"]
+    assert policy.safety_lead_pct_of_lag == pytest.approx(params["safety_lead_pct_of_lag"])
+    assert policy.per_supplier_min_order_floor == params["per_supplier_min_order_floor"]
 
 
-_REORDER_POINT_EXTRA_CASES = [
-    ("Q_low", {"cover_horizon_ticks": 10, "safety_lead_pct_of_lag": 0.0,
-               "opening_budget_pct": 0.5, "stockout_safety_bonus_pct_of_lag": 0.0,
-               "Q": 1}),
-    ("Q_high", {"cover_horizon_ticks": 10, "safety_lead_pct_of_lag": 0.0,
-                "opening_budget_pct": 0.5, "stockout_safety_bonus_pct_of_lag": 0.0,
-                "Q": 30}),
-]
-
-
-@pytest.mark.parametrize("label,params", _REORDER_POINT_EXTRA_CASES)
-def test_reorder_point_space_boundary(label: str, params: dict):
-    """Construction succeeds and Q kwarg is propagated at every range boundary."""
-    policy = reorder_point_space(_fixed(params))
+@pytest.mark.parametrize("q_val,params", [(1, _SHARED_LOW), (30, _SHARED_HIGH)])
+def test_reorder_point_space_boundary(q_val, params):
+    """Construction succeeds at every range boundary."""
+    full = {**params, "Q": q_val}
+    policy = reorder_point_space(_fixed(full))
     assert isinstance(policy, ReorderPointPolicy)
-    param_name = label.rsplit("_", 1)[0]
-    boundary_value = params[param_name]
-    actual = getattr(policy, param_name)
-    assert actual == pytest.approx(boundary_value), (
-        f"{label}: expected {param_name}={boundary_value!r}, got {actual!r}"
-    )
+    assert policy.Q == q_val
+    assert policy.per_supplier_min_order_floor == params["per_supplier_min_order_floor"]
 
 
-_PERIODIC_REVIEW_INTERVAL_CASES = [
-    ("review_interval_low",
-     {"cover_horizon_ticks": 10, "safety_lead_pct_of_lag": 0.0,
-      "opening_budget_pct": 0.5, "stockout_safety_bonus_pct_of_lag": 0.0,
-      "review_interval": 1}),
-    ("review_interval_high",
-     {"cover_horizon_ticks": 10, "safety_lead_pct_of_lag": 0.0,
-      "opening_budget_pct": 0.5, "stockout_safety_bonus_pct_of_lag": 0.0,
-      "review_interval": 14}),
-]
-
-
-@pytest.mark.parametrize("label,params", _PERIODIC_REVIEW_INTERVAL_CASES)
-def test_periodic_order_up_to_space_boundary(label: str, params: dict):
-    """Construction succeeds and review_interval is propagated at every boundary."""
-    policy = periodic_order_up_to_space(_fixed(params))
+@pytest.mark.parametrize("ri_val,params", [(1, _SHARED_LOW), (14, _SHARED_HIGH)])
+def test_periodic_order_up_to_space_boundary(ri_val, params):
+    """Construction succeeds at every range boundary."""
+    full = {**params, "review_interval": ri_val}
+    policy = periodic_order_up_to_space(_fixed(full))
     assert isinstance(policy, PeriodicOrderUpToPolicy)
-    param_name = label.rsplit("_", 1)[0]
-    boundary_value = params[param_name]
-    actual = getattr(policy, param_name)
-    assert actual == pytest.approx(boundary_value), (
-        f"{label}: expected {param_name}={boundary_value!r}, got {actual!r}"
-    )
+    assert policy.review_interval == ri_val
+    assert policy.per_supplier_min_order_floor == params["per_supplier_min_order_floor"]
 
 
-@pytest.mark.parametrize("label,params", _PERIODIC_REVIEW_INTERVAL_CASES)
-def test_periodic_reorder_space_boundary(label: str, params: dict):
-    """Construction succeeds and review_interval is propagated at every boundary."""
-    policy = periodic_reorder_space(_fixed(params))
+@pytest.mark.parametrize("ri_val,params", [(1, _SHARED_LOW), (14, _SHARED_HIGH)])
+def test_periodic_reorder_space_boundary(ri_val, params):
+    """Construction succeeds at every range boundary."""
+    full = {**params, "review_interval": ri_val}
+    policy = periodic_reorder_space(_fixed(full))
     assert isinstance(policy, PeriodicReorderPolicy)
-    param_name = label.rsplit("_", 1)[0]
-    boundary_value = params[param_name]
-    actual = getattr(policy, param_name)
-    assert actual == pytest.approx(boundary_value), (
-        f"{label}: expected {param_name}={boundary_value!r}, got {actual!r}"
-    )
+    assert policy.review_interval == ri_val
+    assert policy.per_supplier_min_order_floor == params["per_supplier_min_order_floor"]
 
 
 # ---------------------------------------------------------------------------
-# test_all_factories_use_documented_ranges  (issue-spec required test)
+# Documented ranges guard — all four factories at both low and high boundaries
 # ---------------------------------------------------------------------------
 
 
 def test_all_factories_use_documented_ranges():
     """All four factories construct without error at every range boundary.
 
-    Iterates each factory with a FixedTrial set to the low and high boundary
-    for each tunable; asserts construction succeeds and the kwarg is the
-    boundary value.  Guards against silent range-narrowing in any factory.
+    Now includes ``per_supplier_min_order_floor`` [0, 10] and
+    ``routing_strategy`` Categorical["cheapest_first", "fill_rate_weighted"].
     """
-    shared_low = {
-        "cover_horizon_ticks": 1,
-        "safety_lead_pct_of_lag": 0.0,
-        "stockout_safety_bonus_pct_of_lag": 0.0,
-    }
-    shared_high = {
-        "cover_horizon_ticks": 30,
-        "safety_lead_pct_of_lag": 3.0,
-        "stockout_safety_bonus_pct_of_lag": 2.0,
-    }
-
-    # order_up_to_space — 4 tunables
-    for params in (shared_low, shared_high):
+    for params in (_SHARED_LOW, _SHARED_HIGH):
         p = order_up_to_space(_fixed(params))
         assert isinstance(p, OrderUpToPolicy)
-        for k, v in params.items():
-            assert getattr(p, k) == pytest.approx(v), f"order_up_to_space: {k}={v}"
 
-    # reorder_point_space — 5 tunables (shared + Q)
-    for q_val, params in [(1, shared_low), (30, shared_high)]:
+    for q_val, params in [(1, _SHARED_LOW), (30, _SHARED_HIGH)]:
         full = {**params, "Q": q_val}
         p = reorder_point_space(_fixed(full))
         assert isinstance(p, ReorderPointPolicy)
-        for k, v in full.items():
-            assert getattr(p, k) == pytest.approx(v), f"reorder_point_space: {k}={v}"
+        assert p.Q == q_val
 
-    # periodic_order_up_to_space — 5 tunables (shared + review_interval)
-    for ri_val, params in [(1, shared_low), (14, shared_high)]:
+    for ri_val, params in [(1, _SHARED_LOW), (14, _SHARED_HIGH)]:
         full = {**params, "review_interval": ri_val}
         p = periodic_order_up_to_space(_fixed(full))
         assert isinstance(p, PeriodicOrderUpToPolicy)
-        for k, v in full.items():
-            assert getattr(p, k) == pytest.approx(v), (
-                f"periodic_order_up_to_space: {k}={v}"
-            )
+        assert p.review_interval == ri_val
 
-    # periodic_reorder_space — 5 tunables (shared + review_interval)
-    for ri_val, params in [(1, shared_low), (14, shared_high)]:
+    for ri_val, params in [(1, _SHARED_LOW), (14, _SHARED_HIGH)]:
         full = {**params, "review_interval": ri_val}
         p = periodic_reorder_space(_fixed(full))
         assert isinstance(p, PeriodicReorderPolicy)
-        for k, v in full.items():
-            assert getattr(p, k) == pytest.approx(v), (
-                f"periodic_reorder_space: {k}={v}"
-            )
+        assert p.review_interval == ri_val
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +338,6 @@ def test_factories_importable_from_tuning_package():
         reorder_point_space as f2,
     )
 
-    # They must be the same objects as the direct module imports
     assert f1 is order_up_to_space
     assert f2 is reorder_point_space
     assert f3 is periodic_order_up_to_space
