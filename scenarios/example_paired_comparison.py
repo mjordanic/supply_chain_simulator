@@ -1,15 +1,12 @@
 """Example: paired comparison of two policies on bit-identical world data.
 
-Demonstrates ``make_stores(triples)`` with paired triples: each pair of
-adjacent triples shares ``(template, init_seed)`` so the two stores in the
-pair are bit-identical at step 0; they differ only in attached ``Policy``.
-Combined with the world-rng seeding contract (``policy_rng`` and
-``world_rng`` never share state) this gives Common-Random-Numbers variance
-reduction across the two policy groups — the cleanest A/B comparison the
-simulator supports.
+Demonstrates the CRN (Common Random Numbers) pattern on the graph engine:
+two sub-graphs with the same seeds and topology differ only in their
+attached policies, giving a clean A/B comparison.
 
-Output layout: pair ``i`` lives at indices ``2 * i`` (``policy_a``) and
-``2 * i + 1`` (``policy_b``).
+Phase-4 (issue 11): migrated from the legacy Store engine to the
+multi-echelon graph engine. Uses OrderUpToPolicy vs PeriodicOrderUpToPolicy
+as the A/B comparison pair.
 
 Run it directly::
 
@@ -31,18 +28,18 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Normal, Uniform
-from src.sim.policy import HeuristicPolicy
+from src.sim.graph import EdgeSpec
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import DefaultDemandSinkPolicy, OrderUpToPolicy, PeriodicOrderUpToPolicy, StaticFactoryPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     MarketParams,
+    NodeInstance,
     Scenario,
-    StoreTemplate,
     load_catalog,
-    make_stores,
 )
 
 
@@ -146,36 +143,100 @@ _LIFECYCLE = ItemLifecycleParams(
 )
 
 
-# One reusable template shared by both policy variants.
-_TEMPLATE = StoreTemplate(
-    id="standard",
-    region="US",
-    capacity=200,
-    init_balance=10000.0,
-    init_stock_pct=0.4,
-    delivery_lag=2,
-    holding_rate=0.005,
-    order_fee=10.0,
-    init_active_count=3,
-)
+_PIDS = [w.product_id for w in _CATALOG]
+_PRIMARY_PID = _PIDS[0]
 
 
-# Two HeuristicPolicy variants differing in how aggressively they discount
-# slow-moving stock. Hyperparameters that don't matter for the contrast
-# stay at module-level defaults.
-_POLICY_AGGRESSIVE = HeuristicPolicy(
-    policy_seed=1001,
-    promo_threshold=0.30,  # promote earlier
-    promo_discount=0.6,    # bigger markdown
-    review_interval=10,
-)
+def _make_paired_subgraph(pair_index: int, shop_policy, label: str):
+    """Build one sub-graph for one policy variant in the A/B pair.
 
-_POLICY_CONSERVATIVE = HeuristicPolicy(
-    policy_seed=2002,
-    promo_threshold=0.70,  # promote only when stock is heavy
-    promo_discount=0.85,   # gentler markdown
-    review_interval=10,
-)
+    CRN: both variants share the same seed values so their step-0
+    states are bit-identical; only the shop policy differs.
+    """
+    # Use the pair_index to derive seeds — both A and B share them.
+    base_seed = (pair_index + 1) * 1000
+
+    factory_id = f"pair{pair_index}-{label}-factory"
+    shop_id = f"pair{pair_index}-{label}-shop"
+
+    factory = FactoryNode(
+        id=factory_id,
+        region="US",
+        init_seed=base_seed,
+        produces_product_id=_PRIMARY_PID,
+        unit_cost=_CATALOG[0].unit_cost,
+        capacity_per_tick=100,
+        inventory=200,
+        list_price=_CATALOG[0].unit_cost,
+        cash=0.0,
+    )
+    shop = IntermediateNode(
+        id=shop_id,
+        region="US",
+        init_seed=base_seed + 1,
+        carried_products=set(_PIDS),
+        capacity=200,
+        tags=["shop"],
+        inventory={pid: 20 for pid in _PIDS},
+        pending={},
+        list_prices={w.product_id: w.base_price for w in _CATALOG},
+        min_order_imposed={pid: 0 for pid in _PIDS},
+        cash=10000.0,
+    )
+
+    node_instances = [
+        NodeInstance(node=factory, init_seed=factory.init_seed,
+                     policy=StaticFactoryPolicy(capacity_per_tick=100, unit_cost=_CATALOG[0].unit_cost)),
+        NodeInstance(node=shop, init_seed=shop.init_seed,
+                     policy=shop_policy),
+    ]
+    edges = [
+        EdgeSpec(supplier_id=factory_id, buyer_id=shop_id, default_lead_time=2),
+    ]
+
+    for pid in _PIDS:
+        sink_id = f"pair{pair_index}-{label}-sink-{pid}"
+        sink = DemandSinkNode(
+            id=sink_id,
+            region="US",
+            init_seed=base_seed + 3 + _PIDS.index(pid),
+            product_id=pid,
+            demand_dist=Normal(mean=5.0, std=1.0),
+            income_rate=200.0,
+            cash=500.0,
+            activation_tick={},
+        )
+        node_instances.append(
+            NodeInstance(node=sink, init_seed=sink.init_seed,
+                         policy=DefaultDemandSinkPolicy())
+        )
+        edges.append(
+            EdgeSpec(supplier_id=shop_id, buyer_id=sink_id, default_lead_time=1)
+        )
+
+    return node_instances, edges
+
+
+# Two policy variants: policy_a (OrderUpTo) vs policy_b (PeriodicOrderUpTo).
+# Two pairs share the same seed structure to give a 2-replicate CRN comparison.
+_ALL_NODES: list[NodeInstance] = []
+_ALL_EDGES: list[EdgeSpec] = []
+
+for _pair in range(2):
+    _ni_a, _e_a = _make_paired_subgraph(
+        _pair,
+        shop_policy=OrderUpToPolicy(policy_seed=1001 + _pair),
+        label="a",
+    )
+    _ni_b, _e_b = _make_paired_subgraph(
+        _pair,
+        shop_policy=PeriodicOrderUpToPolicy(policy_seed=2002 + _pair, review_interval=5),
+        label="b",
+    )
+    _ALL_NODES.extend(_ni_a)
+    _ALL_NODES.extend(_ni_b)
+    _ALL_EDGES.extend(_e_a)
+    _ALL_EDGES.extend(_e_b)
 
 
 scenario = Scenario(
@@ -183,16 +244,9 @@ scenario = Scenario(
     market=_MARKET,
     disruption=_DISRUPTION,
     item_lifecycle=_LIFECYCLE,
-    stores=make_stores(
-        [
-            # Pair 0: aggressive vs conservative on init_seed=1.
-            (_TEMPLATE, 1, _POLICY_AGGRESSIVE),
-            (_TEMPLATE, 1, _POLICY_CONSERVATIVE),
-            # Pair 1: same contrast on init_seed=2.
-            (_TEMPLATE, 2, _POLICY_AGGRESSIVE),
-            (_TEMPLATE, 2, _POLICY_CONSERVATIVE),
-        ]
-    ),
+    stores=[],
+    nodes=_ALL_NODES,
+    edges=_ALL_EDGES,
     n_steps=50,
     start_date=datetime(2024, 1, 1),
     world_seed=42,
@@ -200,10 +254,12 @@ scenario = Scenario(
 
 
 def main() -> None:
-    """Run the scenario and dump artifacts to ``data/example_paired_comparison``."""
+    """Run the scenario and print a brief summary."""
+    from src.sim.data_exporter import DataExporter
     run_log = Runner(scenario).run()
     output = _PROJECT_ROOT / "data" / "example_paired_comparison"
     DataExporter(scenario, run_log).export_all(str(output))
+    print(f"Ran {scenario.n_steps} steps with {len(scenario.nodes)} nodes")
     print(f"Wrote run artifacts to {output}")
 
 

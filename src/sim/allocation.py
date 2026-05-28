@@ -74,6 +74,8 @@ def execute_buy(
          ``capacity - sum(inventory.values())``.
     4. ``table.commit(supplier.id, pid, qty_to_fill)`` — decrement live
        available_qty and update fill-rate EMA.
+    4b. Decrement supplier node inventory at allocation time.
+    4c. Record in-transit order in ``buyer.pending[supplier_id][pid]``.
     5. Debit buyer cash and credit supplier cash by
        ``qty_to_fill × list_price``.
     6. Schedule a delivery callback on ``event_engine`` at
@@ -180,6 +182,30 @@ def execute_buy(
     # 4. Commit to the central table — decrements available_qty and updates EMA.
     table.commit(supplier.id, pid, qty_to_fill)
 
+    # 4b. Decrement supplier inventory — goods leave the supplier at allocation
+    #     time.  Physical delivery to the buyer is deferred by lead_time ticks
+    #     (scheduled below), but the goods must leave the seller's shelf now so
+    #     that subsequent buyers in the same tick see reduced available stock
+    #     (the central table already reflects this via commit, but the supplier's
+    #     node.inventory must match so the next tick's publish_offers step
+    #     starts from the correct physical stock level).
+    if isinstance(getattr(supplier, "inventory", None), dict):
+        # IntermediateNode: dict-based inventory.
+        current = supplier.inventory.get(pid, 0)
+        supplier.inventory[pid] = max(0, current - qty_to_fill)
+    elif isinstance(getattr(supplier, "inventory", None), (int, float)):
+        # FactoryNode: scalar inventory.
+        supplier.inventory = max(0, int(supplier.inventory) - qty_to_fill)
+
+    # 4c. For IntermediateNode buyers, record the in-transit order in
+    #     ``buyer.pending[supplier_id][pid]``.  This keeps ``pending`` in
+    #     sync with what is actually in transit so the policy's position
+    #     estimate (inventory + pending) is accurate.
+    buyer_pending = getattr(buyer, "pending", None)
+    if isinstance(buyer_pending, dict):
+        sup_map = buyer_pending.setdefault(supplier.id, {})
+        sup_map[pid] = sup_map.get(pid, 0) + qty_to_fill
+
     # 5. Transfer cash: buyer pays, supplier receives.
     buyer.cash -= cash_paid
     supplier.cash += cash_paid
@@ -187,7 +213,9 @@ def execute_buy(
     # 6. Schedule delivery callback on the event engine (if provided).
     if event_engine is not None:
         delivery_tick = current_tick + lead_time
-        _schedule_delivery(event_engine, buyer, pid, qty_to_fill, delivery_tick)
+        _schedule_delivery(
+            event_engine, buyer, supplier.id, pid, qty_to_fill, delivery_tick
+        )
 
     return AllocationResult(
         qty_filled=qty_to_fill,
@@ -228,6 +256,7 @@ def shuffle_buyers(buyers: list[Any], allocation_rng: Any) -> list[Any]:
 def _schedule_delivery(
     event_engine: Any,
     buyer: Any,
+    supplier_id: str,
     pid: str,
     qty: int,
     arrival_tick: int,
@@ -237,7 +266,8 @@ def _schedule_delivery(
     The callback fires at ``arrival_tick`` and delivers inventory to the
     buyer node.
 
-    - ``IntermediateNode``: increments ``buyer.inventory[pid]`` by ``qty``.
+    - ``IntermediateNode``: increments ``buyer.inventory[pid]`` by ``qty``
+      and decrements ``buyer.pending[supplier_id][pid]`` by ``qty``.
     - ``FactoryNode``: increments scalar ``buyer.inventory`` (the factory
       receives returned/transferred goods, which is unusual but handled).
     - ``DemandSinkNode``: no inventory field — delivered goods are
@@ -251,6 +281,17 @@ def _schedule_delivery(
         if isinstance(buyer.inventory, dict):
             # IntermediateNode: dict-based inventory.
             buyer.inventory[pid] = buyer.inventory.get(pid, 0) + qty
+            # Clear the in-transit counter now that goods have arrived.
+            buyer_pending = getattr(buyer, "pending", None)
+            if isinstance(buyer_pending, dict) and supplier_id in buyer_pending:
+                sup_map = buyer_pending[supplier_id]
+                remaining = max(0, sup_map.get(pid, 0) - qty)
+                if remaining == 0:
+                    sup_map.pop(pid, None)
+                else:
+                    sup_map[pid] = remaining
+                if not sup_map:
+                    buyer_pending.pop(supplier_id, None)
         else:
             # FactoryNode: scalar inventory.
             buyer.inventory += qty

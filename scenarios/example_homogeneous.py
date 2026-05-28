@@ -1,10 +1,9 @@
-"""Example: a homogeneous fleet of stores running a single policy.
+"""Example: a homogeneous fleet of stores on the graph engine.
 
-Demonstrates ``make_stores(triples)`` with three triples that share one
-``StoreTemplate`` and one ``HeuristicPolicy`` instance but vary
-``init_seed`` so each store's step-0 active SKU set and stock allocation
-is distinct. The right starting point for evaluating one policy across
-several heterogeneous starting conditions (a "robustness sweep").
+Demonstrates a 3-store topology where each "store" expands to a
+3-node sub-graph: FactoryNode → IntermediateNode → DemandSinkNode.
+Each sub-graph uses the same policy configuration but a distinct seed
+so each store's step-0 active SKU set and stock allocation is distinct.
 
 Run it directly::
 
@@ -13,6 +12,10 @@ Run it directly::
 or hand the path to the CLI shim::
 
     uv run python main.py scenarios/example_homogeneous.py
+
+Phase-4 (issue 11): migrated from the legacy Store engine to the
+multi-echelon graph engine. No HeuristicPolicy; uses
+StaticFactoryPolicy + DefaultDemandSinkPolicy + OrderUpToPolicy.
 """
 
 from __future__ import annotations
@@ -27,18 +30,18 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Normal, Uniform
-from src.sim.policy import HeuristicPolicy
+from src.sim.graph import EdgeSpec
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import DefaultDemandSinkPolicy, OrderUpToPolicy, StaticFactoryPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     MarketParams,
+    NodeInstance,
     Scenario,
-    StoreTemplate,
     load_catalog,
-    make_stores,
 )
 
 
@@ -121,7 +124,7 @@ _MARKET = MarketParams(
     cross_inv_lo=0.3,
     cross_inv_hi=0.7,
     cross_factor_range=(0.3, 1.6),
-    # Constant trend ⇒ no drift; the cycle and shocks dominate.
+    # Constant trend => no drift; the cycle and shocks dominate.
     trend=Constant(1.0),
     demand_shock=Normal(0.0, 0.01),
     supply_shock=Normal(0.0, 0.01),
@@ -150,39 +153,85 @@ _LIFECYCLE = ItemLifecycleParams(
 )
 
 
-# Reusable store specification. Scalars only — no ``Distribution`` wraps,
-# so every store from this template starts with identical numerics modulo
-# ``init_rng`` selecting active SKUs.
-_TEMPLATE = StoreTemplate(
-    id="standard",
-    region="US",
-    capacity=200,
-    init_balance=10000.0,
-    init_stock_pct=0.4,
-    delivery_lag=2,
-    holding_rate=0.005,
-    order_fee=10.0,
-    init_active_count=3,
-)
+_PIDS = [w.product_id for w in _CATALOG]
+_PRIMARY_PID = _PIDS[0]
 
 
-# Single ``HeuristicPolicy`` shared across all three stores. Sharing the
-# instance also means a single ``policy_rng`` is consumed across all
-# three stores' decision streams.
-_POLICY = HeuristicPolicy(
-    policy_seed=1000,
-    min_qty=1,
-    init_qty_factor=0.3,
-    promo_len=Uniform(3, 5),
-    promo_cd_len=5,
-    review_interval=10,
-    promo_threshold=0.4,
-    target_active_count=4,
-    slow_sales_limit=2,
-    history_window=4,
-    max_history=50,
-    promo_discount=0.7,
-)
+def _make_store_subgraph(store_index: int, seed_offset: int):
+    """Build one (factory, shop, sinks) sub-graph for store ``store_index``.
+
+    Returns (node_instances, edges).
+    """
+    base_seed = (store_index + 1) * 1000 + seed_offset
+
+    factory_id = f"store{store_index}-factory"
+    shop_id = f"store{store_index}-shop"
+
+    factory = FactoryNode(
+        id=factory_id,
+        region="US",
+        init_seed=base_seed,
+        produces_product_id=_PRIMARY_PID,
+        unit_cost=_CATALOG[0].unit_cost,
+        capacity_per_tick=100,
+        inventory=200,
+        list_price=_CATALOG[0].unit_cost,
+        cash=0.0,
+    )
+    shop = IntermediateNode(
+        id=shop_id,
+        region="US",
+        init_seed=base_seed + 1,
+        carried_products=set(_PIDS),
+        capacity=200,
+        tags=["shop"],
+        inventory={pid: 20 for pid in _PIDS},
+        pending={},
+        list_prices={w.product_id: w.base_price for w in _CATALOG},
+        min_order_imposed={pid: 0 for pid in _PIDS},
+        cash=10000.0,
+    )
+
+    node_instances = [
+        NodeInstance(node=factory, init_seed=factory.init_seed,
+                     policy=StaticFactoryPolicy(capacity_per_tick=100, unit_cost=_CATALOG[0].unit_cost)),
+        NodeInstance(node=shop, init_seed=shop.init_seed,
+                     policy=OrderUpToPolicy(policy_seed=base_seed + 2)),
+    ]
+    edges = [
+        EdgeSpec(supplier_id=factory_id, buyer_id=shop_id, default_lead_time=2),
+    ]
+
+    for pid in _PIDS:
+        sink_id = f"store{store_index}-sink-{pid}"
+        sink = DemandSinkNode(
+            id=sink_id,
+            region="US",
+            init_seed=base_seed + 3 + _PIDS.index(pid),
+            product_id=pid,
+            demand_dist=Normal(mean=5.0, std=1.0),
+            income_rate=200.0,
+            cash=500.0,
+            activation_tick={},
+        )
+        node_instances.append(
+            NodeInstance(node=sink, init_seed=sink.init_seed,
+                         policy=DefaultDemandSinkPolicy())
+        )
+        edges.append(
+            EdgeSpec(supplier_id=shop_id, buyer_id=sink_id, default_lead_time=1)
+        )
+
+    return node_instances, edges
+
+
+# Build 3 store sub-graphs (store0, store1, store2).
+_ALL_NODES: list[NodeInstance] = []
+_ALL_EDGES: list[EdgeSpec] = []
+for _i in range(3):
+    _ni, _e = _make_store_subgraph(_i, seed_offset=0)
+    _ALL_NODES.extend(_ni)
+    _ALL_EDGES.extend(_e)
 
 
 # Scenario top-level binding — the CLI shim and standalone ``main``
@@ -192,14 +241,9 @@ scenario = Scenario(
     market=_MARKET,
     disruption=_DISRUPTION,
     item_lifecycle=_LIFECYCLE,
-    stores=make_stores(
-        [
-            # Three stores, same template + same policy, distinct seeds.
-            (_TEMPLATE, 1, _POLICY),
-            (_TEMPLATE, 2, _POLICY),
-            (_TEMPLATE, 3, _POLICY),
-        ]
-    ),
+    stores=[],
+    nodes=_ALL_NODES,
+    edges=_ALL_EDGES,
     n_steps=50,
     start_date=datetime(2024, 1, 1),
     world_seed=42,
@@ -207,11 +251,12 @@ scenario = Scenario(
 
 
 def main() -> None:
-    """Run the scenario and dump artifacts to ``data/example_homogeneous``."""
+    """Run the scenario and print a brief summary."""
+    from src.sim.data_exporter import DataExporter
     run_log = Runner(scenario).run()
-    # Co-locate artifacts under the project's ``data/`` folder.
     output = _PROJECT_ROOT / "data" / "example_homogeneous"
     DataExporter(scenario, run_log).export_all(str(output))
+    print(f"Ran {scenario.n_steps} steps with {len(scenario.nodes)} nodes")
     print(f"Wrote run artifacts to {output}")
 
 

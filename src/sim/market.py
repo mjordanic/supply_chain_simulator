@@ -1,14 +1,16 @@
-"""Typed ``Market`` (issue 04).
+"""Typed ``Market`` (issue 04; updated Phase 4).
 
 Owns the shared regional environment: per-region demand and supply
 state, seasonal cycle, and trend drift. ``tick()`` mutates that state
-once per simulation step; ``sample_demand(product_id, store, price)``
-draws realised demand for one product in one store at the given price.
+once per simulation step.
+
+Note: ``sample_demand`` has been deleted in Phase 4 (issue 11).
+Use ``demand_multiplier(pid, region, tick)`` instead, which is the
+surface consumed by ``DemandSinkNode.demand_target`` (ADR 0015).
 
 Replaces the previous ``src/environment/environment.py``. The
-demand/supply update math, seasonal multiplier, cross-product factor,
-and ``sample_demand`` calculation are preserved verbatim. Two
-construction-shape changes vs. the old module:
+demand/supply update math, seasonal multiplier, and cross-product factor
+are preserved verbatim. Two construction-shape changes vs. the old module:
 
 1. Randomness flows through an injected ``world_rng`` instead of the
    global ``random`` module.
@@ -198,75 +200,6 @@ class Market:
         CRN contract.
         """
         return float(self.params.base_demand.sample(self.rng))
-
-    def sample_demand(
-        self,
-        product_id: str,
-        store,
-        price: float,
-        current_step: int | None = None,
-    ) -> int:
-        """Sample realised demand for one product in one store at the given price.
-
-        Composes the demand multiplier in the order pinned by the CRN
-        contract: ``stage * freshness * season * promo * cross``. The
-        order is load-bearing for floating-point identity in
-        regression tests — do not reshuffle.
-
-        ``current_step`` defaults to ``self.step`` so call sites that
-        haven't been migrated stay correct; the Runner passes it
-        explicitly to keep the freshness clock aligned with the demand
-        draw's tick.
-        """
-        if self.registry is None:
-            raise RuntimeError(
-                "Market.sample_demand requires an attached ItemRegistry"
-            )
-        if current_step is None:
-            current_step = self.step
-
-        # Base draw — one ``world_rng`` consumption per (store, product, tick).
-        base = self.sample_base_demand()
-        # Global PLC stage for this product.
-        stage = self.registry.stage(product_id)
-
-        # Region-level demand factor — ``market_demand`` is already on
-        # the 0–2 scale, so it's consumed directly as a factor.
-        # The clamp prevents a depressed market from collapsing demand
-        # entirely.
-        demand_factor = max(
-            self.params.demand_factor_min,
-            self.market_state[store.region]["market_demand"],
-        )
-        # 1. Lifecycle stage multiplier (e.g. growth ≫ decline).
-        multiplier = self.stage_multipliers[stage]
-
-        # 2. Per-(store, product) freshness factor. ``Store`` returns 1.0
-        # for products that have never been activated, so the canonical
-        # CRN contract (one world_rng draw per inventory key) is
-        # unaffected by which products are active.
-        multiplier *= store.freshness_multiplier(product_id, current_step)
-
-        # 3. Seasonal factor — peak vs. off depending on month / season.
-        month = self.date.month
-        season = self.registry.seasonality(product_id)
-        multiplier *= self.season_factor(season, month)
-
-        # 4. Promotion boost (only if the store has an active promo on this pid).
-        if hasattr(store, "promotions") and product_id in store.promotions:
-            multiplier *= 1 + store.promotions[product_id]["discount"] * self.promo_multiplier
-
-        # 5. Cross-product factor — driven by stock levels of related items.
-        multiplier *= self.cross_demand_factor(product_id, store)
-
-        # Price elasticity: ``(price / base_price) ** elasticity`` where
-        # ``elasticity`` is negative ⇒ higher price ⇒ lower factor.
-        base_price = self.registry.items[product_id].base_price
-        price_factor = (price / base_price) ** self.price_elasticity
-
-        # Floor at zero (the multiplier stack can produce small negatives
-        # under extreme shocks) and integer-round for the unit count.
-        return max(0, int(base * multiplier * demand_factor * price_factor))
 
     def cross_demand_factor(self, product_id: str, store) -> float:
         """Verbatim port of ``Market.cross_demand_factor``.

@@ -1,16 +1,20 @@
-"""T9: Regression snapshot test (issue 10).
+"""T9: Regression snapshot test (issue 10 / issue 11).
 
-A canonical ``Scenario`` with a fixed ``world_seed`` runs to completion;
-the resulting ``RunLog`` is hashed and compared against ``EXPECTED_HASH``.
-CI fails if anyone changes simulator math without intentionally bumping
-the snapshot. Updating the snapshot is a one-line change to
-``EXPECTED_HASH``.
+A canonical graph-mode ``Scenario`` with a fixed ``world_seed`` runs to
+completion; the resulting ``RunLog`` is hashed and compared against
+``EXPECTED_HASH``.  CI fails if anyone changes simulator math without
+intentionally bumping the snapshot.  Updating the snapshot is a one-line
+change to ``EXPECTED_HASH``.
 
-The scenario is intentionally small (30 steps, 2 stores, 4-product
-catalog with cross-references, 1 region) so the test runs in well under
-a second on CI, while still exercising every subsystem: Market trend /
-seasonality / cross-demand, EventEngine spawn + duration, ItemRegistry
-lifecycle ticks, Store accounting, and OrderUpToPolicy decide.
+The scenario is intentionally small (30 steps, 2 shops, 4-product catalog
+with cross-references, 1 region) so the test runs in well under a second
+on CI, while still exercising every subsystem: Market trend / seasonality /
+cross-demand, EventEngine spawn + duration, ItemRegistry lifecycle ticks,
+allocation (FCFS), and OrderUpToPolicy / DefaultDemandSinkPolicy decide.
+
+Issue 11: The legacy ``Store`` engine has been retired.  The canonical
+scenario is now a graph-mode scenario with two 3-node sub-graphs:
+    FactoryNode -> IntermediateNode -> DemandSinkNode (per product)
 """
 
 from __future__ import annotations
@@ -23,22 +27,23 @@ import pytest
 
 from src.sim.data_exporter import _jsonable
 from src.sim.distributions import Constant, Normal, Uniform
-from src.sim.policy import OrderUpToPolicy
+from src.sim.graph import EdgeSpec
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import DefaultDemandSinkPolicy, OrderUpToPolicy, StaticFactoryPolicy
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     MarketParams,
+    NodeInstance,
     Scenario,
-    StoreInstance,
-    StoreTemplate,
     load_catalog,
 )
 
 
 # Bump this constant when simulator numerics change intentionally. A
 # failing assertion prints the observed digest so it can be copied here.
-EXPECTED_HASH = "7e57b1ade50c6a8bcefa6234fafe1fd1bf197d847d3e9122af11ef5200879520"
+EXPECTED_HASH = "268c131a34bc6f0da6ecfa1f630e95fa8778c48cb12ca1f4d54c9a14bf7c4f86"
 
 
 N_STEPS = 30
@@ -138,42 +143,105 @@ def _canonical_lifecycle():
     )
 
 
-def _canonical_template():
-    return StoreTemplate(
-        id="canon",
-        region="US",
-        capacity=150,
-        init_balance=8000.0,
-        init_stock_pct=0.5,
-        delivery_lag=2,
-        holding_rate=0.005,
-        order_fee=8.0,
-        init_active_count=3,
-    )
-
-
-def _canonical_policy(seed: int) -> OrderUpToPolicy:
-    return OrderUpToPolicy(policy_seed=seed)
-
-
 def _canonical_scenario() -> Scenario:
-    template = _canonical_template()
+    """Build a canonical graph-mode scenario for regression testing.
+
+    Layout: two 3-node sub-graphs sharing the same catalog and market.
+    Each sub-graph: FactoryNode -> IntermediateNode -> DemandSinkNode (x4 products).
+    """
+    catalog = _canonical_catalog()
+    pids = [w.product_id for w in catalog]
+
+    nodes: list[NodeInstance] = []
+    edges: list[EdgeSpec] = []
+
+    for store_n in [1, 2]:
+        f_id = f"f-store{store_n}"
+        shop_id = f"shop-store{store_n}"
+
+        f = FactoryNode(
+            id=f_id,
+            region="US",
+            init_seed=100 + store_n,
+            produces_product_id=pids[0],
+            unit_cost=12.0,
+            capacity_per_tick=50,
+            inventory=200,
+            list_price=12.0,
+            cash=0.0,
+        )
+        f.policy = StaticFactoryPolicy(
+            capacity_per_tick=50,
+            unit_cost=12.0,
+            policy_seed=200 + store_n,
+        )
+
+        shop = IntermediateNode(
+            id=shop_id,
+            region="US",
+            init_seed=102 + store_n,
+            carried_products=set(pids),
+            capacity=600,
+            tags=["shop"],
+            inventory={pid: 30 for pid in pids},
+            pending={},
+            list_prices={pids[i]: catalog[i].base_price for i in range(len(pids))},
+            min_order_imposed={pid: 0 for pid in pids},
+            cash=8000.0,
+        )
+        shop.policy = OrderUpToPolicy(
+            cover_horizon_ticks=14,
+            safety_lead_pct_of_lag=1 / 3,
+            delivery_lag=2,
+            unit_cost=12.0,
+            list_price_out=25.0,
+            policy_seed=300 + store_n,
+        )
+
+        nodes.append(NodeInstance(node=f, init_seed=100 + store_n))
+        nodes.append(NodeInstance(node=shop, init_seed=102 + store_n))
+        edges.append(
+            EdgeSpec(
+                supplier_id=f_id,
+                buyer_id=shop_id,
+                default_lead_time=2,
+            )
+        )
+
+        for i, pid in enumerate(pids):
+            sink_id = f"sink-store{store_n}-{pid}"
+            sink = DemandSinkNode(
+                id=sink_id,
+                region="US",
+                init_seed=200 + i * 10 + store_n,
+                product_id=pid,
+                demand_dist=Uniform(2.0, 7.0),
+                income_rate=100.0,
+                cash=500.0,
+            )
+            sink.policy = DefaultDemandSinkPolicy(
+                policy_seed=400 + i * 10 + store_n
+            )
+            nodes.append(NodeInstance(node=sink, init_seed=200 + i * 10 + store_n))
+            edges.append(
+                EdgeSpec(
+                    supplier_id=shop_id,
+                    buyer_id=sink_id,
+                    default_lead_time=1,
+                )
+            )
+
     return Scenario(
-        catalog=_canonical_catalog(),
+        catalog=catalog,
         market=_canonical_market(),
         disruption=_canonical_disruption(),
         item_lifecycle=_canonical_lifecycle(),
-        stores=[
-            StoreInstance(
-                template=template, init_seed=101, policy=_canonical_policy(seed=201)
-            ),
-            StoreInstance(
-                template=template, init_seed=102, policy=_canonical_policy(seed=202)
-            ),
-        ],
+        stores=[],
         n_steps=N_STEPS,
         start_date=datetime(2024, 3, 1),
         world_seed=WORLD_SEED,
+        nodes=nodes,
+        edges=edges,
     )
 
 

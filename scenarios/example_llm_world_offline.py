@@ -5,6 +5,9 @@ Demonstrates the full pipeline without needing ``OPENAI_API_KEY``.
 pre-built Pydantic payload per ``structured_completion`` call. This is
 the same test seam used by ``tests/llm/test_world_builder.py``.
 
+Phase-4 (issue 11): migrated to the graph engine. Uses ``world_to_graph``
+to synthesise a 3-node-per-store-template topology from the World artifact.
+
 Use it to:
 
 - inspect what each stage's payload looks like end-to-end
@@ -51,16 +54,14 @@ from src.llm.schemas import (
     TaxonomyCategory,
 )
 from src.llm.world_builder import WorldBuilder
-from src.sim.data_exporter import DataExporter
-from src.sim.distributions import Constant, Uniform
-from src.sim.policy import HeuristicPolicy
+from src.sim.distributions import Constant
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     Scenario,
-    make_stores,
 )
+from src.sim.world import world_to_graph
 
 
 # Bound on the schema TypeVar so ``structured_completion`` is statically
@@ -71,8 +72,8 @@ T = TypeVar("T", bound=BaseModel)
 class CannedClient:
     """Implements ``LLMClient`` Protocol with a fixed response queue.
 
-    Order matches ``WorldBuilder.build``: market → taxonomy → catalog →
-    correlations → freshness → templates. Each ``structured_completion``
+    Order matches ``WorldBuilder.build``: market -> taxonomy -> catalog ->
+    correlations -> freshness -> templates. Each ``structured_completion``
     call pops the head.
     """
 
@@ -194,7 +195,7 @@ _CORRELATIONS = Correlations(
 )
 
 
-# 5. Freshness curves: jeans + belt are staples (α=0), the rest get hype.
+# 5. Freshness curves: jeans + belt are staples (alpha=0), the rest get hype.
 _FRESHNESS = FreshnessSet(
     items=[
         ItemFreshness(name="Linen Shirt", alpha=0.2, decay=30.0),
@@ -247,28 +248,13 @@ _builder = WorldBuilder(archetype="fashion_retail", client=_client)
 _world = _builder.build(n_items=len(_CATALOG.items))
 
 
-# Use the "standard" template for the per-store roster.
-_template = _world.store_templates["standard"]
+# Synthesise graph topology from the World artifact.
+_topology = world_to_graph(_world, sink_density=1.0)
 
 
-_policy = HeuristicPolicy(
-    policy_seed=1000,
-    min_qty=1,
-    init_qty_factor=0.3,
-    promo_len=Uniform(3, 5),
-    promo_cd_len=5,
-    review_interval=10,
-    promo_threshold=0.4,
-    target_active_count=4,
-    slow_sales_limit=2,
-    history_window=4,
-    max_history=50,
-    promo_discount=0.7,
-)
-
-
-scenario = Scenario.from_world(
-    _world,
+scenario = Scenario(
+    catalog=_world.catalog,
+    market=_world.market,
     disruption=DisruptionParams(
         event_prob=0.05,
         types=["natural_disaster", "economic_crisis"],
@@ -284,13 +270,9 @@ scenario = Scenario.from_world(
             for s in ["introduction", "growth", "maturity", "decline", "dead"]
         },
     ),
-    stores=make_stores(
-        [
-            (_template, 1, _policy),
-            (_template, 2, _policy),
-            (_template, 3, _policy),
-        ]
-    ),
+    stores=[],
+    nodes=_topology["node_instances"],
+    edges=_topology["edges"],
     n_steps=50,
     start_date=datetime(2024, 1, 1),
     world_seed=42,
@@ -299,6 +281,7 @@ scenario = Scenario.from_world(
 
 def main() -> None:
     """Run the scenario and dump artifacts to ``data/example_llm_world_offline``."""
+    from src.sim.data_exporter import DataExporter
     run_log = Runner(scenario).run()
     output = _PROJECT_ROOT / "data" / "example_llm_world_offline"
     DataExporter(scenario, run_log).export_all(str(output))

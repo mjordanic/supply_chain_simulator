@@ -187,8 +187,16 @@ def _maybe_sample(value: Any, rng: Random) -> Any:
     return value
 
 
-class HeuristicPolicy(Policy):
-    """Heuristic kitchen-sink demonstrator policy with kwargs hyperparameters.
+class _HeuristicPolicyOld(Policy):
+    """Heuristic kitchen-sink demonstrator — retired in Phase 4 (issue 11).
+
+    Kept as dead code to avoid a large diff. The public name
+    ``HeuristicPolicy`` is reassigned below to a tombstone class that
+    raises on construction.
+
+    Original docstring follows:
+
+    Heuristic kitchen-sink demonstrator policy with kwargs hyperparameters.
 
     Observation contract (every step, supplied by ``Store.observe``):
 
@@ -727,62 +735,40 @@ class HeuristicPolicy(Policy):
         return sum(recent) == 0
 
 
-class RLPolicy(Policy):
-    """Minimal ``Policy`` shim for the RL environment.
+# ---------------------------------------------------------------------------
+# Phase-4 tombstones: HeuristicPolicy and RLPolicy deleted
+# (issue 11-retire-legacy-store-engine)
+# ---------------------------------------------------------------------------
 
-    The env calls ``set_pending_action(action_dict)`` immediately before
-    invoking ``store.decide(observation)``.  ``decide`` returns that dict
-    and clears the pending slot so a second call without a fresh
-    ``set_pending_action`` raises immediately (catching integration bugs).
+class HeuristicPolicy(Policy):  # type: ignore[no-redef]
+    """Tombstone: HeuristicPolicy retired in Phase 4 (issue 11).
 
-    ``policy_rng`` is never consumed — all stochasticity in the RL env
-    flows through ``world_rng`` exactly as in ``Runner``.
-
-    Action dict format (same as ``HeuristicPolicy``)::
-
-        {
-            "order":      {pid: int},
-            "price":      {pid: float},
-            "activate":   [],
-            "deactivate": [],
-            "promotions": {},
-        }
+    Raises ``TypeError`` on construction. Migrate legacy scenarios to
+    the graph engine: ``StaticFactoryPolicy``, ``DefaultDemandSinkPolicy``,
+    or ``OrderUpToPolicy``.
     """
 
-    _SENTINEL = object()
+    def __init__(self, *args, **kwargs):
+        raise TypeError(
+            "HeuristicPolicy has been retired in Phase 4 (issue 11). "
+            "Migrate the scenario to the graph engine and use "
+            "StaticFactoryPolicy / DefaultDemandSinkPolicy / OrderUpToPolicy."
+        )
 
-    def __init__(self) -> None:
-        # policy_seed=None so policy_rng is unseeded (never drawn from).
-        super().__init__(policy_seed=None)
-        self._pending: dict | object = self._SENTINEL
+    def decide(self, observation):  # type: ignore[override]
+        raise TypeError("HeuristicPolicy has been retired.")
 
-    def set_pending_action(self, action_dict: dict) -> None:
-        """Store ``action_dict`` so the next ``decide`` call can return it."""
-        self._pending = action_dict
 
-    def decide(self, observation) -> dict:
-        """Return the pending action dict and clear it.
-
-        Raises ``RuntimeError`` if called without a preceding
-        ``set_pending_action`` — this surfaces env wiring bugs immediately
-        rather than returning a silent empty action.
-        """
-        if self._pending is self._SENTINEL:
-            raise RuntimeError(
-                "RLPolicy.decide() called without a preceding set_pending_action(). "
-                "The RL env must call set_pending_action(action_dict) before "
-                "store.decide(obs) on every tick."
-            )
-        action = self._pending
-        self._pending = self._SENTINEL
-        return action
+# RLPolicy is replaced in issue 12 by RLIntermediatePolicy. The legacy
+# shim class has been deleted in Phase 4 (issue 11). If you import
+# RLPolicy from here, update the import to the new location.
 
 
 __all__ = [
     "Policy",
+    "NodePolicy",
     "NoopPolicy",
-    "HeuristicPolicy",
-    "RLPolicy",
+    "HeuristicPolicy",  # tombstone — raises on construction
     "TextbookReorderPolicy",
     # Phase-1 graph-engine concrete policies (issue 06)
     "StaticFactoryPolicy",
@@ -2221,6 +2207,12 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
         self.list_price_out = list_price_out
         self.per_supplier_min_order_floor = per_supplier_min_order_floor
         self.routing_strategy = routing_strategy
+        # Per-pid inventory snapshot from the previous decide call.  Used by
+        # ``decide`` to compute approximate sales as the inventory decrease
+        # between consecutive ticks (``max(0, prev_inv - curr_inv)``).
+        # Inventory increases (deliveries) give 0 sales — conservative but
+        # correct: the rate estimate self-corrects once depletion cycles begin.
+        self._last_inventory: dict[str, int] = {}
         self._inner = self._make_inner_policy(
             cover_horizon_ticks=cover_horizon_ticks,
             safety_lead_pct_of_lag=safety_lead_pct_of_lag,
@@ -2340,8 +2332,25 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
             for pid, qty in sup_pending.items():
                 pending_flat[pid] = pending_flat.get(pid, 0) + qty
 
-        # Approximate sales as zero (same as SingleSupplierAdapter).
-        sales_approx: dict[str, int] = {pid: 0 for pid in inventory}
+        # Use runner-injected prev_tick_sales when available (preferred).
+        # The runner tracks exact units sold by each IntermediateNode to
+        # downstream buyers in the previous tick, giving an accurate demand
+        # signal even on delivery ticks (when inventory-delta would be wrong).
+        # Fallback: estimate sales as inventory decrease from previous tick —
+        # conservative (delivery ticks give 0) but self-correcting.
+        prev_tick_sales: dict[str, int] = obs_intermediate.get("prev_tick_sales", {})
+        if prev_tick_sales:
+            sales_approx: dict[str, int] = {
+                pid: prev_tick_sales.get(pid, 0) for pid in inventory
+            }
+        else:
+            # Inventory-delta fallback (used when runner doesn't inject sales).
+            sales_approx = {
+                pid: max(0, self._last_inventory.get(pid, 0) - inventory.get(pid, 0))
+                for pid in inventory
+            }
+        # Snapshot the current inventory for the fallback path in the next call.
+        self._last_inventory = dict(inventory)
 
         node_capacity = int(obs_intermediate.get("capacity", 0)) or 10_000
 

@@ -257,30 +257,83 @@ def test_make_stores_paired_two_policies_share_template_and_seed() -> None:
 
 
 def test_make_stores_kway_three_policies_share_template_and_seed_step0_identity() -> None:
-    """k=3 CRN comparison: triples sharing ``(template, init_seed)`` start
-    bit-identical at step 0 regardless of attached policy.
+    """k=3 CRN comparison: three graph-mode nodes sharing the same init_seed
+    start bit-identical at step 0 regardless of attached policy.
+
+    Phase-4 (issue 11): migrated from the legacy Store engine to the
+    graph engine. Three IntermediateNode shops with the same seed and
+    inventory should have identical initial state.
     """
+    from src.sim.graph import EdgeSpec
+    from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
     from src.sim.policy import OrderUpToPolicy
+    from src.sim.runner import build_world
+    from src.sim.scenario import NodeInstance
 
-    template = _template()
-    pol_a = OrderUpToPolicy(policy_seed=1)
-    pol_b = OrderUpToPolicy(policy_seed=2)
-    pol_c = OrderUpToPolicy(policy_seed=3)
+    cat = _catalog()
+    pid = cat[0].product_id
 
-    stores = make_stores(
-        [
-            (template, 99, pol_a),
-            (template, 99, pol_b),
-            (template, 99, pol_c),
-        ]
+    # Three shops with the same seed — should start bit-identical.
+    shops_and_policies = [
+        ("shopA", OrderUpToPolicy(policy_seed=1)),
+        ("shopB", OrderUpToPolicy(policy_seed=2)),
+        ("shopC", OrderUpToPolicy(policy_seed=3)),
+    ]
+
+    node_instances = []
+    edges = []
+    for shop_id, pol in shops_and_policies:
+        factory_id = f"{shop_id}-factory"
+        factory = FactoryNode(
+            id=factory_id, region="US", init_seed=99,
+            produces_product_id=pid, unit_cost=12.0,
+            capacity_per_tick=50, inventory=100,
+            list_price=12.0, cash=0.0,
+        )
+        shop = IntermediateNode(
+            id=shop_id, region="US", init_seed=99,
+            carried_products={pid}, capacity=1000,
+            tags=[], inventory={pid: 10}, pending={},
+            list_prices={pid: 20.0}, min_order_imposed={pid: 0},
+            cash=10000.0,
+        )
+        sink_id = f"{shop_id}-sink"
+        sink = DemandSinkNode(
+            id=sink_id, region="US", init_seed=99,
+            product_id=pid, demand_dist=Constant(5.0),
+            income_rate=100.0, cash=500.0, activation_tick={},
+        )
+        node_instances.extend([
+            NodeInstance(node=factory, init_seed=99, policy=None),
+            NodeInstance(node=shop, init_seed=99, policy=pol),
+            NodeInstance(node=sink, init_seed=99, policy=None),
+        ])
+        edges.extend([
+            EdgeSpec(supplier_id=factory_id, buyer_id=shop_id, default_lead_time=2),
+            EdgeSpec(supplier_id=shop_id, buyer_id=sink_id, default_lead_time=1),
+        ])
+
+    scenario = Scenario(
+        catalog=cat,
+        market=_market(),
+        disruption=_disruption(),
+        item_lifecycle=_item_lifecycle(),
+        stores=[],
+        nodes=node_instances,
+        edges=edges,
+        n_steps=1,
+        start_date=__import__("datetime").datetime(2024, 1, 1),
+        world_seed=42,
     )
-    scenario = _scenario(stores=stores)
-    log = Runner(scenario).run()
-    a, b, c = log["stores"][0], log["stores"][1], log["stores"][2]
-    assert a["step0_capacity"] == b["step0_capacity"] == c["step0_capacity"]
-    assert a["step0_inventory"] == b["step0_inventory"] == c["step0_inventory"]
-    assert a["step0_active_items"] == b["step0_active_items"] == c["step0_active_items"]
-    assert a["balance"][0] == b["balance"][0] == c["balance"][0]
+    # Build the world and inspect initial state: all three shops should be identical.
+    from src.sim.runner import build_world as _build_world
+    sim = _build_world(scenario)
+    shop_a = sim.nodes["shopA"]
+    shop_b = sim.nodes["shopB"]
+    shop_c = sim.nodes["shopC"]
+    # All three shops started with the same init_seed — same inventory and cash.
+    assert shop_a.inventory == shop_b.inventory == shop_c.inventory
+    assert shop_a.cash == shop_b.cash == shop_c.cash
 
 
 # ----------------------------------------------------------- JSON round-trip
@@ -550,16 +603,20 @@ _HOMOGENEOUS = (
 )
 
 
-def test_load_scenario_from_path_returns_scenario_with_catalog_and_stores() -> None:
+def test_load_scenario_from_path_returns_scenario_with_catalog_and_nodes() -> None:
+    """Phase-4: example_homogeneous uses graph-mode nodes, not stores."""
     sc = load_scenario_from_path(_HOMOGENEOUS)
     assert isinstance(sc, Scenario)
     assert len(sc.catalog) > 0
-    assert len(sc.stores) > 0
+    # Graph-mode scenario: nodes are populated, stores are empty.
+    assert sc.is_graph
+    assert len(sc.nodes) > 0
 
 
 def test_load_scenario_from_path_preserves_live_policies() -> None:
     sc = load_scenario_from_path(_HOMOGENEOUS)
-    assert any(s.policy is not None for s in sc.stores)
+    # Graph-mode: check node policies instead of store policies.
+    assert any(ni.policy is not None for ni in sc.nodes)
 
 
 def test_load_scenario_from_path_accepts_string_path() -> None:

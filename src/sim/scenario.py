@@ -2,23 +2,23 @@
 
 A ``Scenario`` is a flat declarative description of one experiment:
 catalog, typed parameter bags (``MarketParams`` / ``DisruptionParams`` /
-``ItemLifecycleParams``), the list of ``StoreInstance``s that will run
-inside it, ``n_steps``, ``start_date``, and ``world_seed``. Replaces the
-six-dict / two-level config system (``src/config.py`` + ``ConfigResolver``).
+``ItemLifecycleParams``), the list of ``NodeInstance``s + ``EdgeSpec``s
+that define the graph topology, ``n_steps``, ``start_date``, and
+``world_seed``.
 
-Stochastic fields take ``Distribution`` instances; sampling cadence is
-determined by *where the distribution is consumed*, not by an
-``initial_parameters`` / ``dynamic_parameters`` split.
-
-Policies are *not* serialised — the LLM never authors policies. ``to_json``
-omits the ``policy`` field of each ``StoreInstance``; ``from_json`` reads
-back instances with ``policy=None`` and the caller re-attaches policies.
+Phase 4 (issue 11): the legacy ``stores``-based path has been retired.
+``Scenario.stores``, ``StoreInstance``, ``StoreTemplate``, and
+``make_stores`` remain in this module for backward compatibility with
+the RL/tuning layer (which will be migrated in issues 12–13), but the
+graph engine (``Runner`` / ``Simulation`` / ``build_world``) requires
+``scenario.is_graph == True`` and ignores ``stores``.
 
 This module also hosts authoring helpers:
 
 - ``load_catalog(items)`` — build ``[Ware]`` with stable ``P{i:04d}`` ids.
-- ``make_stores(triples)`` — turn ``(template, init_seed, policy)`` triples
-  into a ``[StoreInstance]`` roster.
+- ``make_nodes(triples)`` — turn ``(node, init_seed, policy)`` triples
+  into a ``[NodeInstance]`` roster.
+- ``make_stores(triples)`` — **(deprecated)** legacy roster builder.
 - ``load_scenario_from_path(path)`` — import a Python module and return
   its top-level ``scenario`` symbol, preserving live Policy instances
   (used by ``main.py``).
@@ -593,12 +593,14 @@ class ItemLifecycleParams:
 
 
 # Required top-level keys for ``Scenario.from_dict`` validation.
+# Phase 4 (issue 11): ``stores`` is no longer required — graph-mode
+# scenarios do not include it.  ``nodes`` / ``edges`` are likewise
+# optional (they default to empty lists for legacy store-mode scenarios).
 _SCENARIO_REQUIRED = (
     "catalog",
     "market",
     "disruption",
     "item_lifecycle",
-    "stores",
     "n_steps",
     "start_date",
     "world_seed",
@@ -649,13 +651,15 @@ class Scenario:
             "market": self.market.to_dict(),
             "disruption": self.disruption.to_dict(),
             "item_lifecycle": self.item_lifecycle.to_dict(),
-            "stores": [s.to_dict() for s in self.stores],
             "n_steps": self.n_steps,
             "start_date": self.start_date.isoformat(),
             "world_seed": self.world_seed,
         }
-        # Only include graph fields when they are non-empty, so legacy
-        # scenarios serialise to the same format as before.
+        # Only include stores / graph fields when they are non-empty, so
+        # graph-mode scenarios don't carry an empty ``stores`` key and
+        # legacy-mode scenarios don't carry empty ``nodes`` / ``edges``.
+        if self.stores:
+            d["stores"] = [s.to_dict() for s in self.stores]
         if self.nodes:
             d["nodes"] = [ni.to_dict() for ni in self.nodes]
         if self.edges:
@@ -677,7 +681,9 @@ class Scenario:
             market=MarketParams.from_dict(d["market"]),
             disruption=DisruptionParams.from_dict(d["disruption"]),
             item_lifecycle=ItemLifecycleParams.from_dict(d["item_lifecycle"]),
-            stores=[StoreInstance.from_dict(s) for s in d["stores"]],
+            # Phase 4 (issue 11): ``stores`` is optional — graph-mode
+            # scenarios do not include it; legacy scenarios still do.
+            stores=[StoreInstance.from_dict(s) for s in d.get("stores", [])],
             n_steps=d["n_steps"],
             start_date=datetime.fromisoformat(d["start_date"]),
             world_seed=d["world_seed"],
@@ -834,7 +840,9 @@ class Scenario:
         *,
         disruption: "DisruptionParams",
         item_lifecycle: "ItemLifecycleParams",
-        stores: "list[StoreInstance]",
+        stores: "list[StoreInstance] | None" = None,
+        nodes: "list[NodeInstance] | None" = None,
+        edges: "list[Any] | None" = None,
         n_steps: int,
         start_date: datetime,
         world_seed: int,
@@ -842,15 +850,20 @@ class Scenario:
         """Build a ``Scenario`` from an LLM-generated ``World`` + author-supplied pieces.
 
         ``World`` provides the catalog and market; the caller fills in
-        disruption parameters, lifecycle defaults, the per-store roster,
-        and the seeds.
+        disruption parameters, lifecycle defaults, the per-store roster
+        (legacy) or graph topology (Phase 4+), and the seeds.
+
+        Phase 4 (issue 11): ``stores`` is deprecated and optional; pass
+        ``nodes`` + ``edges`` instead for graph-mode scenarios.
         """
         return cls(
             catalog=world.catalog,
             market=world.market,
             disruption=disruption,
             item_lifecycle=item_lifecycle,
-            stores=stores,
+            stores=stores if stores is not None else [],
+            nodes=nodes if nodes is not None else [],
+            edges=edges if edges is not None else [],
             n_steps=n_steps,
             start_date=start_date,
             world_seed=world_seed,

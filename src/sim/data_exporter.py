@@ -139,52 +139,101 @@ class DataExporter:
         return path
 
     def save_stores_parquet(self, output_folder: str) -> str:
-        """Write the static store table as ``stores.parquet``."""
+        """Write the static store/node table as ``stores.parquet``.
+
+        Phase 4 (issue 11): for graph-mode scenarios (``is_graph == True``)
+        the node roster is exported instead of the legacy store list.  For
+        legacy store-mode scenarios the old ``stores_df()`` path is used.
+        """
         folder = os.path.join(output_folder, "data")
         os.makedirs(folder, exist_ok=True)
-        # ``Scenario.stores_df`` exposes a ``policy_class`` column; the
-        # output schema standardises on ``policy_type`` so downstream
-        # consumers (notebooks/dashboards) get a single canonical name.
-        stores_df = self.scenario.stores_df().rename(
-            columns={"policy_class": "policy_type"}
-        )
-        path = os.path.join(folder, "stores.parquet")
-        stores_df.to_parquet(path)
+
+        if self.scenario.is_graph:
+            # Graph-mode: export ``nodes_df()`` with a ``policy_type`` column.
+            nodes_df = self.scenario.nodes_df().rename(
+                columns={"policy_class": "policy_type"}
+            )
+            path = os.path.join(folder, "stores.parquet")
+            nodes_df.to_parquet(path)
+        else:
+            # Legacy store-mode: the old shape.
+            stores_df = self.scenario.stores_df().rename(
+                columns={"policy_class": "policy_type"}
+            )
+            path = os.path.join(folder, "stores.parquet")
+            stores_df.to_parquet(path)
         return path
 
     def save_timeseries_parquet(self, output_folder: str) -> str:
-        """Write per-store / per-product time-series as ``timeseries.parquet``."""
+        """Write per-node / per-product time-series as ``timeseries.parquet``.
+
+        Phase 4 (issue 11): for graph-mode run logs the ``"stores"`` key is
+        absent.  The timeseries table is built from the ``"ticks"`` list
+        (per-tick ``node_inventory`` snapshots) instead.
+        """
         folder = os.path.join(output_folder, "data")
         os.makedirs(folder, exist_ok=True)
 
-        # Step / date axes are shared across every (store, product) row.
         sim_steps = self.run_log["global"]["time"]["simulation_step"]
         sim_dates = self.run_log["global"]["time"]["simulation_date"]
-        # Accumulator for the long-form (one row per step × store × product) frame.
         rows: list[dict[str, Any]] = []
-        for store_id, store_log in self.run_log["stores"].items():
-            for pid, product_log in store_log["products"].items():
-                for t, step in enumerate(sim_steps):
-                    rows.append(
-                        {
-                            "simulation_step": step,
-                            "simulation_date": sim_dates[t],
-                            "store_id": store_id,
-                            "product_id": pid,
-                            "inventory": product_log["inventory"][t],
-                            "demand": product_log["demand"][t],
-                            "sales": product_log["sales"][t],
-                            "order_quantity": product_log["order_quantity"][t],
-                            "outstanding_orders": product_log["outstanding_orders"][t],
-                            "promotion_status": product_log["promotion_status"][t],
-                            "active_status": product_log["active_status"][t],
-                            "price": product_log["price"][t],
-                            "revenue": product_log["revenue"][t],
-                            "total_cost": product_log["total_cost"][t],
-                            "holding_cost": product_log["holding_cost"][t],
-                            "profit": product_log["profit"][t],
-                        }
-                    )
+
+        if "stores" in self.run_log:
+            # Legacy store-mode run log.
+            for store_id, store_log in self.run_log["stores"].items():
+                for pid, product_log in store_log["products"].items():
+                    for t, step in enumerate(sim_steps):
+                        rows.append(
+                            {
+                                "simulation_step": step,
+                                "simulation_date": sim_dates[t],
+                                "store_id": store_id,
+                                "product_id": pid,
+                                "inventory": product_log["inventory"][t],
+                                "demand": product_log["demand"][t],
+                                "sales": product_log["sales"][t],
+                                "order_quantity": product_log["order_quantity"][t],
+                                "outstanding_orders": product_log["outstanding_orders"][t],
+                                "promotion_status": product_log["promotion_status"][t],
+                                "active_status": product_log["active_status"][t],
+                                "price": product_log["price"][t],
+                                "revenue": product_log["revenue"][t],
+                                "total_cost": product_log["total_cost"][t],
+                                "holding_cost": product_log["holding_cost"][t],
+                                "profit": product_log["profit"][t],
+                            }
+                        )
+        else:
+            # Graph-mode run log: build from ticks (node_inventory snapshots).
+            ticks = self.run_log.get("ticks", [])
+            for t, tick_log in enumerate(ticks):
+                step = sim_steps[t + 1] if t + 1 < len(sim_steps) else sim_steps[-1]
+                date = sim_dates[t + 1] if t + 1 < len(sim_dates) else sim_dates[-1]
+                for node_id, inv in tick_log.get("node_inventory", {}).items():
+                    for pid, qty in inv.items():
+                        if pid == "_total":
+                            continue
+                        rows.append(
+                            {
+                                "simulation_step": step,
+                                "simulation_date": date,
+                                "store_id": node_id,
+                                "product_id": pid,
+                                "inventory": qty,
+                                "demand": None,
+                                "sales": None,
+                                "order_quantity": None,
+                                "outstanding_orders": None,
+                                "promotion_status": None,
+                                "active_status": None,
+                                "price": None,
+                                "revenue": None,
+                                "total_cost": None,
+                                "holding_cost": None,
+                                "profit": None,
+                            }
+                        )
+
         path = os.path.join(folder, "timeseries.parquet")
         pd.DataFrame(rows).to_parquet(path)
         return path
