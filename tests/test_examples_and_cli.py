@@ -1,13 +1,13 @@
-"""Issue 09: example scenario files + thin ``main.py`` CLI.
+"""Issue 14: example scenario files + thin ``main.py`` CLI (graph-engine edition).
 
 Acceptance criteria pinned by these tests:
 
 1. ``scenarios/example_homogeneous.py`` exposes a top-level ``Scenario``
-   that runs end-to-end and produces a run-log with the documented shape.
+   with graph-mode nodes (``is_graph == True``) that runs end-to-end and
+   produces a run-log with the documented shape.
 2. ``scenarios/example_paired_comparison.py`` exposes a top-level
-   ``Scenario`` whose ``paired(...)`` stores share ``(template, init_seed)``
-   step-0 state pairwise — the verifiable signal that the two policy
-   groups operate on bit-identical world data.
+   ``Scenario`` whose paired sub-graphs share seeds — the verifiable CRN
+   signal that the two policy groups operate on bit-identical world data.
 3. ``main.py`` accepts a scenario path argument, dispatches it through
    ``Runner`` + ``DataExporter``, and writes parquet/JSON/PNG artifacts.
    Passing a path that is not a Scenario fails loudly.
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from src.sim.policy import HeuristicPolicy
+from src.sim.node import IntermediateNode
 from src.sim.runner import Runner
 from src.sim.scenario import Scenario
 
@@ -54,25 +54,34 @@ def test_homogeneous_exposes_scenario_symbol(homogeneous_module):
     assert isinstance(homogeneous_module.scenario, Scenario)
 
 
-def test_homogeneous_scenario_uses_homogeneous_helper(homogeneous_module):
-    """All ``StoreInstance``s share one template AND one policy object."""
-    stores = homogeneous_module.scenario.stores
-    assert len(stores) >= 2, "homogeneous example must have at least 2 stores"
-    first = stores[0]
-    for s in stores[1:]:
-        assert s.template is first.template
-        assert s.policy is first.policy
-    # All init_seeds must be distinct so per-store init draws differ.
-    seeds = [s.init_seed for s in stores]
-    assert len(set(seeds)) == len(seeds)
+def test_homogeneous_scenario_uses_graph_engine(homogeneous_module):
+    """Homogeneous example must be a graph-mode scenario with multiple nodes."""
+    scenario = homogeneous_module.scenario
+    assert scenario.is_graph, "homogeneous example must be a graph-mode scenario"
+    assert len(scenario.nodes) >= 2, "homogeneous example must have at least 2 nodes"
+    assert len(scenario.edges) >= 1, "homogeneous example must have at least 1 edge"
+
+
+def test_homogeneous_has_multiple_intermediate_nodes(homogeneous_module):
+    """Multiple shops (IntermediateNodes) share one policy class in homogeneous example."""
+    scenario = homogeneous_module.scenario
+    shops = [ni for ni in scenario.nodes if isinstance(ni.node, IntermediateNode)]
+    assert len(shops) >= 2, "homogeneous example must have at least 2 shop nodes"
+    # All shops share the same policy class (homogeneous = same policy config).
+    policy_classes = {type(ni.policy).__name__ for ni in shops}
+    assert len(policy_classes) == 1, f"all shop nodes should share one policy class; got {policy_classes}"
+    # All shop init_seeds must be distinct so per-node init draws differ.
+    seeds = [ni.init_seed for ni in shops]
+    assert len(set(seeds)) == len(seeds), "shop init_seeds must be distinct"
 
 
 def test_homogeneous_runs_end_to_end(homogeneous_module):
     """Runner produces a run-log with the expected top-level shape."""
     scenario = homogeneous_module.scenario
     run_log = Runner(scenario).run()
-    assert {"global", "stores"} <= set(run_log.keys())
-    assert len(run_log["stores"]) == len(scenario.stores)
+    assert {"global", "ticks", "n_steps"} <= set(run_log.keys())
+    assert run_log["n_steps"] == scenario.n_steps
+    assert len(run_log["ticks"]) == scenario.n_steps
     assert (
         len(run_log["global"]["time"]["simulation_step"]) == scenario.n_steps + 1
     )
@@ -82,59 +91,62 @@ def test_paired_exposes_scenario_symbol(paired_module):
     assert isinstance(paired_module.scenario, Scenario)
 
 
-def test_paired_scenario_uses_paired_helper(paired_module):
-    """``paired(...)`` produces interleaved ``[A, B, A, B, ...]`` stores."""
-    stores = paired_module.scenario.stores
-    assert len(stores) % 2 == 0 and len(stores) >= 2
-    # Both policies appear; the two policy slots within a pair differ.
-    for i in range(0, len(stores), 2):
-        a, b = stores[i], stores[i + 1]
-        assert a.policy is not b.policy
-        assert a.init_seed == b.init_seed
-        assert a.template is b.template
+def test_paired_scenario_uses_graph_engine(paired_module):
+    """Paired example must be a graph-mode scenario."""
+    scenario = paired_module.scenario
+    assert scenario.is_graph, "paired example must be a graph-mode scenario"
+    # Must have an even number of shops for A/B pairing.
+    shops = [ni for ni in scenario.nodes if isinstance(ni.node, IntermediateNode)]
+    assert len(shops) >= 2
+    assert len(shops) % 2 == 0, "paired example must have even number of shops"
 
 
 def test_paired_runs_end_to_end(paired_module):
+    """Runner produces a graph-mode run-log with expected shape."""
     scenario = paired_module.scenario
     run_log = Runner(scenario).run()
-    assert len(run_log["stores"]) == len(scenario.stores)
+    assert {"global", "ticks", "n_steps"} <= set(run_log.keys())
+    assert run_log["n_steps"] == scenario.n_steps
     assert (
         len(run_log["global"]["time"]["simulation_step"]) == scenario.n_steps + 1
     )
 
 
-def test_paired_stores_share_step0_state(paired_module):
-    """CRN signal: each pair's two stores start step-0 bit-identical.
+def test_paired_policy_groups_attach_distinct_policies(paired_module):
+    """Both policy groups are present and distinguishable among shop nodes."""
+    scenario = paired_module.scenario
+    shops = [ni for ni in scenario.nodes if isinstance(ni.node, IntermediateNode)]
+    # Collect distinct policy types (should be 2: one per group).
+    policy_types = {type(ni.policy).__name__ for ni in shops}
+    assert len(policy_types) == 2, (
+        f"paired example should have 2 distinct shop policy types; got {policy_types}"
+    )
 
-    ``paired(...)`` shares ``(template, init_seed)`` across each pair, so
-    init-rng-driven state (capacity, active SKU set, initial inventory)
-    must match within a pair regardless of attached policy.
+
+def test_paired_crn_seeds_shared_across_groups(paired_module):
+    """CRN: each A/B shop pair must share init_seed (same world, different policy).
+
+    Both policy groups are built from the same seed structure — only the
+    policy class differs. This is the CRN signal that makes paired comparison
+    valid.
     """
     scenario = paired_module.scenario
-    run_log = Runner(scenario).run()
-    stores = run_log["stores"]
-    for i in range(0, len(stores), 2):
-        a, b = stores[i], stores[i + 1]
-        assert a["step0_capacity"] == b["step0_capacity"]
-        assert a["step0_inventory"] == b["step0_inventory"]
-        assert a["step0_active_items"] == b["step0_active_items"]
-        # Step-0 balance is set by the same template draw, so it matches too.
-        assert a["balance"][0] == b["balance"][0]
-
-
-def test_paired_policy_groups_attach_distinct_policies(paired_module):
-    """Both ``HeuristicPolicy`` groups are present and distinguishable."""
-    stores = paired_module.scenario.stores
-    policies_a = {id(stores[i].policy) for i in range(0, len(stores), 2)}
-    policies_b = {id(stores[i].policy) for i in range(1, len(stores), 2)}
-    assert len(policies_a) == 1, "all 'A' slots should share one policy object"
-    assert len(policies_b) == 1, "all 'B' slots should share one policy object"
-    assert policies_a.isdisjoint(policies_b)
-    # Both policies are HeuristicPolicy instances by construction in the example.
-    a_policy = stores[0].policy
-    b_policy = stores[1].policy
-    assert type(a_policy).__name__ == "HeuristicPolicy"
-    assert type(b_policy).__name__ == "HeuristicPolicy"
+    shops = [ni for ni in scenario.nodes if isinstance(ni.node, IntermediateNode)]
+    # Group shops by pair index (pair0-a-shop, pair0-b-shop, pair1-a-shop, ...)
+    # Seeds of each A/B pair should match.
+    from collections import defaultdict
+    pair_seeds: dict[int, list[int]] = defaultdict(list)
+    for ni in shops:
+        # Node IDs follow pattern: pair<N>-<label>-shop
+        parts = ni.node.id.split("-")
+        if len(parts) >= 3 and parts[0].startswith("pair"):
+            pair_idx = int(parts[0][4:])
+            pair_seeds[pair_idx].append(ni.init_seed)
+    assert len(pair_seeds) >= 1, "expected at least one CRN pair"
+    for idx, seeds in pair_seeds.items():
+        assert len(set(seeds)) == 1, (
+            f"pair {idx}: A and B shops should share init_seed for CRN; got {seeds}"
+        )
 
 
 # ----------------------------------------------------------------- main.py
@@ -171,7 +183,9 @@ def test_main_runs_homogeneous_example(tmp_path):
     with open(output / "config" / "scenario.json") as f:
         payload = json.load(f)
     assert "world_seed" in payload
-    assert "stores" in payload
+    # Graph-mode scenarios carry "nodes" and "edges" instead of "stores".
+    assert "nodes" in payload, "graph-mode scenario JSON must include 'nodes'"
+    assert "edges" in payload, "graph-mode scenario JSON must include 'edges'"
 
 
 def test_main_runs_paired_example(tmp_path):

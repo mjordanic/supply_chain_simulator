@@ -1,6 +1,6 @@
 # Central table + sequential FCFS allocation contract
 
-Status: Proposed
+Status: Accepted
 
 Within one tick, multiple buyers at the same echelon level compete for limited upstream inventory. The allocation mechanism determines how that inventory is divided when demand exceeds supply.
 

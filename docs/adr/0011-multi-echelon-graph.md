@@ -1,6 +1,6 @@
 # Multi-echelon graph as the core simulation model
 
-Status: Proposed
+Status: Accepted
 
 The simulator previously modelled each actor as an independent `Store` that consumed demand from `Market.sample_demand` and placed orders into thin air. Every order was implicitly accepted in full; no upstream actor ever decremented inventory or received payment. This restricted the questions the simulator could answer — supply contention, supplier-side economics, and structural variation between echelons were all inexpressible.
 

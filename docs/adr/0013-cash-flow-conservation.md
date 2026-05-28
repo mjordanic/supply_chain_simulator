@@ -1,6 +1,6 @@
 # Cash flow conservation across nodes
 
-Status: Proposed
+Status: Accepted
 
 The single-store simulator had implicit cash flow: `Store.balance` tracked a retailer's profit-and-loss, but there was no upstream actor receiving payment. Orders were "anonymous lambdas" — inventory materialised at `unit_cost` without a supplier balance ever changing. This made it impossible to model supplier-side economics or reason about system-wide cash conservation.
 

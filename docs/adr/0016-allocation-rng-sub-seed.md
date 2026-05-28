@@ -1,6 +1,6 @@
 # RNG/CRN extension: the `allocation` sub-seed stream
 
-Status: Proposed
+Status: Accepted
 
 The existing CRN seeding contract (ADR 0003) fans one `episode_seed` into four independent sub-seeds (`assortment`, `capacity`, `balance`, `world`) via a multiply-add-mask formula in `src/sim/episode_sampler._derive_seed`. The `world_seed` sub-seed drives the shared `world_rng` consumed by `Market`, `EventEngine`, `ItemRegistry`, and per-store demand sampling.
 

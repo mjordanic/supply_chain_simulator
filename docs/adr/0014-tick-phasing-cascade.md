@@ -1,6 +1,6 @@
 # Tick phasing as upward cascade by echelon level
 
-Status: Proposed
+Status: Accepted
 
 The single-store simulator had a simple two-phase tick: world-advance (market, events, lifecycle) then per-store observe-decide-settle. With multiple echelons, a principled scheduling rule is needed: when a demand-sink buys from an intermediate, should the intermediate have already decided its upstream orders for this tick? The cascade direction determines what information flows within a tick vs. across ticks.
 

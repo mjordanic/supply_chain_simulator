@@ -1,6 +1,6 @@
 # Demand-sinks as the demand source; Market shrinks to a multiplier engine
 
-Status: Proposed
+Status: Accepted
 
 ADRs 0001–0003 established the demand model for the single-store era: `Market.sample_demand(pid, store, price)` drew one random base demand and composed it with lifecycle stage, per-store freshness, seasonality, promotion boost, and cross-product factors. The `Market` owned the full demand-sampling contract and was the mandatory demand source for every `Store`.
 
