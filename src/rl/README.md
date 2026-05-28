@@ -35,7 +35,7 @@ The `Actor` and `Critic` boundary in `agents/ppo.py` is the only place a future 
 
 ## Observation and action layout
 
-For `K_active = 5` (default), the flat observation has length `K_active * 14 + 4 = 74`:
+For `K_active = 5` (default), the flat observation has length `K_active * 18 + 4 = 94` (`N_PER_SKU = 18`, `N_GLOBAL = 4`):
 
 | Index in slot | Feature | Range |
 | --- | --- | --- |
@@ -49,10 +49,16 @@ For `K_active = 5` (default), the flat observation has length `K_active * 14 + 4
 | 11 | log1p(ticks since activation) / log1p(360) | [0, 1] |
 | 12 | in-season flag for the current month | {0, 1} |
 | 13 | demand-units inventory: `clip(inv / rate, 0, max_lt) / max_lt` | [0, 1] |
+| 14 | supplier_count / max_supplier_count | [0, 1] | central-table snapshot |
+| 15 | min offered price / MSRP | [0, ∞) | central-table snapshot |
+| 16 | mean lead time / max lead time | [0, 1] | central-table snapshot |
+| 17 | mean recent fill rate | [0, 1] | central-table snapshot |
+
+Slots 14–17 are the **central-table snapshot block** (added with the multi-echelon migration): per product slot the env reads `central_table.snapshot_for_buyer(pid)` for the trainable node's direct suppliers, so the agent sees live upstream availability, price, lead time, and fill rate. When no central table is present they default to zero.
 
 Global block (appended once after all per-SKU slots): `cash / initial_cash`, `total_inventory / capacity`, `sin(2π·step/360)`, `cos(2π·step/360)`.
 
-Action: `2 * K_active` continuous values in `[-1, 1]`. First `K_active` are price multipliers (`[-1, 1]` → `[0.5, 1.5]` × MSRP); second `K_active` are order fractions (`[-1, 1]` → `[0, 1]` × per-SKU free space). `activate`, `deactivate`, and `promotions` are forced to empty for the duration of every episode — the env locks the assortment at reset so the agent's job is pricing and ordering only.
+Action: `2 * K_active` continuous values in `[-1, 1]`. First `K_active` are price multipliers (`[-1, 1]` → `[0.5, 1.5]` × MSRP); second `K_active` are order quantities, decoded order-up-to style (lead-times-of-demand) and split across the slot's suppliers by `decode_action`. `activate`, `deactivate`, and `promotions` are empty for the duration of every episode — the env locks the assortment at reset so the agent's job is pricing and ordering only.
 
 ## Quickstart
 
@@ -239,19 +245,18 @@ Use the comparison notebook to spot regimes the policy fails in (outliers below 
 
 ## How the env relates to `Runner`
 
-`RLEnv.step()` reuses the *exact* tick order from `Runner.run()`:
+`reset()` builds a degenerate three-tier graph for the episode — one `FactoryNode("F_<pid>")` per active SKU → one trainable `IntermediateNode("S")` → one `DemandSinkNode("D_<pid>")` per active SKU — and calls `build_world(scenario, policy_overrides={"S": rl_policy})`, where `rl_policy` is an `RLIntermediatePolicy` shim (`src/sim/policy.py`). `RLEnv.step()` drives the graph engine's two-phase tick API in the seam between phases:
 
-1. `market.tick()`
-2. `event_engine.tick(market)`
-3. `item_registry.tick()`
-4. Decode action → set on `RLPolicy` shim (`src/sim/policy.py`)
-5. `store.decide(store.observe(...))`
-6. Dispatch orders (schedule delivery callbacks with adjusted lead time)
-7. Settle demand for every catalog product (CRN cleanliness — demand is sampled for every catalog product each tick, not only the active subset, so swapping policies leaves the world stream untouched)
+1. `sim.tick_world()` — advance market / events / item lifecycle; publish all seller offers to the central table.
+2. `encode_observation(node_S, market, registry, central_table, …)` — read the trainable node's state plus the central-table snapshot.
+3. `decode_action(...)` → `RLIntermediatePolicy.set_pending_action(...)` — inject the agent's pre-decoded per-supplier order/price action.
+4. `sim.tick_decide_and_settle(...)` — run the phase cascade: `S.policy.decide()` returns the pending action, the FCFS allocator settles trades against the central table, deliveries schedule at `current_tick + lead_time`, and demand sinks consume.
 
-The reward each tick is `balance_after − balance_before`. Total episode return equals the sum of per-tick balance deltas, which is exactly the `net_profit` metric reported by `aggregate_episode(...)`. This is why `eval/paired_uplift` is computed on `net_profit`.
+Demand is sampled for *every* catalog product each tick (not only the active subset), so swapping policies leaves the world stream untouched — the CRN cleanliness property.
 
-`Runner` itself is not modified by anything in `src/rl/`; the same simulator powers both batch scenario runs and RL episodes.
+The reward each tick is node `S`'s `cash` delta (`cash_after − cash_before`). Total episode return equals the sum of per-tick cash deltas, which is the `net_profit` proxy reported by `evaluate(...)`. This is why `eval/paired_uplift` is computed on `net_profit`.
+
+`Runner` itself is not modified by anything in `src/rl/`; the same graph simulator powers both batch scenario runs and RL episodes. The baseline arm of the CRN eval runs `OrderUpToPolicy` through the identical path via `build_world(scenario, policy_overrides={"S": baseline_policy})`.
 
 ## Further reading
 

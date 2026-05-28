@@ -145,19 +145,29 @@ world = builder.build(n_items=15)
 
 ## Wiring into a Scenario
 
+The LLM produces a `World` (catalog + market + store templates); `world_to_graph` (`src/sim/world.py`) synthesises a default multi-echelon topology from it — one `factory → shop → sink-per-product` sub-graph per store template. It returns `{"node_instances": [...], "edges": [...]}` with policies left unset, so attach a policy to each node by type before assembling the `Scenario`:
+
 ```python
 from datetime import datetime
-from src.sim.policy import OrderUpToPolicy
-from src.sim.scenario import (
-    DisruptionParams,
-    ItemLifecycleParams,
-    Scenario,
-    make_stores,
-)
 from src.sim.distributions import Constant
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import (
+    DefaultDemandSinkPolicy, OrderUpToPolicy, StaticFactoryPolicy,
+)
+from src.sim.scenario import DisruptionParams, ItemLifecycleParams, Scenario
+from src.sim.world import world_to_graph
 
-template = next(iter(world.store_templates.values()))   # or pick by key
-policy = OrderUpToPolicy(policy_seed=1000)
+topology = world_to_graph(world, sink_density=1.0)   # every product gets a sink
+
+for i, ni in enumerate(topology["node_instances"]):
+    node = ni.node
+    if isinstance(node, FactoryNode):
+        ni.policy = node.policy = StaticFactoryPolicy(
+            capacity_per_tick=node.capacity_per_tick, unit_cost=node.unit_cost)
+    elif isinstance(node, IntermediateNode):
+        ni.policy = node.policy = OrderUpToPolicy(policy_seed=1000 + i)
+    elif isinstance(node, DemandSinkNode):
+        ni.policy = node.policy = DefaultDemandSinkPolicy(policy_seed=2000 + i)
 
 _STAGES = ["introduction", "growth", "maturity", "decline", "dead"]
 
@@ -176,12 +186,16 @@ scenario = Scenario(
         init_stage="maturity",
         default_stage_change_probs={s: 0.0 for s in _STAGES},
     ),
-    stores=make_stores([(template, 1 + i, policy) for i in range(5)]),
+    stores=[],
+    nodes=topology["node_instances"],
+    edges=topology["edges"],
     n_steps=100,
     start_date=datetime(2024, 1, 1),
     world_seed=42,
 )
 ```
+
+`scenarios/example_llm_world_offline.py` runs this exact path end-to-end with a `CannedClient` (no API key).
 
 ## Test seam
 

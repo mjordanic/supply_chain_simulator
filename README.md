@@ -1,8 +1,8 @@
 # Supply Chain Simulator
 
-A small, hackable supply-chain simulator. Multiple stores share a single world — regional supply and demand, seasonal cycles, product life-cycles, cross-product correlations, and stochastic disruption events (natural disasters, economic crises, pandemics). Each store runs its own decision policy: it receives an observation every tick (inventory, sales history, prices, market signals) and returns actions (orders, prices, promotions, assortment changes).
+A small, hackable **multi-echelon** supply-chain simulator. A scenario is a validated directed acyclic graph of typed nodes — factories produce, intermediate nodes (warehouses / shops) hold inventory and route orders across multiple upstream suppliers, and demand sinks generate the only new cash in the system — all sharing one world: regional supply and demand, seasonal cycles, product life-cycles, cross-product correlations, and stochastic disruption events (natural disasters, economic crises, pandemics). A live central offer book lets buyers route against real-time supplier availability; orders settle through a first-come-first-served allocator and arrive after a physical lead time. Each node runs its own decision policy.
 
-The simulator ships with a family of textbook inventory policies — `OrderUpToPolicy` (s,S), `ReorderPointPolicy` (s,Q), and two periodic variants — that double as ready-made baselines for evaluating custom policies. Three add-ons build on top of the simulator: an **LLM world generator** that drafts realistic catalogs and markets from a domain prompt, a **hyperparameter tuner** built on Optuna, and a **PPO reinforcement-learning stack** that trains a continuous-control policy against the textbook baseline using Common Random Numbers.
+The simulator ships with a family of textbook inventory policies — `OrderUpToPolicy` (s,S), `ReorderPointPolicy` (s,Q), and two periodic variants, all lifted to multi-supplier routing — that double as ready-made baselines for evaluating custom policies. Three add-ons build on top of the simulator: an **LLM world generator** that drafts realistic catalogs and markets from a domain prompt, a **hyperparameter tuner** built on Optuna, and a **PPO reinforcement-learning stack** that trains a continuous-control policy against the textbook baseline using Common Random Numbers.
 
 It is a demo project — the goal is to be readable and easy to extend, not production-grade.
 
@@ -16,13 +16,13 @@ uv run python main.py scenarios/example_homogeneous.py # run a scenario
 uv run pytest                                          # tests
 ```
 
-Outputs land under `data/example_homogeneous/` (parquet + JSON + PNG). The first scenario uses a synthetic catalog and needs no API key; `scenarios/example_llm_world.py` requires `OPENAI_API_KEY` on first run (cached afterwards).
+Outputs land under `data/example_homogeneous/` (parquet + JSON + PNG). All the graph-engine examples (`example_chain_three_node`, `example_two_factories_two_shops`, `example_homogeneous`, `example_paired_comparison`, `example_llm_world_offline`) use synthetic or canned catalogs and need no API key.
 
 ## What's inside
 
 ### Simulator and policies (`src/sim/`)
 
-The simulator core. A scenario bundles a product catalog, a market, stochastic disruption events, and a list of stores running their own decision policies. Every tick each store observes (inventory, sales, prices, market signals) and acts (orders, prices, promotions). Custom policies subclass `Policy` and override one method. Four textbook inventory rules ship with the repo — `OrderUpToPolicy` (s,S), `ReorderPointPolicy` (s,Q), and two periodic variants — ready to drop in as baselines.
+The simulator core. A scenario bundles a product catalog, a market, stochastic disruption events, and a graph of typed nodes (`FactoryNode` → `IntermediateNode` → `DemandSinkNode`) wired by `EdgeSpec` supply edges, each node running its own decision policy. Every tick runs as an upward cascade by echelon level: sellers publish offers to a live central table, buyers observe and decide, the FCFS allocator settles trades, and deliveries arrive after their lead time. Custom policies subclass the `NodePolicy` ABC matching their node type and override `decide`. Four textbook inventory rules ship with the repo — `OrderUpToPolicy` (s,S), `ReorderPointPolicy` (s,Q), and two periodic variants, all with multi-supplier routing — ready to drop in as baselines.
 
 ![Equity composition and cumulative P&L](docs/images/sim_equity_composition.png)
 

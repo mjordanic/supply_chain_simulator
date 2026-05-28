@@ -1,13 +1,17 @@
 # `src/sim/` — Simulator core
 
-The discrete-event simulator: catalog, market, stores, policies, item life-cycle, freshness curves, and the data exporter that persists run results. Every other sub-package (`src/llm/`, `src/tuning/`, `src/rl/`) builds on top of the primitives defined here.
+The discrete-event, **multi-echelon** supply-chain simulator: a validated DAG of typed
+nodes (factories → intermediates → demand sinks), a live central offer book,
+FCFS allocation, market dynamics, item life-cycle, freshness curves, and the data
+exporter that persists run results. Every other sub-package (`src/llm/`,
+`src/tuning/`, `src/rl/`) builds on top of the primitives defined here.
 
 ## Contents
 
 1. [Layout](#layout)
 2. [Concepts](#concepts)
 3. [Running a scenario](#running-a-scenario)
-4. [Authoring a scenario](#authoring-a-scenario)
+4. [Authoring a graph scenario](#authoring-a-graph-scenario)
 5. [Output layout](#output-layout)
 6. [Policy reference](#policy-reference)
 7. [Example scenarios](#example-scenarios)
@@ -19,32 +23,42 @@ The discrete-event simulator: catalog, market, stores, policies, item life-cycle
 
 ```
 src/sim/
-  scenario.py            Scenario dataclass + load_catalog() / make_stores() helpers
+  node.py                Node ABC + FactoryNode / IntermediateNode / DemandSinkNode
+  graph.py               EdgeSpec + Graph (DAG validation, levels, topology queries) + build_graph
+  central_table.py       CentralTable live offer book + Offer (fill-rate EMA)
+  allocation.py          execute_buy (FCFS primitive) + shuffle_buyers + AllocationResult
+  policy.py              NodePolicy ABCs + concrete node policies + TextbookReorderPolicy family
   runner.py              Runner + Simulation / build_world / TickResult (two-phase tick API)
-  store.py               Store with full accounting (delegates step-0 setup to StoreInitializer)
-  store_initializer.py   pure init_store_state seam (bit-identity contract)
-  policy.py              Policy ABC + HeuristicPolicy + TextbookReorderPolicy family
-  market.py              regional demand/supply (stage × freshness × season × promo × cross)
-  event_engine.py        stochastic disruptions + scheduled deliveries
-  item_registry.py       catalog + per-item lifecycle/freshness/stock-share state
+  market.py              regional demand/supply; demand_multiplier(pid, region, tick)
+  event_engine.py        stochastic disruptions + scheduled delivery callbacks
+  item_registry.py       catalog + per-item global lifecycle stage + freshness params
   lifecycle_clock.py     pure advance_stage() over [introduction, growth, maturity, decline, dead]
   freshness_curve.py     pure m(τ) = 1 + α · exp(−τ / β) multiplier
+  observation.py         per-node observation builders handed to policies each tick
   distributions.py       Constant / Uniform / Normal / Choice / LogUniform
   metrics.py             RunSlice + aggregate_episode + KPI helpers (shared with tuning + RL)
-  episode_sampler.py     EpisodeSpec + sample_episode + default-params factories
-  world.py               World dataclass (catalog + market + store_templates) + JSON I/O
+  episode_sampler.py     EpisodeSpec + sample_episode + default-params factories (5 sub-seeds)
+  scenario.py            Scenario dataclass + load_catalog() / make_nodes() helpers
+  world.py               World dataclass (catalog + market + store_templates) + world_to_graph
   world_loader.py        cache_path → archetype → synthetic fallback resolver
   data_exporter.py       parquet + JSON + PNG writer
 ```
 
 ## Concepts
 
-- **Scenario** — frozen experiment inputs: catalog, market, disruption, item lifecycle, list of `(template, init_seed, policy)` store instances, `n_steps`, `start_date`, `world_seed`.
-- **StoreTemplate** — reusable store profile (region, capacity, balance, lead time, fees, …) plus an optional `init_active_products` roster and an `init_freshness` mode (`"baseline"` for established stores, `"fresh"` for grand-opening). The pair `(template, init_seed)` is the bit-identical step-0 contract: two stores built from the same pair start identical regardless of attached policy.
-- **Policy** — decision logic attached to a store. Every tick it receives an observation and returns an action dict with keys `order`, `price`, `activate`, `deactivate`, `promotions`. `OrderUpToPolicy` is the textbook (s,S) continuous-review policy used as the CRN comparison anchor for RL; `HeuristicPolicy` is the kitchen-sink demonstrator with 20+ kwargs.
-- **Two-layer lifecycle** — every product has a global stage in `[introduction, growth, maturity, decline, dead]` advanced by `LifecycleClock` against the per-stage `stage_change_probs` table; on top of that, every `(store, product)` pair has a freshness curve `m(τ) = 1 + α · exp(−τ / β)` that resets on each `Store.activate_item`.
-- **RNG split** — `world_rng` (market, events, item lifecycle), `policy_rng` (policy decisions), and `init_rng` (per-store initial state) never share state. This is what lets policies be compared on identical worlds.
-- **DataExporter** — consumes the run log and writes parquet/JSON/PNG under `data/<scenario_stem>/`.
+- **Node** (`Node` ABC) — the actor in the supply-chain graph. Three concrete subtypes:
+  - **`FactoryNode`** — produces one product per tick at `unit_cost`; sells at `list_price` == `unit_cost` (zero-margin, ADR 0013). Echelon level 0, the entry point of inventory.
+  - **`IntermediateNode`** — warehouse / DC / shop. Holds multi-product `inventory`, sets `list_prices`, imposes per-product `min_order_imposed`, routes orders across multiple upstream suppliers, tracks `pending` (per-supplier × pid in-transit). Warehouse-vs-shop is a free-form `tags` label, never branches mechanics.
+  - **`DemandSinkNode`** — the only source of new cash. Bound to one `product_id`; each tick earns `income_rate`, computes a demand target, and buys from intermediates. Unmet demand (no supplier stock or no cash) is a lost sale.
+
+  Nodes are *not* frozen — the engine mutates `inventory` / `cash` / `pending` in place. Construction consumes only the per-node `init_rng`, so two nodes built from the same `(subclass, init_seed)` start bit-identical regardless of attached policy. See ADR 0011.
+- **Graph** + **EdgeSpec** — `build_graph(node_ids, edges)` validates a DAG (raises on cycles, unreachable nodes, or same-level supplier links) and computes echelon `levels` via longest-path-from-any-factory. `EdgeSpec(supplier_id, buyer_id, default_lead_time, per_product_lead_time=None)` is a directed supply edge with an optional per-product lead-time override. Topology queries: `suppliers_of`, `buyers_of`, `lead_time`.
+- **CentralTable** + **Offer** — a live, globally-visible offer book. At the start of each tick every seller `publish`es an `Offer(available_qty, list_price, min_order, fill_rate_recent)`; as allocations land the allocator `commit`s, decrementing `available_qty` live and updating a qty-weighted EMA on `fill_rate_recent` (10-tick window). `snapshot_for_buyer(pid)` reflects prior buyers' allocations *within the same phase*, so routing accounts for live supply depletion. See ADR 0012.
+- **Allocation** — `execute_buy(buyer, supplier, pid, qty_requested, table, cash_ledger) -> AllocationResult` is the single FCFS primitive: two-layer min-order rejection (supplier-imposed + buyer-side policy floor), clamp by live `available_qty` / buyer cash / buyer remaining capacity, `table.commit`, cash transfer, and a delivery callback scheduled at `current_tick + lead_time`. Physical lead time still delays arrival. `shuffle_buyers(buyers, allocation_rng)` is the deterministic per-phase buyer shuffle. See ADR 0012, ADR 0016.
+- **Phase cascade (tick phasing)** — one tick is a deterministic upward cascade by echelon level: `tick_world` (market multiplier → events → item lifecycle) → publish all offers → for each level p from 1..max: shuffle buyers → per-buyer observe → decide → `execute_buy` per line → factory produce → fire delivery callbacks → consume demand sinks. Demand pulls up the chain in natural order. See ADR 0014.
+- **Two-layer lifecycle** — every product has a global PLC stage in `[introduction, growth, maturity, decline, dead]` advanced by `LifecycleClock` against per-stage `stage_change_probs`; on top, every `(sink, product)` pair has a freshness curve `m(τ) = 1 + α · exp(−τ / β)` keyed on `DemandSinkNode.activation_tick`. Composed multiplicatively with `Market.demand_multiplier` inside `DemandSinkNode.demand_target`. See ADR 0001.
+- **Four-stream RNG split** — `world_rng` (market, events, lifecycle, demand draws), `allocation_rng` (per-phase buyer shuffle, ADR 0016), `policy_rng` (one per policy instance), and `init_rng` (one per node, step-0 state) never share state. This is what makes CRN comparison correct.
+- **DataExporter** — consumes the run log + scenario and writes parquet/JSON/PNG under `data/<scenario_stem>/`.
 
 For full domain definitions see [`CONTEXT.md`](../../CONTEXT.md).
 
@@ -63,7 +77,7 @@ uv run python main.py scenarios/example_paired_comparison.py --output /tmp/run
 Each example scenario is also independently runnable:
 
 ```bash
-uv run python scenarios/example_homogeneous.py
+uv run python scenarios/example_chain_three_node.py
 ```
 
 Errors `main.py` emits on a bad scenario path:
@@ -72,9 +86,11 @@ Errors `main.py` emits on a bad scenario path:
 - `main.py: load_scenario_from_path: <path> does not expose a top-level \`scenario\` attribute` — module loaded but no `scenario =` at module level
 - `main.py: load_scenario_from_path: <path>.scenario is <type>, expected Scenario` — wrong type
 
-## Authoring a scenario
+`Runner` requires a **graph-mode** scenario (`scenario.is_graph == True`, i.e. `nodes` is non-empty). The legacy `stores`-based fields remain on `Scenario` for backward compatibility but are ignored by the engine.
 
-A scenario file is a Python module that constructs a `Scenario` and binds it to the name `scenario` at module level.
+## Authoring a graph scenario
+
+A scenario file is a Python module that constructs a `Scenario` with `nodes` + `edges` and binds it to the name `scenario` at module level.
 
 **1. Catalog.** `load_catalog(items)` accepts a list of dicts and assigns stable `P{i:04d}` ids. Every dict can additionally set per-`Ware` lifecycle / freshness / stock overrides; if omitted, the corresponding default on `ItemLifecycleParams` applies:
 
@@ -97,313 +113,295 @@ catalog = load_catalog([
         # "freshness_decay": 30.0,
         # "init_stock_share": 2.0,       # weight for initial stock allocation
     },
-    {
-        "name": "Widget B",
-        "category": "Widgets",
-        "related_products": [["Widget A", 0.5]],   # cross-product correlation in [0, 1]
-        "base_price": 30.0,
-        "unit_cost": 18.0,
-        "seasonality": "all_season",
-    },
 ])
+pid = catalog[0].product_id   # "P0000"
 ```
 
-**2. Market, disruption, lifecycle.** Flat dataclasses; stochastic fields hold `Distribution` objects (`Constant`, `Uniform`, `Normal`, `Choice`, `LogUniform`):
+**2. Market, disruption, lifecycle.** Flat dataclasses; stochastic fields hold `Distribution` objects (`Constant`, `Uniform`, `Normal`, `Choice`, `LogUniform`). For a single-product chain the market can be a no-op (flat multipliers):
 
 ```python
-from src.sim.distributions import Constant, Normal, Uniform
+from src.sim.distributions import Constant, Normal
 from src.sim.scenario import DisruptionParams, ItemLifecycleParams, MarketParams
-
-market = MarketParams(
-    cycle_len=365,
-    cycle_amp=0.1,
-    init_demand=100.0,
-    init_supply=100.0,
-    peak_factor=1.2,
-    off_factor=0.7,
-    season_months={"all_season": list(range(1, 13))},
-    regions=["US"],
-    correlation=0.7,
-    trend_update_interval=20,
-    min_value=20.0,
-    max_value=200.0,
-    stage_multipliers={"introduction": 0.7, "growth": 1.5, "maturity": 1.0,
-                       "decline": 0.2, "dead": 0.05},
-    price_elasticity=-1.5,
-    promo_multiplier=1.0,
-    demand_factor_min=0.1,
-    supply_factor_min=0.01,
-    cross_inv_lo=0.3,
-    cross_inv_hi=0.7,
-    cross_factor_range=(0.3, 1.6),
-    trend=Constant(1.0),
-    demand_shock=Normal(0.0, 5.0),
-    supply_shock=Normal(0.0, 5.0),
-    base_demand=Uniform(2, 8),
-)
-
-disruption = DisruptionParams(
-    event_prob=0.05,
-    types=["natural_disaster", "economic_crisis"],
-    regions=["US"],
-    severity=Constant(1.0),
-    duration=Constant(3),
-)
 
 _STAGES = ["introduction", "growth", "maturity", "decline", "dead"]
 lifecycle = ItemLifecycleParams(
     stages=_STAGES,
     init_stage="maturity",
     # Per-current-stage transition table consumed by LifecycleClock.advance_stage.
-    # Set every entry to 0.0 to disable transitions; set "dead" to 0.0 specifically
-    # for strict-terminal lifecycle. Per-Ware Ware.stage_change_probs override.
+    # All-zero ⇒ products stay at init_stage (strict-terminal lifecycle).
     default_stage_change_probs={s: 0.0 for s in _STAGES},
-    # Catalog-wide freshness defaults; per-Ware Ware.freshness_alpha / freshness_decay override.
-    # alpha=0 collapses the curve to identically 1 (no hype effect).
-    default_freshness_alpha=0.0,
+    default_freshness_alpha=0.0,   # 0 collapses the freshness curve to identically 1
     default_freshness_decay=1.0,
-    # Catalog-wide weight for initial-stock allocation across the active set.
-    # Per-Ware Ware.init_stock_share overrides; default 1.0 ⇒ even split.
     default_init_stock_share=1.0,
 )
+disruption = DisruptionParams(
+    event_prob=0.0, types=["natural_disaster"], regions=["US"],
+    severity=Constant(0.0), duration=Constant(1),
+)
+market = MarketParams(
+    cycle_len=365, cycle_amp=0.0, init_demand=1.0, init_supply=1.0,
+    peak_factor=1.0, off_factor=1.0, season_months={}, regions=["US"],
+    correlation=0.0, trend_update_interval=100, min_value=0.5, max_value=2.0,
+    stage_multipliers={"introduction": 1.0, "growth": 1.0, "maturity": 1.0,
+                       "decline": 1.0, "dead": 0.0},
+    price_elasticity=0.0, promo_multiplier=1.0,
+    demand_factor_min=0.1, supply_factor_min=0.01,
+    cross_inv_lo=0.3, cross_inv_hi=0.7, cross_factor_range=(0.5, 1.5),
+    trend=Constant(1.0), demand_shock=Constant(0.0), supply_shock=Constant(0.0),
+    base_demand=Constant(10),
+)
 ```
 
-**3. Store template and policy.** A template is a reusable spec; scalar fields can be replaced with a `Distribution` to randomize across stores at construction time. `init_active_products` (optional) is an explicit roster of product ids to activate at step 0; when omitted, the initializer falls back to `init_rng.sample(catalog, init_active_count)`. `init_freshness` selects between `"baseline"` (initial active SKUs skip the hype window — established store) and `"fresh"` (initial active SKUs start at `τ = 0` — grand-opening).
+**3. Build the nodes.** Construct typed `Node` instances and attach a policy to each:
 
 ```python
-from src.sim.policy import OrderUpToPolicy
-from src.sim.scenario import StoreTemplate
-
-template = StoreTemplate(
-    id="standard",
-    region="US",
-    capacity=200,
-    init_balance=10_000.0,
-    init_stock_pct=0.4,
-    delivery_lag=2,
-    holding_rate=0.005,
-    order_fee=10.0,
-    init_active_count=3,
-    # Optional explicit roster — overrides random sampling when set:
-    # init_active_products=["P0000", "P0002", "P0004"],
-    # Default "baseline" (established store); use "fresh" for grand-opening.
-    init_freshness="baseline",
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import (
+    DefaultDemandSinkPolicy, IntermediatePolicy, StaticFactoryPolicy,
 )
 
-# OrderUpToPolicy — textbook (s,S) continuous-review; the CRN comparison anchor.
-policy = OrderUpToPolicy(policy_seed=1000)
+factory = FactoryNode(
+    id="factory-1", region="US", init_seed=1,
+    produces_product_id=pid, unit_cost=12.0, capacity_per_tick=50,
+    inventory=100, list_price=12.0, cash=0.0,
+)
+factory.policy = StaticFactoryPolicy(capacity_per_tick=50, unit_cost=12.0, policy_seed=1)
+
+shop = IntermediateNode(
+    id="shop-1", region="US", init_seed=2,
+    carried_products={pid}, capacity=500, tags=["shop"],
+    inventory={pid: 20}, pending={}, list_prices={pid: 20.0},
+    min_order_imposed={pid: 0}, cash=500.0,
+)
+# SingleSupplierAdapter wraps a textbook policy to one named supplier.
+shop.policy = IntermediatePolicy.SingleSupplierAdapter(
+    supplier_id="factory-1", cover_horizon_ticks=14, safety_lead_pct_of_lag=1/3,
+    delivery_lag=2, unit_cost=12.0, list_price_out=20.0, policy_seed=2,
+)
+
+sink = DemandSinkNode(
+    id="sink-1", region="US", init_seed=3,
+    product_id=pid, demand_dist=Normal(mean=10, std=2), income_rate=200.0, cash=1000.0,
+)
+sink.policy = DefaultDemandSinkPolicy(policy_seed=3)
 ```
 
-**4. Wire stores together.** One declarative helper, `make_stores(triples)`, covers every case. The triple list *is* the roster — there is no regime abstraction above it:
+**4. Wire edges.** `EdgeSpec` is a directed supply edge with a per-edge lead time:
 
-- **Robustness sweep** (one policy across diverse stores): repeat one policy with varying `init_seed` and/or template.
-- **Paired CRN comparison** (two policies on bit-identical world data): repeat the same `(template, init_seed)` with two different policies. Pair `i` lives at indices `2i` and `2i+1`.
-- **k-way CRN comparison**: repeat the same `(template, init_seed)` with `k` different policies — same shape, no API change.
-- **Mixed roster** (e.g. `A, A, B, C, D` across `T1, T2, T3, T4, T4, T4`): just write the literal triple list.
+```python
+from src.sim.graph import EdgeSpec
 
-**5. Final assembly.** Bind to `scenario`:
+edges = [
+    EdgeSpec(supplier_id="factory-1", buyer_id="shop-1", default_lead_time=2),
+    EdgeSpec(supplier_id="shop-1",    buyer_id="sink-1", default_lead_time=1),
+]
+```
+
+Multi-supplier topologies are just more edges: give two factories an edge into the same shop and an `IntermediatePolicy` that routes across both (e.g. `OrderUpToPolicy`, which lifts the textbook rule to multi-supplier routing).
+
+**5. Final assembly.** Bind to `scenario` via `NodeInstance` (or the `make_nodes(triples)` helper). `stores=[]` keeps the legacy field empty:
 
 ```python
 from datetime import datetime
-from src.sim.scenario import Scenario, make_stores
+from src.sim.scenario import NodeInstance, Scenario
 
 scenario = Scenario(
-    catalog=catalog,
-    market=market,
-    disruption=disruption,
-    item_lifecycle=lifecycle,
-    stores=make_stores([
-        (template, 1, policy),
-        (template, 2, policy),
-        (template, 3, policy),
-    ]),
-    n_steps=50,
-    start_date=datetime(2024, 1, 1),
-    world_seed=42,
+    catalog=catalog, market=market, disruption=disruption, item_lifecycle=lifecycle,
+    stores=[],
+    nodes=[
+        NodeInstance(node=factory, init_seed=1, policy=factory.policy),
+        NodeInstance(node=shop,    init_seed=2, policy=shop.policy),
+        NodeInstance(node=sink,    init_seed=3, policy=sink.policy),
+    ],
+    edges=edges,
+    n_steps=180, start_date=datetime(2024, 1, 1), world_seed=42,
 )
 ```
 
+`make_nodes([(node, init_seed, policy), ...])` is the declarative shortcut — the triple list *is* the roster. CRN A/B comparisons are expressed by repeating the same `(node, init_seed)` structure with different policies; robustness sweeps by varying `init_seed`; mixed rosters by writing the literal list. There is no regime abstraction above it.
+
 Save under `scenarios/my_run.py` and run `uv run python main.py scenarios/my_run.py`.
+
+### From an LLM-built world
+
+`world_to_graph(world, *, sink_density=1.0)` synthesises a default factory → intermediate → sink topology from a `World.store_templates`, so LLM-generated catalogs feed graph scenarios without re-prompting. `sink_density` (in `(0, 1]`) controls how many catalog products get a demand-sink node. See `scenarios/example_llm_world_offline.py`.
 
 ## Output layout
 
-Every run produces (relative to `--output`, default `data/<stem>/`):
+`Runner(scenario).run()` returns a run log with top-level keys `n_steps`, `ticks`, `global`:
+
+- `ticks` — one entry per tick: `tick`, `node_cash`, `node_inventory` (per-node `{pid: qty}`; factories use `{"_total": qty}`), `node_pending` (per-node `{pid: in_transit}` summed across suppliers), `node_orders`.
+- `global` — `time` (`simulation_step`, `simulation_date`), `market_supply` / `market_demand` per region, and `products` (resolved freshness / lifecycle per pid).
+
+`DataExporter(scenario, run_log).export_all(output_folder)` writes (relative to `--output`, default `data/<stem>/`):
 
 ```
 data/<stem>/
   config/
-    scenario.json            full Scenario.to_json() (policies excluded — they are Python objects)
+    scenario.json            full Scenario.to_json() (policies excluded — Python objects)
   data/
-    run_log.json             per-step log with ISO-formatted datetimes
-    products.parquet         static catalog (product_id, name, category, prices, seasonality)
-    stores.parquet           static store metadata (template_id, region, init_seed, policy_type)
-    timeseries.parquet       per-step × per-store × per-product metrics
+    run_log.json             the run log above, datetimes → ISO strings
+    products.parquet         static catalog with resolved freshness_alpha/decay + init_stock_share
+    stores.parquet           static node table (node_id, node_type, region, init_seed, policy_type)
+    timeseries.parquet       per-step × per-node × per-product table
   reports/
     overview.png             regional supply/demand chart
 ```
 
-`timeseries.parquet` columns: `simulation_step`, `simulation_date`, `store_id`, `product_id`, `inventory`, `demand`, `sales`, `order_quantity`, `outstanding_orders`, `promotion_status`, `active_status`, `price`, `revenue`, `total_cost`, `holding_cost`, `profit`.
+`timeseries.parquet` columns: `simulation_step`, `simulation_date`, `store_id` (node id), `product_id`, `inventory`, `demand`, `sales`, `order_quantity`, `outstanding_orders`, `promotion_status`, `active_status`, `price`, `revenue`, `total_cost`, `holding_cost`, `profit`. For **graph-mode** runs the exporter currently populates `inventory` per `(node, product)` from the per-tick node snapshots; the richer per-product economic columns are `None` (they were produced by the retired per-store engine and are kept in the schema for backward compatibility). Cash and P&L per node are available from `run_log["ticks"][t]["node_cash"]`.
 
 ## Policy reference
 
-### Writing a custom policy
+### Policy hierarchy
 
-Subclass `Policy` and implement `decide(observation) -> action_dict`:
+`NodePolicy` is the base ABC. Three type-paired subclass ABCs match the three node types:
 
-```python
-from collections.abc import Mapping
-from typing import Any
-
-from src.sim.policy import Policy
-
-
-class MyPolicy(Policy):
-    def decide(self, observation: Mapping[str, Any]) -> dict[str, Any]:
-        # Read what the store sees this tick:
-        #   observation["inventory"]          dict[pid, int]
-        #   observation["outstanding_orders"] dict[pid, int]
-        #   observation["active_products"]    iterable of pid
-        #   observation["product_prices"]     dict[pid, float] — last-tick realised prices
-        #   observation["base_prices"]        dict[pid, float] — immutable MSRP
-        #   observation["unit_costs"]         dict[pid, float]
-        #   observation["sales"]              dict[pid, int]  — units sold this tick
-        #   observation["balance"]            float
-        #   observation["max_capacity"]       int | float
-        #   observation["current_sim_step"]   int
-        #   observation["region"]             str
-        #   observation["delivery_lags"]      dict[pid, int]
-        #   observation["related_products"]   dict[pid, list[(pid, float)]]
-        #   observation["promotions"]         dict[pid, dict]
-        return {
-            "order":       {pid: 0 for pid in observation["active_products"]},
-            "price":       observation["base_prices"],   # flat MSRP
-            "activate":    [],
-            "deactivate":  [],
-            "promotions":  {},
-        }
-```
-
-All stochastic choices should consume `self.policy_rng` (seeded from the `policy_seed` kwarg on the base class) so policy decisions never perturb the world stream.
-
-### `HeuristicPolicy`
-
-20-knob kitchen-sink demonstrator with dynamic pricing, promotions, slow-mover deactivation, and periodic catalog review. Kept for `scenarios/example_*` parameter-demo purposes.
-
-| kwarg | default | meaning |
+| ABC | `decide` signature | attached to |
 | --- | --- | --- |
-| `policy_seed` | `None` | seed for `policy_rng`; one stream per instance |
-| `min_qty` | 10 | allocator floor — anything below is rounded to 0 |
-| `init_qty_factor` | 0.3 | multiplier on free-space when sizing the first order after activation |
-| `promo_len` | 5 | promo duration in ticks (scalar or `Distribution`) |
-| `promo_cd_len` | 10 | cooldown applied after a promo expires |
-| `review_interval` | 5 | period in ticks for the catalog-review pass |
-| `promo_threshold` | 0.7 | stock-ratio above which a product becomes a promo candidate |
-| `target_active_count` | 10 | target active-SKU count for the review pass |
-| `active_margin` | 2 | tolerance band around `target_active_count` |
-| `max_activations_per_review` | `None` | cap on activations per review pass |
-| `slow_sales_limit` | 5 | "no movement in window" deactivation threshold |
-| `stock_lo_ratio` / `stock_hi_ratio` | 0.2 / 0.6 | stock-ratio band for dynamic pricing |
-| `price_up_factor` / `price_down_factor` | 1.1 / 0.9 | pricing factors when stock/trend signals fire |
-| `history_window` | 10 | rolling window for sales-trend computation |
-| `slow_mover_lookback_factor` | 6 | extended-lookback multiplier on `history_window` |
-| `trend_threshold` | 0.05 | trend magnitude threshold for triggering price moves |
-| `cross_price_adj` | 0.05 | per-related-product price-adjustment magnitude |
-| `max_history` | 100 | bounded per-product history length |
-| `inactive_price_factor` | 0.5 | clearance multiplier for inactive products |
-| `reorder_factor` | 0.3 | stock-position threshold for reorders |
-| `qty_factor` | 0.5 | target stock-fill factor for periodic reorders |
-| `order_cd_len` | 10 | per-product order-cooldown length |
-| `order_cd_jitter` | 0.3 | jitter on the order cooldown |
-| `promo_discount` | 0.7 | discount applied during promotions (scalar or `Distribution`) |
+| `FactoryPolicy` | `decide(obs_factory)` | `FactoryNode` |
+| `IntermediatePolicy` | `decide(obs_intermediate, central_table)` | `IntermediateNode` |
+| `DemandSinkPolicy` | `decide(obs_sink, central_table)` | `DemandSinkNode` |
 
-### `TextbookReorderPolicy` family
+Each policy owns a private `policy_rng` seeded from its `policy_seed` kwarg, disjoint from `world_rng` and `allocation_rng` so policy choice never perturbs the world or allocation streams. `Policy` is kept as a one-release alias of `NodePolicy`; `HeuristicPolicy` is a **tombstone** that raises on construction (the heuristic baseline was retired in favour of the textbook family — ADR 0006).
 
-Four textbook inventory rules sharing one base class with a censored-sales rate estimator, a two-pass fair-share allocator across the capacity and cash pools, and a cash-budget "pilot order" cold-start. All four emit `activate=[]`, `deactivate=[]`, `promotions={}`, and `price[pid] = base_price[pid]` — pure inventory policies with exogenous pricing.
+### Shipped node policies
 
-Shared base-class kwargs:
+| class | base | role |
+| --- | --- | --- |
+| `StaticFactoryPolicy(*, capacity_per_tick, unit_cost, policy_seed=None)` | `FactoryPolicy` | produce a fixed quantity each tick, publish at `unit_cost` |
+| `DefaultDemandSinkPolicy(*, policy_seed=None)` | `DemandSinkPolicy` | greedy: buy the demand target from the cheapest feasible direct suppliers first |
+| `IntermediatePolicy.SingleSupplierAdapter(*, supplier_id, ...)` | `IntermediatePolicy` | route a textbook reorder policy to a single named supplier |
+| `MultiSupplierTextbookPolicy` (+ 4 concrete) | `IntermediatePolicy` | textbook reorder rules with multi-supplier routing |
+| `RLIntermediatePolicy` | `IntermediatePolicy` | shim that replays a pre-decoded action injected by the RL stack |
+
+### `TextbookReorderPolicy` family (`MultiSupplierTextbookPolicy`)
+
+Four textbook inventory rules sharing one base class: a censored-sales rate estimator over a `delivery_lag`-length rolling window, a two-pass fair-share allocator across the capacity and cash pools, a cash-budget "pilot order" cold-start, and opt-in adaptive safety stock. All four emit pure inventory decisions (`price[pid] = base_price`, no activations/promotions). Multi-supplier routing via `_split_across_suppliers` honours both min-order layers; the default strategy is cheapest-first, pluggable via the `routing_strategy` kwarg (`"cheapest_first"` / `"fill_rate_weighted"`).
+
+Shared `MultiSupplierTextbookPolicy` kwargs:
 
 | kwarg | default | meaning |
 | --- | --- | --- |
 | `policy_seed` | `None` | seed for `policy_rng` |
-| `cover_horizon_ticks` | 14 | cycle length: drives `S − s` for order-up-to. Independent of lead time (EOQ result). |
-| `safety_lead_pct_of_lag` | 1/3 | fraction of per-pid delivery lag used as effective safety horizon. `s = (lag + safety_lead_pct_of_lag × lag) × rate` |
-| `opening_budget_pct` | 0.50 | fraction of opening cash spent on the very first order, split across the K active SKUs |
-| `stockout_safety_bonus_pct_of_lag` | 0.0 | opt-in adaptive bonus added to the safety horizon when the recent window contains stockouts |
-| `min_qty` | 0 | allocator floor on non-pilot orders (textbook-pure default = 0) |
+| `cover_horizon_ticks` | 14 | cycle length driving `S − s` for order-up-to (EOQ result, independent of lead time) |
+| `safety_lead_pct_of_lag` | 1/3 | fraction of per-edge lead time used as the safety horizon: `s = (lag + pct × lag) × rate` |
+| `delivery_lag` | 2 | fallback lead time the inner policy assumes for pilot sizing |
+| `unit_cost` | 1.0 | upstream unit cost (pilot-order budgeting) |
+| `list_price_out` | 0.0 | the node's own downstream selling price |
+| `per_supplier_min_order_floor` | 0 | buyer-side min order per line (the second min-order layer) |
+| `routing_strategy` | `None` | `None`/`"cheapest_first"` or `"fill_rate_weighted"` |
 
 The four concrete variants:
 
 | class | rule | extra kwarg | notes |
 | --- | --- | --- | --- |
 | `OrderUpToPolicy` | (s,S) continuous review | — | the **CRN comparison anchor** for RL |
-| `ReorderPointPolicy` | (s,Q) continuous review | `Q` (default rate-derived from `cover_horizon_ticks`) | fixed-order-quantity variant |
+| `ReorderPointPolicy` | (s,Q) continuous review | `Q` (default rate-derived) | fixed-order-quantity variant |
 | `PeriodicOrderUpToPolicy` | (R,S) periodic review | `review_interval` (ticks) | order-up-to with a calendar trigger |
 | `PeriodicReorderPolicy` | (R,s,S) periodic review | `review_interval` (ticks) | (s,S) gated by a calendar trigger |
 
+### Writing a custom policy
+
+Subclass the ABC matching the node it drives and implement `decide`:
+
+```python
+from collections.abc import Mapping
+from typing import Any
+
+from src.sim.policy import IntermediatePolicy
+
+
+class MyIntermediatePolicy(IntermediatePolicy):
+    def decide(self, observation: Mapping[str, Any], central_table) -> dict[str, Any]:
+        orders = []
+        for pid in observation["carried_products"]:
+            # central_table.snapshot_for_buyer(pid) → [(supplier_id, Offer), ...]
+            # reflecting live supply depletion by earlier buyers this phase.
+            offers = central_table.snapshot_for_buyer(pid)
+            if offers:
+                supplier_id, _offer = min(offers, key=lambda so: so[1].list_price)
+                orders.append((supplier_id, pid, 0))   # (supplier, product, qty)
+        return {"orders": orders, "list_prices": observation["list_prices"]}
+```
+
+All stochastic choices should consume `self.policy_rng` so policy decisions never perturb the world stream.
+
 ## Example scenarios
 
-**`scenarios/example_homogeneous.py`** — three stores, one shared `HeuristicPolicy`, distinct `init_seed`s. The right starting point for population-level evaluation of a single policy.
+Graph-engine examples (no API key needed — synthetic catalogs):
+
+**`scenarios/example_chain_three_node.py`** — minimal `factory → shop → sink` chain, single product, 180 ticks. The smallest end-to-end graph; the right starting point for reading the engine. Writes to `runs/example_chain_three_node/`.
+
+```bash
+uv run python scenarios/example_chain_three_node.py
+```
+
+**`scenarios/example_two_factories_two_shops.py`** — 2 factories + 2 shops + 2 sinks. Both shops source from both factories via `OrderUpToPolicy` (cheapest-first routing). Cheap-but-slow `f-lo` depletes under demand bursts, dropping its `fill_rate_recent` — the contention signal the central table surfaces. Writes to `runs/example_two_factories_two_shops/`.
+
+```bash
+uv run python scenarios/example_two_factories_two_shops.py
+```
+
+**`scenarios/example_homogeneous.py`** — three "stores", each expanded to a `factory → shop → 5 sinks` sub-graph sharing one policy config but distinct seeds. The right starting point for population-level evaluation of a single policy.
 
 ```bash
 uv run python main.py scenarios/example_homogeneous.py
 ```
 
-**`scenarios/example_paired_comparison.py`** — two pairs (4 stores) running an aggressive vs. conservative `HeuristicPolicy` on bit-identical world data. Aggressive promotes earlier with bigger markdowns (`promo_threshold=0.30`, `promo_discount=0.6`); conservative promotes only on heavy stock with gentler markdowns (`promo_threshold=0.70`, `promo_discount=0.85`). The right starting point for a variance-reduced policy A/B test.
+**`scenarios/example_paired_comparison.py`** — paired CRN A/B: the same `(node, init_seed)` sub-graphs run `OrderUpToPolicy` vs `PeriodicOrderUpToPolicy` on bit-identical world data. The right starting point for a variance-reduced policy comparison.
 
 ```bash
 uv run python main.py scenarios/example_paired_comparison.py
 ```
 
-**`scenarios/example_llm_world.py`** — 12-item fashion-retail world built by the LLM, three stores. First run needs `OPENAI_API_KEY` and caches the world to `data/worlds/fashion_retail_12/world.json`; subsequent runs load locally.
-
-```bash
-OPENAI_API_KEY=... uv run python main.py scenarios/example_llm_world.py
-```
-
-**`scenarios/example_llm_world_offline.py`** — the same pipeline driven by a `CannedClient` that pops pre-built Pydantic payloads. Useful for inspecting payload shapes and running deterministically with no API key.
+**`scenarios/example_llm_world_offline.py`** — the LLM pipeline driven by a `CannedClient` (no API key), then `world_to_graph` to synthesise the topology. Demonstrates the LLM-world → graph path deterministically.
 
 ```bash
 uv run python main.py scenarios/example_llm_world_offline.py
 ```
 
-**`scenarios/llm_world_20.py`**, **`scenarios/llm_world_100.py`**, **`scenarios/llm_world_250.py`**, **`scenarios/llm_world_1000.py`** — larger LLM-built worlds (20, 100, 250, and 1000 items). Same cache + consent model as `example_llm_world.py`; the 1000-item scenario also rescales the LLM-authored template for the larger catalog.
+> **Note.** `scenarios/example_llm_world.py` and the batch `scenarios/llm_world_{20,100,250,1000}.py` still use the legacy `stores`/`HeuristicPolicy` path (`is_graph == False`) and are **not** runnable on the current graph engine. Use `example_llm_world_offline.py` for the LLM → graph route; the large batch scenarios are pending migration.
 
 ## Common Random Numbers and reproducibility
 
-Three independent random streams, three independent seeds:
+Four independent random streams, four independent seeds:
 
 | Seed | Stream | Used for |
 |---|---|---|
-| `Scenario.world_seed` | `world_rng` | market dynamics, disruption events, item lifecycle transitions |
-| `Policy.policy_seed` | `policy_rng` | policy decisions only (one stream per policy instance) |
-| `StoreInstance.init_seed` | `init_rng` | step-0 SKU activation and stock allocation |
+| `Scenario.world_seed` | `world_rng` | market dynamics, disruption events, lifecycle transitions, demand draws |
+| derived `_derive_seed(world_seed, "allocation")` | `allocation_rng` | per-phase buyer shuffle (ADR 0016) |
+| `NodePolicy.policy_seed` | `policy_rng` | policy decisions only (one stream per policy instance) |
+| `NodeInstance.init_seed` | `init_rng` | per-node step-0 state |
 
 Consequences:
 
 - Replaying the same `Scenario` produces the same world trajectory.
-- Two stores constructed from the same `(template, init_seed)` pair start step 0 bit-identical — the integration tests assert this on the paired-comparison example.
-- Swapping a policy on a scenario does not perturb the world stream, so per-policy outcome differences come from policy decisions alone.
+- Two nodes constructed from the same `(subclass, init_seed)` pair start step 0 bit-identical.
+- Swapping a policy on a scenario does not perturb the world or allocation streams, so per-policy outcome differences come from policy decisions alone — the property the paired-comparison and tuning/RL evaluators rely on.
+
+`build_world` deep-copies nodes so the same node templates can be reused across calls without mutation aliasing.
 
 ## Visualizing a run
 
-`notebooks/04a-deep_dive_active_only.ipynb` is a single-store deep-dive over a run's parquet + run-log artifacts: world view, store financials, decision summary, and per-product cards over the active SKUs. The four headline panels below are rendered from `data/llm_world_250/` (one store, 51-tick run over a 250-item LLM-built fashion-retail world, `OrderUpToPolicy`) — re-runnable via `uv run python scripts/render_readme_simulator_images.py`.
+`notebooks/04a-deep_dive_active_only.ipynb` is a single-store deep-dive over a run's parquet + run-log artifacts: world view, store financials, decision summary, and per-product cards over the active SKUs. The four headline panels below are rendered from the canned dataset at `data/llm_world_250/` via `uv run python scripts/render_readme_simulator_images.py`.
 
-**Market supply / demand per region.** The market dynamics every store sees, with disruption windows shaded by event type. This is the world stream that is held fixed across paired-CRN comparisons.
+**Market supply / demand per region.** The market dynamics every node sees, with disruption windows shaded by event type. This is the world stream held fixed across paired-CRN comparisons.
 
 ![Market supply and demand per region](../../docs/images/sim_market_supply_demand.png)
 
-**Equity composition + cumulative P&L.** Stacked equity (cash + inventory at cost + outstanding orders at cost) on the left axis; cumulative P&L on the right. The dashed equity line equals the stack height — re-arranged so the components are legible.
+**Equity composition + cumulative P&L.** Stacked equity (cash + inventory at cost + outstanding orders at cost) on the left axis; cumulative P&L on the right.
 
 ![Equity composition and cumulative P&L](../../docs/images/sim_equity_composition.png)
 
-**Revenue vs cost per step.** Per-tick revenue (above zero) decomposed against order cost and holding cost (below zero); the black line is realised step P&L. Order-cost spikes line up with order-quantity bars in the per-product card below.
+**Revenue vs cost per step.** Per-tick revenue (above zero) decomposed against order cost and holding cost (below zero); the black line is realised step P&L.
 
 ![Revenue vs cost per step](../../docs/images/sim_revenue_vs_cost.png)
 
-**Per-product card — `P0333` (Men's Thermal Sleep Shirt).** Top panel: on-hand inventory, outstanding orders, and order-quantity bars against the store's total capacity. Bottom panel: sampled demand vs realised sales; the red band is unmet demand (a stockout). Demand is sampled on every step regardless of active status, so the panel surfaces latent demand on inactive windows too.
+**Per-product card — `P0333`.** Top panel: on-hand inventory, outstanding orders, and order-quantity bars against capacity. Bottom panel: sampled demand vs realised sales; the red band is unmet demand (a stockout).
 
 ![Per-product card for P0333](../../docs/images/sim_product_P0333.png)
 
 ## Further reading
 
 - [`CONTEXT.md`](../../CONTEXT.md) — domain and architecture glossary
+- ADRs [0011](../../docs/adr/0011-multi-echelon-graph.md)–[0016](../../docs/adr/0016-allocation-rng-sub-seed.md) — the multi-echelon design decisions

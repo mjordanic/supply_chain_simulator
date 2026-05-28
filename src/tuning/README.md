@@ -20,7 +20,8 @@ src/tuning/
                     distributions, world archetype)
   episode.py        Config-adapter — unpacks TuningConfig and calls src/sim/episode_sampler.sample_episode
   world_loader.py   Config-adapter — unpacks TuningConfig and calls src/sim/world_loader.load_world
-  rollout.py        run_policy_episode(policy, spec) — one episode via build_world + Simulation.tick
+  rollout.py        run_policy_episode(policy, spec) — one episode on the graph engine
+                    (factory(s) → IntermediateNode "S" → sink-per-product) via build_world + Simulation.tick
   evaluator.py      evaluate_policy_normalised(factory, specs) — single-policy CRN evaluator
   search_spaces.py  bundled trial-callback factories: order_up_to_space, reorder_point_space,
                     periodic_order_up_to_space, periodic_reorder_space
@@ -28,6 +29,8 @@ src/tuning/
 ```
 
 Custom policies write their own ~10-line trial-callback factory (`f(trial) -> Policy`) and pass it to `run_study`; the four bundled factories cover the textbook variants.
+
+The tuner runs on the **multi-echelon graph engine**: each trial builds a degenerate `factory → IntermediateNode("S") → sink-per-product` graph from the resolved `base_template` and attaches the candidate `MultiSupplierTextbookPolicy` to node `S`. The four bundled search spaces tune the shared textbook knobs plus two routing tunables introduced with the migration — `per_supplier_min_order_floor` (int `[0, 10]`, the buyer-side min order per line) and `routing_strategy` (categorical: `cheapest_first` / `fill_rate_weighted`) — alongside each variant's own parameters (`Q`, `review_interval`, …). They surface as extra columns in `trials.parquet`.
 
 ## Quickstart
 
@@ -134,7 +137,7 @@ Headline outputs from a 150-trial study against the `fashion_retail_250` world:
 
 ## CRN guarantee
 
-Every trial in a study evaluates on the same eval-specs list, built once before `study.optimize` is called and closed over by the trial objective. Two trials sampling identical kwargs on identical seeds therefore produce bit-identical trajectories — differences between trials are attributable to the policy kwargs alone, exactly the property `eval/paired_uplift` provides for RL. The search seeds (`seed_offset = 12_000_000`) and holdout seeds (`holdout_seed_offset = 13_000_000`) are disjoint from each other and from the RL training and eval ranges.
+Every trial in a study evaluates on the same eval-specs list, built once before `study.optimize` is called and closed over by the trial objective. Two trials sampling identical kwargs on identical seeds therefore produce bit-identical trajectories — differences between trials are attributable to the policy kwargs alone, exactly the property `eval/paired_uplift` provides for RL. The per-trial CRN tuple includes the graph engine's `allocation` sub-seed (ADR 0016) so the deterministic per-phase buyer shuffle is held fixed across trials too. The search seeds (`seed_offset = 12_000_000`) and holdout seeds (`holdout_seed_offset = 13_000_000`) are disjoint from each other and from the RL training and eval ranges.
 
 ## CLI flags
 
