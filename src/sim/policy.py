@@ -784,14 +784,17 @@ __all__ = [
     "HeuristicPolicy",
     "RLPolicy",
     "TextbookReorderPolicy",
-    "OrderUpToPolicy",
-    "ReorderPointPolicy",
-    "PeriodicOrderUpToPolicy",
-    "PeriodicReorderPolicy",
     # Phase-1 graph-engine concrete policies (issue 06)
     "StaticFactoryPolicy",
     "DefaultDemandSinkPolicy",
     "IntermediatePolicy",
+    # Phase-2 textbook policy family re-rooted on MultiSupplierTextbookPolicy (issue 09)
+    # (OrderUpToPolicy etc. are defined in the Phase-2 section at the bottom of this file)
+    "MultiSupplierTextbookPolicy",
+    "OrderUpToPolicy",
+    "ReorderPointPolicy",
+    "PeriodicOrderUpToPolicy",
+    "PeriodicReorderPolicy",
 ]
 
 
@@ -1513,8 +1516,8 @@ class TextbookReorderPolicy(Policy):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class OrderUpToPolicy(TextbookReorderPolicy):
-    """(s,S) continuous-review policy.
+class _OrderUpToCore(TextbookReorderPolicy):
+    """(s,S) continuous-review core — inner policy for OrderUpToPolicy.
 
     The canonical textbook policy: review every tick (continuous review),
     reorder whenever ``position < s``, and on each reorder bring the
@@ -1531,8 +1534,10 @@ class OrderUpToPolicy(TextbookReorderPolicy):
     the per-pid delivery lag read from the observation, so they are
     scale-invariant in capacity by construction.
 
-    Used as the canonical CRN comparison anchor for RL — the RL agent's
-    performance is measured against this policy on paired episodes.
+    This class carries the pure (s,S) math and is used as the inner policy
+    in ``OrderUpToPolicy`` (Phase-2 re-rooting onto
+    ``MultiSupplierTextbookPolicy``).  Direct use via the public name
+    ``OrderUpToPolicy`` is defined below.
 
     No additional kwargs beyond those on ``TextbookReorderPolicy``.
     """
@@ -1558,13 +1563,13 @@ class OrderUpToPolicy(TextbookReorderPolicy):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ReorderPointPolicy(TextbookReorderPolicy):
-    """(s,Q) continuous-review policy.
+class _ReorderPointCore(TextbookReorderPolicy):
+    """(s,Q) continuous-review core — inner policy for ReorderPointPolicy.
 
-    Like ``OrderUpToPolicy``, this policy reviews every tick and reorders
-    when ``position < s``. The difference is what it orders: a *fixed*
-    quantity ``Q`` (or a rate-derived default), independent of how deep
-    the position is below ``s``.
+    Like ``_OrderUpToCore``, this reviews every tick and reorders when
+    ``position < s``. The difference is what it orders: a *fixed* quantity
+    ``Q`` (or a rate-derived default), independent of how deep the position
+    is below ``s``.
 
     Reorder levels (demand-units framing):
 
@@ -1616,8 +1621,8 @@ class ReorderPointPolicy(TextbookReorderPolicy):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class PeriodicOrderUpToPolicy(TextbookReorderPolicy):
-    """(R,S) periodic-review policy.
+class _PeriodicOrderUpToCore(TextbookReorderPolicy):
+    """(R,S) periodic-review core — inner policy for PeriodicOrderUpToPolicy.
 
     Reviews inventory only every ``review_interval`` ticks; on review ticks
     it orders enough to bring position up to ``S``. On non-review ticks no
@@ -1701,8 +1706,8 @@ class PeriodicOrderUpToPolicy(TextbookReorderPolicy):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class PeriodicReorderPolicy(TextbookReorderPolicy):
-    """(R,s,S) periodic-review policy with a reorder-point gate.
+class _PeriodicReorderCore(TextbookReorderPolicy):
+    """(R,s,S) periodic-review core — inner policy for PeriodicReorderPolicy.
 
     Hybrid of (R,S) periodic review and (s,S) reorder-point gating.
     Orders fire only when BOTH conditions hold:
@@ -2082,3 +2087,703 @@ class _SingleSupplierAdapter(IntermediatePolicy):
 # Attach as a nested class on IntermediatePolicy so callers can write
 # ``IntermediatePolicy.SingleSupplierAdapter(...)``.
 IntermediatePolicy.SingleSupplierAdapter = _SingleSupplierAdapter  # type: ignore[attr-defined]
+
+
+# =============================================================================
+# Phase-2 graph-engine policies  (issue 09)
+#
+# MultiSupplierTextbookPolicy is the new base for the textbook reorder-policy
+# family.  It implements the IntermediatePolicy contract (multi-supplier
+# routing via _split_across_suppliers) while delegating per-pid trigger /
+# quantity decisions to an inner TextbookReorderPolicy instance.
+#
+# The four concrete public classes (OrderUpToPolicy, ReorderPointPolicy,
+# PeriodicOrderUpToPolicy, PeriodicReorderPolicy) are re-rooted here as
+# MultiSupplierTextbookPolicy subclasses.  They also preserve the legacy
+# Store-engine interface (decide(observation)) by delegating to their inner
+# _Core policy.
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# Default routing strategy helper
+# ---------------------------------------------------------------------------
+
+def _default_cheapest_first_strategy(
+    pid: str,
+    qty_total: int,
+    supplier_ids: list[str],
+    central_table: Any,
+    *,
+    buyer_min_order_floor: int = 0,
+) -> list[tuple[str, int]]:
+    """Cheapest-first routing strategy (default for ``_split_across_suppliers``).
+
+    Sorts suppliers by ``list_price`` ascending (cheapest first), then
+    allocates greedily, respecting:
+
+    - ``Offer.available_qty`` — never over-allocate from a supplier.
+    - ``Offer.min_order``     — supplier-imposed minimum (line rejected if
+      ``allocated_from_supplier < min_order``).
+    - ``buyer_min_order_floor`` — buyer-side minimum per line (line
+      rejected if ``allocated_from_supplier < buyer_min_order_floor``).
+
+    Returns
+    -------
+    list of ``(supplier_id, qty)`` pairs. Only non-zero lines are included.
+    """
+    offers_raw = central_table.snapshot_for_buyer(pid)
+    # Filter to the requested supplier set.
+    offers = [(sid, o) for sid, o in offers_raw if sid in supplier_ids]
+    if not offers:
+        return []
+
+    # Sort by price ascending — cheapest first.
+    offers.sort(key=lambda t: t[1].list_price)
+
+    result: list[tuple[str, int]] = []
+    remaining = qty_total
+
+    for sid, offer in offers:
+        if remaining <= 0:
+            break
+        # Effective min: the higher of both layers.
+        effective_min = max(offer.min_order, buyer_min_order_floor)
+        if effective_min > 0 and remaining < effective_min:
+            # Remaining qty falls below the effective minimum — skip.
+            continue
+        if offer.available_qty <= 0:
+            continue
+
+        qty = min(remaining, offer.available_qty)
+        # After clamping to available, re-check effective minimum.
+        if effective_min > 0 and qty < effective_min:
+            continue
+
+        result.append((sid, qty))
+        remaining -= qty
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# MultiSupplierTextbookPolicy — multi-supplier base class
+# ---------------------------------------------------------------------------
+
+
+class MultiSupplierTextbookPolicy(IntermediatePolicy):
+    """Multi-supplier base for the textbook reorder-policy family.
+
+    Lifts the textbook (s,S) rate-estimate / safety-horizon math onto the
+    full ``IntermediatePolicy`` contract.  Subclasses override
+    ``_make_inner_policy`` to inject their own trigger / quantity logic.
+
+    ``_split_across_suppliers`` is a pure static routing function:
+    ``(pid, qty_total, supplier_ids, central_table) -> [(supplier_id, qty)]``.
+
+    Parameters
+    ----------
+    cover_horizon_ticks:
+        Passed through to the inner policy.  Default 14.
+    safety_lead_pct_of_lag:
+        Passed through to the inner policy.  Default 1/3.
+    delivery_lag:
+        Fixed delivery lag (ticks) used to build the Store-style observation
+        for the inner policy.  Default 2.
+    unit_cost:
+        Per-unit cost for inner-policy cash accounting.  Default 1.0.
+    list_price_out:
+        Selling price advertised downstream.  Default 0.0 (keep existing).
+    per_supplier_min_order_floor:
+        Buyer-side minimum order per line (default 0 = no constraint).
+    routing_strategy:
+        Optional callable replacing the default cheapest-first logic.
+        Signature: ``(pid, qty_total, supplier_ids, central_table, *, buyer_min_order_floor) -> [(supplier_id, qty)]``.
+    policy_seed:
+        RNG seed for the inner policy.
+    """
+
+    def __init__(
+        self,
+        *,
+        cover_horizon_ticks: int = 14,
+        safety_lead_pct_of_lag: float = 1 / 3,
+        delivery_lag: int = 2,
+        unit_cost: float = 1.0,
+        list_price_out: float = 0.0,
+        per_supplier_min_order_floor: int = 0,
+        routing_strategy: Any = None,
+        policy_seed: int | None = None,
+    ) -> None:
+        super().__init__(policy_seed=policy_seed)
+        self.delivery_lag = delivery_lag
+        self.unit_cost = unit_cost
+        self.list_price_out = list_price_out
+        self.per_supplier_min_order_floor = per_supplier_min_order_floor
+        self.routing_strategy = routing_strategy
+        self._inner = self._make_inner_policy(
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            policy_seed=policy_seed,
+        )
+
+    def _make_inner_policy(
+        self,
+        *,
+        cover_horizon_ticks: int,
+        safety_lead_pct_of_lag: float,
+        policy_seed: int | None,
+    ) -> "TextbookReorderPolicy":
+        """Factory for the inner textbook policy.  Default: (s,S) ``_OrderUpToCore``."""
+        return _OrderUpToCore(
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            policy_seed=policy_seed,
+        )
+
+    # ------------------------------------------------------------------
+    # Core routing function (static, pure — deep-module entry point)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _split_across_suppliers(
+        pid: str,
+        qty_total: int,
+        supplier_ids: list[str],
+        central_table: Any,
+        *,
+        buyer_min_order_floor: int = 0,
+        routing_strategy: Any = None,
+    ) -> list[tuple[str, int]]:
+        """Split ``qty_total`` across ``supplier_ids``.
+
+        Default strategy: cheapest-first, both min-order layers honoured.
+        Pluggable via ``routing_strategy``.
+
+        Parameters
+        ----------
+        pid:
+            Product ID being ordered.
+        qty_total:
+            Total units to source across all suppliers.
+        supplier_ids:
+            IDs of eligible upstream suppliers.
+        central_table:
+            Live ``CentralTable`` — queried for offers.
+        buyer_min_order_floor:
+            Buyer-side minimum per line (default 0 = no constraint).
+        routing_strategy:
+            Optional callable replacing the default cheapest-first logic.
+            Receives ``(pid, qty_total, supplier_ids, central_table,
+            buyer_min_order_floor=...)`` and returns a list of
+            ``(supplier_id, qty)`` tuples.
+
+        Returns
+        -------
+        list of ``(supplier_id, qty)`` pairs, non-zero lines only.
+        """
+        if qty_total <= 0 or not supplier_ids:
+            return []
+        strategy = routing_strategy if routing_strategy is not None else _default_cheapest_first_strategy
+        return strategy(
+            pid,
+            qty_total,
+            supplier_ids,
+            central_table,
+            buyer_min_order_floor=buyer_min_order_floor,
+        )
+
+    # ------------------------------------------------------------------
+    # IntermediatePolicy.decide
+    # ------------------------------------------------------------------
+
+    def decide(
+        self,
+        obs_intermediate: Mapping[str, Any],
+        central_table: Any,
+    ) -> dict[str, Any]:
+        """Route reorder decisions across available upstream suppliers.
+
+        Translates ``obs_intermediate`` to the inner textbook policy format,
+        runs the inner policy to get per-pid desired quantities, then calls
+        ``_split_across_suppliers`` to distribute those quantities across
+        the direct upstream suppliers in ``central_table``.
+
+        Returns
+        -------
+        dict with keys:
+            ``order``             — ``{pid: [(supplier_id, qty), ...]}``
+            ``list_price``        — ``{pid: float}``
+            ``min_order_imposed`` — ``{pid: int}``
+        """
+        tick: int = int(obs_intermediate.get("tick", 0))
+        inventory: dict[str, int] = dict(obs_intermediate.get("inventory", {}))
+        pending_nested: dict[str, dict[str, int]] = dict(
+            obs_intermediate.get("pending", {})
+        )
+        list_prices: dict[str, float] = dict(obs_intermediate.get("list_prices", {}))
+        min_order_imposed: dict[str, int] = dict(
+            obs_intermediate.get("min_order_imposed", {})
+        )
+        direct_supplier_ids: set[str] | None = obs_intermediate.get("direct_supplier_ids")
+
+        if not inventory:
+            return {
+                "order": {},
+                "list_price": list_prices,
+                "min_order_imposed": min_order_imposed,
+            }
+
+        # Flatten pending: {supplier: {pid: qty}} → {pid: total_qty}.
+        pending_flat: dict[str, int] = {}
+        for sup_pending in pending_nested.values():
+            for pid, qty in sup_pending.items():
+                pending_flat[pid] = pending_flat.get(pid, 0) + qty
+
+        # Approximate sales as zero (same as SingleSupplierAdapter).
+        sales_approx: dict[str, int] = {pid: 0 for pid in inventory}
+
+        node_capacity = int(obs_intermediate.get("capacity", 0)) or 10_000
+
+        textbook_obs: dict[str, Any] = {
+            "current_sim_step": tick,
+            "active_products": list(inventory.keys()),
+            "inventory": inventory,
+            "sales": sales_approx,
+            "outstanding_orders": pending_flat,
+            "max_capacity": node_capacity,
+            "balance": float(obs_intermediate.get("cash", 10_000.0)),
+            "unit_costs": {pid: self.unit_cost for pid in inventory},
+            "base_prices": dict(list_prices),
+            "delivery_lags": {pid: float(self.delivery_lag) for pid in inventory},
+        }
+
+        textbook_result = self._inner.decide(textbook_obs)
+        textbook_orders: dict[str, int] = textbook_result.get("order", {})
+
+        new_order: dict[str, list[tuple[str, int]]] = {}
+        for pid, qty in textbook_orders.items():
+            if qty <= 0:
+                continue
+            if direct_supplier_ids is not None:
+                sids = list(direct_supplier_ids)
+            else:
+                sids = [sid for sid, _ in central_table.snapshot_for_buyer(pid)]
+            if not sids:
+                continue
+            splits = self._split_across_suppliers(
+                pid=pid,
+                qty_total=qty,
+                supplier_ids=sids,
+                central_table=central_table,
+                buyer_min_order_floor=self.per_supplier_min_order_floor,
+                routing_strategy=self.routing_strategy,
+            )
+            if splits:
+                new_order[pid] = splits
+
+        price_out: dict[str, float] = {}
+        for pid in inventory:
+            price_out[pid] = (
+                self.list_price_out
+                if self.list_price_out > 0
+                else list_prices.get(pid, 0.0)
+            )
+
+        return {
+            "order": new_order,
+            "list_price": price_out,
+            "min_order_imposed": min_order_imposed,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Public textbook policy family — re-rooted on MultiSupplierTextbookPolicy
+# (Phase-2, issue 09).
+#
+# Each public class is a MultiSupplierTextbookPolicy subclass that ALSO
+# exposes the legacy Store-engine interface (decide(observation)) by
+# delegating to its _inner _Core policy.
+# ---------------------------------------------------------------------------
+
+
+def _make_textbook_decide(cls_name: str):
+    """Factory for the dual-dispatch decide used by re-rooted textbook policies."""
+    def decide(self, *args: Any, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
+        f"""Route {cls_name}.decide to Store or graph engine based on arg count."""
+        if len(args) == 1 and not kwargs:
+            # Single positional arg → Store-style observation dict.
+            return self._inner.decide(args[0])
+        if len(args) == 2:
+            # Two positional args → (obs_intermediate, central_table)
+            return MultiSupplierTextbookPolicy.decide(self, args[0], args[1])
+        # Named args or other — forward to inner for Store compat.
+        return self._inner.decide(*args, **kwargs)
+    decide.__name__ = "decide"
+    return decide
+
+
+def _textbook_properties(inner_attrs: list[str]):
+    """Return a dict of property descriptors that delegate to self._inner."""
+    props: dict = {}
+    for attr in inner_attrs:
+        def _make_prop(a=attr):
+            @property
+            def _prop(self):
+                return getattr(self._inner, a)
+            return _prop
+        props[attr] = _make_prop()
+    return props
+
+
+class OrderUpToPolicy(MultiSupplierTextbookPolicy):
+    """(s,S) continuous-review policy, re-rooted on MultiSupplierTextbookPolicy.
+
+    The canonical CRN comparison anchor for RL.  Review every tick,
+    reorder whenever ``position < s``, bring position up to ``S``.
+
+    Reorder levels::
+
+        effective_safety_ticks = round(safety_lead_pct_of_lag × delivery_lag[pid])
+        s = (delivery_lag + effective_safety_ticks) × rate
+        S = s + cover_horizon_ticks × rate
+
+    Supports BOTH the legacy Store-engine interface
+    (``decide(observation)``) AND the graph-engine interface
+    (``decide(obs_intermediate, central_table)``).
+    """
+
+    def __init__(
+        self,
+        *,
+        policy_seed: int | None = None,
+        cover_horizon_ticks: int = 14,
+        safety_lead_pct_of_lag: float = 1 / 3,
+        opening_budget_pct: float = 0.50,
+        stockout_safety_bonus_pct_of_lag: float = 0.0,
+        min_qty: int = 0,
+        delivery_lag: int = 2,
+        unit_cost: float = 1.0,
+        list_price_out: float = 0.0,
+        per_supplier_min_order_floor: int = 0,
+        routing_strategy: Any = None,
+    ) -> None:
+        self._obu_opening_budget_pct = opening_budget_pct
+        self._obu_stockout_safety_bonus = stockout_safety_bonus_pct_of_lag
+        self._obu_min_qty = min_qty
+        super().__init__(
+            policy_seed=policy_seed,
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            delivery_lag=delivery_lag,
+            unit_cost=unit_cost,
+            list_price_out=list_price_out,
+            per_supplier_min_order_floor=per_supplier_min_order_floor,
+            routing_strategy=routing_strategy,
+        )
+
+    def _make_inner_policy(
+        self,
+        *,
+        cover_horizon_ticks: int,
+        safety_lead_pct_of_lag: float,
+        policy_seed: int | None,
+    ) -> _OrderUpToCore:
+        return _OrderUpToCore(
+            policy_seed=policy_seed,
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            opening_budget_pct=getattr(self, "_obu_opening_budget_pct", 0.50),
+            stockout_safety_bonus_pct_of_lag=getattr(
+                self, "_obu_stockout_safety_bonus", 0.0
+            ),
+            min_qty=getattr(self, "_obu_min_qty", 0),
+        )
+
+    decide = _make_textbook_decide("OrderUpToPolicy")
+
+    @property
+    def cover_horizon_ticks(self) -> int:
+        return self._inner.cover_horizon_ticks
+
+    @property
+    def safety_lead_pct_of_lag(self) -> float:
+        return self._inner.safety_lead_pct_of_lag
+
+    @property
+    def opening_budget_pct(self) -> float:
+        return self._inner.opening_budget_pct
+
+    @property
+    def stockout_safety_bonus_pct_of_lag(self) -> float:
+        return self._inner.stockout_safety_bonus_pct_of_lag
+
+    @property
+    def min_qty(self) -> int:
+        return self._inner.min_qty
+
+    @property
+    def sales_log(self) -> dict:
+        return self._inner.sales_log
+
+    @property
+    def inv_before_settle_log(self) -> dict:
+        return self._inner.inv_before_settle_log
+
+
+class ReorderPointPolicy(MultiSupplierTextbookPolicy):
+    """(s,Q) continuous-review policy, re-rooted on MultiSupplierTextbookPolicy.
+
+    Reviews every tick and reorders when ``position < s``.  Orders a *fixed*
+    quantity ``Q`` (or rate-derived default), independent of how far below
+    ``s`` position fell.
+
+    Supports BOTH the legacy Store-engine interface and the graph-engine
+    interface.
+    """
+
+    def __init__(
+        self,
+        *,
+        Q: int | None = None,
+        policy_seed: int | None = None,
+        cover_horizon_ticks: int = 14,
+        safety_lead_pct_of_lag: float = 1 / 3,
+        opening_budget_pct: float = 0.50,
+        stockout_safety_bonus_pct_of_lag: float = 0.0,
+        min_qty: int = 0,
+        delivery_lag: int = 2,
+        unit_cost: float = 1.0,
+        list_price_out: float = 0.0,
+        per_supplier_min_order_floor: int = 0,
+        routing_strategy: Any = None,
+    ) -> None:
+        self._rpp_Q = Q
+        self._rpp_opening_budget_pct = opening_budget_pct
+        self._rpp_stockout_safety_bonus = stockout_safety_bonus_pct_of_lag
+        self._rpp_min_qty = min_qty
+        super().__init__(
+            policy_seed=policy_seed,
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            delivery_lag=delivery_lag,
+            unit_cost=unit_cost,
+            list_price_out=list_price_out,
+            per_supplier_min_order_floor=per_supplier_min_order_floor,
+            routing_strategy=routing_strategy,
+        )
+
+    def _make_inner_policy(
+        self,
+        *,
+        cover_horizon_ticks: int,
+        safety_lead_pct_of_lag: float,
+        policy_seed: int | None,
+    ) -> _ReorderPointCore:
+        return _ReorderPointCore(
+            Q=getattr(self, "_rpp_Q", None),
+            policy_seed=policy_seed,
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            opening_budget_pct=getattr(self, "_rpp_opening_budget_pct", 0.50),
+            stockout_safety_bonus_pct_of_lag=getattr(
+                self, "_rpp_stockout_safety_bonus", 0.0
+            ),
+            min_qty=getattr(self, "_rpp_min_qty", 0),
+        )
+
+    decide = _make_textbook_decide("ReorderPointPolicy")
+
+    @property
+    def Q(self) -> int | None:
+        return self._inner.Q  # type: ignore[attr-defined]
+
+    @property
+    def cover_horizon_ticks(self) -> int:
+        return self._inner.cover_horizon_ticks
+
+    @property
+    def safety_lead_pct_of_lag(self) -> float:
+        return self._inner.safety_lead_pct_of_lag
+
+    @property
+    def opening_budget_pct(self) -> float:
+        return self._inner.opening_budget_pct
+
+    @property
+    def sales_log(self) -> dict:
+        return self._inner.sales_log
+
+    @property
+    def inv_before_settle_log(self) -> dict:
+        return self._inner.inv_before_settle_log
+
+
+class PeriodicOrderUpToPolicy(MultiSupplierTextbookPolicy):
+    """(R,S) periodic-review policy, re-rooted on MultiSupplierTextbookPolicy.
+
+    Reviews only every ``review_interval`` ticks; on review ticks orders
+    up to ``S``.  Supports BOTH the legacy Store-engine and graph-engine
+    interfaces.
+    """
+
+    def __init__(
+        self,
+        *,
+        review_interval: int | None = None,
+        policy_seed: int | None = None,
+        cover_horizon_ticks: int = 14,
+        safety_lead_pct_of_lag: float = 1 / 3,
+        opening_budget_pct: float = 0.50,
+        stockout_safety_bonus_pct_of_lag: float = 0.0,
+        min_qty: int = 0,
+        delivery_lag: int = 2,
+        unit_cost: float = 1.0,
+        list_price_out: float = 0.0,
+        per_supplier_min_order_floor: int = 0,
+        routing_strategy: Any = None,
+    ) -> None:
+        self._poutp_review_interval = review_interval
+        self._poutp_opening_budget_pct = opening_budget_pct
+        self._poutp_stockout_safety_bonus = stockout_safety_bonus_pct_of_lag
+        self._poutp_min_qty = min_qty
+        super().__init__(
+            policy_seed=policy_seed,
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            delivery_lag=delivery_lag,
+            unit_cost=unit_cost,
+            list_price_out=list_price_out,
+            per_supplier_min_order_floor=per_supplier_min_order_floor,
+            routing_strategy=routing_strategy,
+        )
+
+    def _make_inner_policy(
+        self,
+        *,
+        cover_horizon_ticks: int,
+        safety_lead_pct_of_lag: float,
+        policy_seed: int | None,
+    ) -> _PeriodicOrderUpToCore:
+        return _PeriodicOrderUpToCore(
+            review_interval=getattr(self, "_poutp_review_interval", None),
+            policy_seed=policy_seed,
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            opening_budget_pct=getattr(self, "_poutp_opening_budget_pct", 0.50),
+            stockout_safety_bonus_pct_of_lag=getattr(
+                self, "_poutp_stockout_safety_bonus", 0.0
+            ),
+            min_qty=getattr(self, "_poutp_min_qty", 0),
+        )
+
+    decide = _make_textbook_decide("PeriodicOrderUpToPolicy")
+
+    @property
+    def review_interval(self) -> int | None:
+        return self._inner.review_interval  # type: ignore[attr-defined]
+
+    @property
+    def cover_horizon_ticks(self) -> int:
+        return self._inner.cover_horizon_ticks
+
+    @property
+    def safety_lead_pct_of_lag(self) -> float:
+        return self._inner.safety_lead_pct_of_lag
+
+    @property
+    def opening_budget_pct(self) -> float:
+        return self._inner.opening_budget_pct
+
+    @property
+    def sales_log(self) -> dict:
+        return self._inner.sales_log
+
+    @property
+    def inv_before_settle_log(self) -> dict:
+        return self._inner.inv_before_settle_log
+
+
+class PeriodicReorderPolicy(MultiSupplierTextbookPolicy):
+    """(R,s,S) periodic-review policy, re-rooted on MultiSupplierTextbookPolicy.
+
+    Hybrid of (R,S) and (s,S): fires only when both the review schedule AND
+    the reorder point gate are satisfied.  Supports BOTH the legacy
+    Store-engine and graph-engine interfaces.
+    """
+
+    def __init__(
+        self,
+        *,
+        review_interval: int | None = None,
+        policy_seed: int | None = None,
+        cover_horizon_ticks: int = 14,
+        safety_lead_pct_of_lag: float = 1 / 3,
+        opening_budget_pct: float = 0.50,
+        stockout_safety_bonus_pct_of_lag: float = 0.0,
+        min_qty: int = 0,
+        delivery_lag: int = 2,
+        unit_cost: float = 1.0,
+        list_price_out: float = 0.0,
+        per_supplier_min_order_floor: int = 0,
+        routing_strategy: Any = None,
+    ) -> None:
+        self._prp_review_interval = review_interval
+        self._prp_opening_budget_pct = opening_budget_pct
+        self._prp_stockout_safety_bonus = stockout_safety_bonus_pct_of_lag
+        self._prp_min_qty = min_qty
+        super().__init__(
+            policy_seed=policy_seed,
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            delivery_lag=delivery_lag,
+            unit_cost=unit_cost,
+            list_price_out=list_price_out,
+            per_supplier_min_order_floor=per_supplier_min_order_floor,
+            routing_strategy=routing_strategy,
+        )
+
+    def _make_inner_policy(
+        self,
+        *,
+        cover_horizon_ticks: int,
+        safety_lead_pct_of_lag: float,
+        policy_seed: int | None,
+    ) -> _PeriodicReorderCore:
+        return _PeriodicReorderCore(
+            review_interval=getattr(self, "_prp_review_interval", None),
+            policy_seed=policy_seed,
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            opening_budget_pct=getattr(self, "_prp_opening_budget_pct", 0.50),
+            stockout_safety_bonus_pct_of_lag=getattr(
+                self, "_prp_stockout_safety_bonus", 0.0
+            ),
+            min_qty=getattr(self, "_prp_min_qty", 0),
+        )
+
+    decide = _make_textbook_decide("PeriodicReorderPolicy")
+
+    @property
+    def review_interval(self) -> int | None:
+        return self._inner.review_interval  # type: ignore[attr-defined]
+
+    @property
+    def cover_horizon_ticks(self) -> int:
+        return self._inner.cover_horizon_ticks
+
+    @property
+    def safety_lead_pct_of_lag(self) -> float:
+        return self._inner.safety_lead_pct_of_lag
+
+    @property
+    def opening_budget_pct(self) -> float:
+        return self._inner.opening_budget_pct
+
+    @property
+    def sales_log(self) -> dict:
+        return self._inner.sales_log
+
+    @property
+    def inv_before_settle_log(self) -> dict:
+        return self._inner.inv_before_settle_log
