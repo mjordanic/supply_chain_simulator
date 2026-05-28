@@ -640,13 +640,17 @@ class GraphSimulation:
 
             for buyer in buyers_at_level:
                 if isinstance(buyer, DemandSinkNode):
-                    # Demand target is sampled from demand_dist (simplified for
-                    # Phase 1; full lifecycle/freshness composition in issue 10).
-                    demand_target = 0.0
-                    if buyer.demand_dist is not None:
-                        demand_target = float(
-                            buyer.demand_dist.sample(self.world_rng)
+                    # Full lifecycle/freshness composition via demand_target
+                    # (ADR 0015, issue 10). Samples world_rng for every catalog
+                    # pid in registry iteration order — CRN invariant preserved.
+                    demand_target = float(
+                        buyer.demand_target(
+                            tick=current_tick,
+                            market=self.market,
+                            registry=self.item_registry,
+                            world_rng=self.world_rng,
                         )
+                    )
                     obs = build_sink_obs(
                         buyer, tick=current_tick, demand_target=demand_target
                     )

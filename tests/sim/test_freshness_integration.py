@@ -28,9 +28,10 @@ from typing import Any, Mapping
 
 import pytest
 
-from src.sim.distributions import Constant, Uniform
+from src.sim.distributions import Constant, Normal, Uniform
 from src.sim.item_registry import ItemRegistry
 from src.sim.market import Market
+from src.sim.node import DemandSinkNode
 from src.sim.policy import NoopPolicy, Policy
 from src.sim.runner import Runner
 from src.sim.scenario import (
@@ -479,3 +480,93 @@ def test_step0_initial_active_skus_have_no_freshness_spike():
     store = runner.stores[0]
     for pid in store.active_items:
         assert store.freshness_multiplier(pid, current_step=0) == 1.0
+
+
+# ------------------------------------------------ DemandSinkNode path (issue 10)
+
+
+def _make_demand_sink_registry(
+    catalog: list[Ware],
+    alpha: float,
+    decay: float = 30.0,
+) -> tuple[ItemRegistry, Market]:
+    """Helper: build an (ItemRegistry, Market) pair with fixed freshness params."""
+    lifecycle = _lifecycle(alpha=alpha, decay=decay)
+    rng = Random(0)
+    registry = ItemRegistry(lifecycle, catalog, rng)
+    market = Market(_market_params(), rng, datetime(2024, 1, 1), registry=registry)
+    return registry, market
+
+
+def test_demand_sink_freshness_alpha_two_vs_zero_visible_difference():
+    """DemandSinkNode.demand_target with freshness_alpha=2.0 vs 0.0 produces
+    a visibly different demand series when the product is activated at tick 0.
+
+    This is the acceptance-criteria visible-hype check reframed onto the
+    demand-sink path (ADR 0015 / issue 10).
+    """
+    catalog = _catalog()  # 3 products
+
+    def _run_series(alpha: float) -> list[int]:
+        registry, market = _make_demand_sink_registry(catalog, alpha=alpha, decay=10.0)
+        # Use Uniform so each sample consumes a world_rng draw (CRN-safe).
+        sink = DemandSinkNode(
+            id="sink",
+            region="US",
+            init_seed=1,
+            product_id="P0000",
+            demand_dist=Uniform(100.0, 100.0),
+            income_rate=0.0,
+        )
+        sink.activation_tick["P0000"] = 0  # activate at tick 0
+
+        series: list[int] = []
+        for tick in range(1, 21):
+            market.tick()
+            result = sink.demand_target(
+                tick=tick,
+                market=market,
+                registry=registry,
+                world_rng=Random(tick * 999),  # independent per tick
+            )
+            series.append(result)
+        return series
+
+    series_hype = _run_series(alpha=2.0)
+    series_no_hype = _run_series(alpha=0.0)
+
+    # Hype series should start higher than no-hype.
+    assert series_hype[0] > series_no_hype[0]
+    # No-hype series is flat at 100 (Constant-like Uniform(100,100), all multipliers=1).
+    assert all(d == 100 for d in series_no_hype)
+    # Hype decays: first tick higher than last tick.
+    assert series_hype[0] > series_hype[-1]
+
+
+def test_demand_sink_never_activated_no_freshness_boost():
+    """DemandSinkNode with large α but no activation_tick entry returns baseline demand.
+
+    Never-activated product → τ = ∞ → freshness multiplier → 1.0.
+    """
+    catalog = _catalog()
+    registry, market = _make_demand_sink_registry(catalog, alpha=5.0, decay=30.0)
+    market.tick()
+
+    sink = DemandSinkNode(
+        id="sink",
+        region="US",
+        init_seed=1,
+        product_id="P0000",
+        demand_dist=Constant(100),
+        income_rate=0.0,
+    )
+    # No activation_tick entry for P0000
+
+    result = sink.demand_target(
+        tick=1,
+        market=market,
+        registry=registry,
+        world_rng=Random(42),
+    )
+    # maturity stage (×1.0), market factor 1.0, freshness 1.0 → 100
+    assert result == 100
