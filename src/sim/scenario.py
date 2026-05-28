@@ -30,7 +30,7 @@ import importlib.util
 import json
 import sys
 from collections import namedtuple
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
@@ -292,6 +292,157 @@ class StoreInstance:
         )
 
 
+def _node_to_dict(node: Any) -> dict[str, Any]:
+    """Serialise a Node subclass to a JSON-friendly dict tagged with ``node_type``."""
+    from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+
+    d: dict[str, Any] = {"node_type": type(node).__name__}
+    # Shared Node fields
+    d["id"] = node.id
+    d["region"] = node.region
+    d["init_seed"] = node.init_seed
+    # policy intentionally omitted (not serialised)
+    # level omitted — it is computed by the graph builder, not stored in JSON
+
+    if isinstance(node, FactoryNode):
+        d["produces_product_id"] = node.produces_product_id
+        d["unit_cost"] = node.unit_cost
+        d["capacity_per_tick"] = _serialize(node.capacity_per_tick)
+        d["inventory"] = node.inventory
+        d["list_price"] = node.list_price
+
+    elif isinstance(node, IntermediateNode):
+        d["carried_products"] = sorted(node.carried_products)
+        d["capacity"] = _serialize(node.capacity)
+        d["tags"] = list(node.tags)
+        d["inventory"] = dict(node.inventory)
+        d["pending"] = {k: dict(v) for k, v in node.pending.items()}
+        d["list_prices"] = dict(node.list_prices)
+        d["min_order_imposed"] = dict(node.min_order_imposed)
+
+    elif isinstance(node, DemandSinkNode):
+        d["product_id"] = node.product_id
+        d["demand_dist"] = _serialize(node.demand_dist)
+        d["income_rate"] = node.income_rate
+        d["cash"] = node.cash
+        d["activation_tick"] = dict(node.activation_tick)
+
+    else:
+        raise TypeError(f"_node_to_dict: unknown node type {type(node).__name__!r}")
+
+    return d
+
+
+def _node_from_dict(d: Mapping[str, Any]) -> Any:
+    """Inverse of ``_node_to_dict``; reconstructs the appropriate Node subclass."""
+    from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+
+    node_type = d.get("node_type")
+    shared: dict[str, Any] = {
+        "id": d["id"],
+        "region": d["region"],
+        "init_seed": d["init_seed"],
+        # policy always None on deserialise
+        "policy": None,
+    }
+
+    if node_type == "FactoryNode":
+        return FactoryNode(
+            **shared,
+            produces_product_id=d["produces_product_id"],
+            unit_cost=d["unit_cost"],
+            capacity_per_tick=_deserialize(d["capacity_per_tick"]),
+            inventory=d["inventory"],
+            list_price=d["list_price"],
+        )
+
+    elif node_type == "IntermediateNode":
+        return IntermediateNode(
+            **shared,
+            carried_products=set(d["carried_products"]),
+            capacity=_deserialize(d["capacity"]),
+            tags=list(d["tags"]),
+            inventory=dict(d["inventory"]),
+            pending={k: dict(v) for k, v in d.get("pending", {}).items()},
+            list_prices=dict(d["list_prices"]),
+            min_order_imposed=dict(d["min_order_imposed"]),
+        )
+
+    elif node_type == "DemandSinkNode":
+        return DemandSinkNode(
+            **shared,
+            product_id=d["product_id"],
+            demand_dist=_deserialize(d["demand_dist"]),
+            income_rate=d["income_rate"],
+            cash=d["cash"],
+            activation_tick=dict(d["activation_tick"]),
+        )
+
+    else:
+        raise ValueError(f"_node_from_dict: unknown node_type {node_type!r}")
+
+
+def _edge_to_dict(edge: Any) -> dict[str, Any]:
+    """Serialise an ``EdgeSpec`` to a JSON-friendly dict."""
+    from src.sim.graph import EdgeSpec
+
+    d: dict[str, Any] = {
+        "supplier_id": edge.supplier_id,
+        "buyer_id": edge.buyer_id,
+        "default_lead_time": edge.default_lead_time,
+    }
+    if edge.per_product_lead_time is not None:
+        d["per_product_lead_time"] = dict(edge.per_product_lead_time)
+    return d
+
+
+def _edge_from_dict(d: Mapping[str, Any]) -> Any:
+    """Inverse of ``_edge_to_dict``; reconstructs an ``EdgeSpec``."""
+    from src.sim.graph import EdgeSpec
+
+    per_product = d.get("per_product_lead_time")
+    return EdgeSpec(
+        supplier_id=d["supplier_id"],
+        buyer_id=d["buyer_id"],
+        default_lead_time=d["default_lead_time"],
+        per_product_lead_time=dict(per_product) if per_product else None,
+    )
+
+
+@dataclass
+class NodeInstance:
+    """One node entry in a graph ``Scenario``.
+
+    The ``init_seed`` deterministically drives step-0 state. ``policy``
+    is intentionally *not* serialised by ``Scenario.to_json``: scenarios
+    authored by the LLM are world artifacts, while policies are wired up
+    in the experiment script. This mirrors ``StoreInstance``.
+    """
+
+    # The node template.
+    node: Any  # Node subclass instance
+    # Per-instance RNG seed.
+    init_seed: int
+    # Decision-making brain — not serialised (re-attached on load).
+    policy: Any | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-friendly form. Note: ``policy`` is intentionally omitted."""
+        return {
+            "node": _node_to_dict(self.node),
+            "init_seed": self.init_seed,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "NodeInstance":
+        """Rebuild a ``NodeInstance`` from JSON; ``policy`` always returns ``None``."""
+        return cls(
+            node=_node_from_dict(d["node"]),
+            init_seed=d["init_seed"],
+            policy=None,
+        )
+
+
 @dataclass
 class MarketParams:
     """Typed parameter bag for the demand/supply environment.
@@ -452,7 +603,14 @@ _SCENARIO_REQUIRED = (
 
 @dataclass
 class Scenario:
-    """Flat declarative description of one experiment."""
+    """Flat declarative description of one experiment.
+
+    Supports both legacy ``stores``-based scenarios and new graph-based
+    scenarios via ``nodes`` + ``edges``. The ``is_graph`` property
+    distinguishes the two modes. In Phase 0 / Phase 1 both fields are
+    optional; in Phase 4 ``nodes``/``edges`` become required and
+    ``stores`` is retired.
+    """
 
     # The full product catalog.
     catalog: list[Ware]
@@ -462,7 +620,7 @@ class Scenario:
     disruption: DisruptionParams
     # Lifecycle / freshness defaults.
     item_lifecycle: ItemLifecycleParams
-    # Per-store roster (instances may share templates and policies).
+    # Per-store roster (legacy; instances may share templates and policies).
     stores: list[StoreInstance]
     # Number of ticks to run.
     n_steps: int
@@ -470,10 +628,19 @@ class Scenario:
     start_date: datetime
     # Seed for ``world_rng`` (deterministic world trajectory).
     world_seed: int
+    # Graph-mode node roster (new; optional in Phase 0 / Phase 1).
+    nodes: list[NodeInstance] = field(default_factory=list)
+    # Graph-mode edge list (new; optional in Phase 0 / Phase 1).
+    edges: list[Any] = field(default_factory=list)  # list[EdgeSpec]
+
+    @property
+    def is_graph(self) -> bool:
+        """``True`` when this scenario has graph-mode nodes defined."""
+        return len(self.nodes) > 0
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-friendly dict (policies omitted on each store instance)."""
-        return {
+        """JSON-friendly dict (policies omitted on each store/node instance)."""
+        d: dict[str, Any] = {
             "catalog": [_ware_to_dict(w) for w in self.catalog],
             "market": self.market.to_dict(),
             "disruption": self.disruption.to_dict(),
@@ -483,6 +650,13 @@ class Scenario:
             "start_date": self.start_date.isoformat(),
             "world_seed": self.world_seed,
         }
+        # Only include graph fields when they are non-empty, so legacy
+        # scenarios serialise to the same format as before.
+        if self.nodes:
+            d["nodes"] = [ni.to_dict() for ni in self.nodes]
+        if self.edges:
+            d["edges"] = [_edge_to_dict(e) for e in self.edges]
+        return d
 
     def to_json(self) -> str:
         """Compact JSON string. Round-trip via ``Scenario.from_json``."""
@@ -503,6 +677,8 @@ class Scenario:
             n_steps=d["n_steps"],
             start_date=datetime.fromisoformat(d["start_date"]),
             world_seed=d["world_seed"],
+            nodes=[NodeInstance.from_dict(n) for n in d.get("nodes", [])],
+            edges=[_edge_from_dict(e) for e in d.get("edges", [])],
         )
 
     def catalog_df(self) -> Any:
@@ -608,6 +784,45 @@ class Scenario:
             ]
         )
 
+    def nodes_df(self) -> Any:
+        """One-row-per-NodeInstance DataFrame.
+
+        Columns: ``node_id``, ``node_type``, ``region``, ``init_seed``,
+        ``policy_class`` (``None`` when policy not attached).
+        """
+        import pandas as pd
+
+        rows = [
+            {
+                "node_id": ni.node.id,
+                "node_type": type(ni.node).__name__,
+                "region": ni.node.region,
+                "init_seed": ni.init_seed,
+                "policy_class": (
+                    type(ni.policy).__name__ if ni.policy is not None else None
+                ),
+            }
+            for ni in self.nodes
+        ]
+        return pd.DataFrame(rows)
+
+    def edges_df(self) -> Any:
+        """One-row-per-EdgeSpec DataFrame.
+
+        Columns: ``supplier_id``, ``buyer_id``, ``default_lead_time``.
+        """
+        import pandas as pd
+
+        rows = [
+            {
+                "supplier_id": e.supplier_id,
+                "buyer_id": e.buyer_id,
+                "default_lead_time": e.default_lead_time,
+            }
+            for e in self.edges
+        ]
+        return pd.DataFrame(rows)
+
     @classmethod
     def from_world(
         cls,
@@ -670,6 +885,23 @@ def make_stores(
     return [
         StoreInstance(template=template, init_seed=init_seed, policy=policy)
         for template, init_seed, policy in triples
+    ]
+
+
+def make_nodes(
+    triples: Iterable[tuple[Any, int, Any]],
+) -> list[NodeInstance]:
+    """Build a graph node roster from a list of ``(node, init_seed, policy)`` triples.
+
+    Mirrors ``make_stores``. The triple list is the roster; CRN comparisons
+    are expressed by repeating ``(node, init_seed)`` with different policies.
+    """
+    triples = list(triples)
+    if not triples:
+        raise ValueError("make_nodes: triples must be non-empty")
+    return [
+        NodeInstance(node=node, init_seed=init_seed, policy=policy)
+        for node, init_seed, policy in triples
     ]
 
 

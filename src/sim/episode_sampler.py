@@ -90,13 +90,17 @@ class EpisodeSpec:
 # Sub-seed derivation
 # ---------------------------------------------------------------------------
 
-# Four sub-purposes; RL adds "slot" as its 5th in its own module.
+# Sub-purposes; RL adds "slot" as its own in its own module.
+# "allocation" (issue 03) drives the per-phase buyer shuffle via
+# allocation_rng = Random(_derive_seed(world_seed, "allocation")).
+# Not yet consumed — wired up in issue 05 (GraphSimulation).
 _SUB_SEED_PARAMS: dict[str, tuple[int, int]] = {
     "assortment": (0x9E37_79B9, 0x0000_0001),
     "capacity":   (0x6C62_272E, 0x0000_0002),
     "balance":    (0x517C_C1B7, 0x0000_0003),
     "world":      (0x27D4_EB2F, 0x0000_0004),
     "init_stock": (0x85EB_CA6B, 0x0000_0006),
+    "allocation": (0xA24B_AED4, 0x0000_0007),
 }
 _MASK_32 = 0xFFFF_FFFF
 

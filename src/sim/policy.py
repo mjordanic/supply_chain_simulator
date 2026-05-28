@@ -98,6 +98,88 @@ class NoopPolicy(Policy):
         return {}
 
 
+# ---------------------------------------------------------------------------
+# NodePolicy ABC family (multi-echelon graph engine)
+#
+# ``NodePolicy`` is the base for all graph-node decision-makers. It mirrors
+# the structure of ``Policy`` (owns ``policy_rng`` seeded from
+# ``policy_seed``) but is *not* a subclass of ``Policy`` — the two
+# families represent orthogonal simulation layers and should not be mixed.
+#
+# Three type-paired subclass ABCs enforce the per-node-type decide signature:
+#   - ``FactoryPolicy``       — produces goods, sets list price
+#   - ``IntermediatePolicy``  — orders from upstream, sets prices + min orders
+#   - ``DemandSinkPolicy``    — buys from upstream for the bound product
+# ---------------------------------------------------------------------------
+
+
+class NodePolicy(ABC):
+    """Base class for graph-node policies.
+
+    Each instance owns its own ``policy_rng`` seeded from ``policy_seed``.
+    Swapping a policy on a node must NOT perturb ``world_rng`` or
+    ``allocation_rng`` (determinism invariant from ADR 0016).
+    """
+
+    def __init__(self, policy_seed: int | None = None) -> None:
+        self.policy_seed: int | None = policy_seed
+        self.policy_rng: Random = Random(policy_seed)
+
+    @abstractmethod
+    def decide(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Return a decision dict. Concrete signature varies by node type."""
+
+
+class FactoryPolicy(NodePolicy, ABC):
+    """Policy ABC for ``FactoryNode``.
+
+    ``decide`` receives a factory observation and returns production
+    instructions. ``list_price`` must equal ``unit_cost`` per ADR 0013 —
+    concrete implementations should not deviate from that.
+    """
+
+    @abstractmethod
+    def decide(self, obs_factory: Mapping[str, Any]) -> dict[str, Any]:
+        """Return ``{"produce_qty": int, "list_price": float}``."""
+
+
+class IntermediatePolicy(NodePolicy, ABC):
+    """Policy ABC for ``IntermediateNode``.
+
+    ``decide`` receives an intermediate observation *and* a live
+    ``central_table`` snapshot, enabling routing decisions that account
+    for upstream supply availability and prices.
+    """
+
+    @abstractmethod
+    def decide(
+        self, obs_intermediate: Mapping[str, Any], central_table: Any
+    ) -> dict[str, Any]:
+        """Return order, list_price, and min_order_imposed decisions.
+
+        Returns
+        -------
+        dict with keys:
+            ``order``             — ``{pid: [(supplier_id, qty), ...]}``
+            ``list_price``        — ``{pid: float}``
+            ``min_order_imposed`` — ``{pid: int}``
+        """
+
+
+class DemandSinkPolicy(NodePolicy, ABC):
+    """Policy ABC for ``DemandSinkNode``.
+
+    ``decide`` receives a sink observation and a live ``central_table``
+    snapshot, then returns a buy plan for the sink's bound product.
+    """
+
+    @abstractmethod
+    def decide(
+        self, obs_sink: Mapping[str, Any], central_table: Any
+    ) -> dict[str, Any]:
+        """Return ``{"buy": [(supplier_id, qty), ...]}``."""
+
+
 def _maybe_sample(value: Any, rng: Random) -> Any:
     """Sample a ``Distribution`` value once; pass through scalars."""
     if isinstance(value, Distribution):
