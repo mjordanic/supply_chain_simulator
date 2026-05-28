@@ -245,6 +245,30 @@ def test_observation_determinism():
 # ---------------------------------------------------------------------------
 
 
+def _total_order_qty(result: dict, pid: str) -> int:
+    """Extract total order qty for a pid from the graph-engine action dict.
+
+    The new format is ``order[pid] = [(supplier_id, qty), ...]``.
+    For backward-compat tests, returns sum of all qty in the list,
+    or the direct int value if still in old format.
+    """
+    val = result.get("order", {}).get(pid, 0)
+    if isinstance(val, list):
+        return sum(q for _, q in val)
+    return int(val)
+
+
+def _get_price(result: dict, pid: str) -> float:
+    """Extract price for a pid from the graph-engine action dict.
+
+    New format: ``list_price[pid]``.
+    Old format: ``price[pid]``.
+    """
+    if "list_price" in result:
+        return float(result["list_price"].get(pid, 0.0))
+    return float(result.get("price", {}).get(pid, 0.0))
+
+
 def test_action_decode_price_bounds():
     """Decoded prices in [0.5*MSRP, 1.5*MSRP] for any action in [-1,1]."""
     K = 5
@@ -258,7 +282,7 @@ def test_action_decode_price_bounds():
         action_vec = np.array([rng.uniform(-1.0, 1.0) for _ in range(2 * K)], dtype=np.float32)
         result = decode_action(action_vec, slot_perm, store, K, base_prices)
         for pid in pids:
-            p = result["price"][pid]
+            p = _get_price(result, pid)
             msrp = base_prices[pid]
             assert 0.5 * msrp <= p <= 1.5 * msrp + 1e-9, (
                 f"{pid}: price={p} outside [{0.5*msrp}, {1.5*msrp}]"
@@ -284,7 +308,7 @@ def test_action_decode_order_bounds():
         action_vec = np.array([rng.uniform(-1.0, 1.0) for _ in range(2 * K)], dtype=np.float32)
         result = decode_action(action_vec, slot_perm, store, K, base_prices)
         for pid in pids:
-            qty = result["order"][pid]
+            qty = _total_order_qty(result, pid)
             assert qty >= 0, f"{pid}: negative order qty {qty}"
             assert qty <= free_space + 1, f"{pid}: order qty {qty} exceeds free space {free_space}"
 
@@ -303,15 +327,15 @@ def test_action_decode_extreme_values():
     action_min = np.full(2 * K, -1.0, dtype=np.float32)
     result_min = decode_action(action_min, slot_perm, store, K, base_prices)
     for pid in pids:
-        assert result_min["price"][pid] == pytest.approx(5.0, abs=1e-6)
-        assert result_min["order"][pid] == 0
+        assert _get_price(result_min, pid) == pytest.approx(5.0, abs=1e-6)
+        assert _total_order_qty(result_min, pid) == 0
 
     # All +1 → prices = 1.5*MSRP
     action_max = np.full(2 * K, 1.0, dtype=np.float32)
     result_max = decode_action(action_max, slot_perm, store, K, base_prices)
     for pid in pids:
-        assert result_max["price"][pid] == pytest.approx(15.0, abs=1e-6)
-        assert result_max["order"][pid] >= 0
+        assert _get_price(result_max, pid) == pytest.approx(15.0, abs=1e-6)
+        assert _total_order_qty(result_max, pid) >= 0
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +344,7 @@ def test_action_decode_extreme_values():
 
 
 def test_action_dict_keys():
-    """decode_action always returns the expected five keys."""
+    """decode_action always returns at least the order and price/list_price keys."""
     K = 2
     pids = ["P0000", "P0001"]
     store = _make_store(pids)
@@ -328,10 +352,9 @@ def test_action_dict_keys():
     slot_perm = [0, 1]
     action_vec = np.zeros(2 * K, dtype=np.float32)
     result = decode_action(action_vec, slot_perm, store, K, base_prices)
-    assert set(result.keys()) == {"order", "price", "activate", "deactivate", "promotions"}
-    assert result["activate"] == []
-    assert result["deactivate"] == []
-    assert result["promotions"] == {}
+    # New graph-engine format has order, list_price, min_order_imposed.
+    assert "order" in result
+    assert "list_price" in result or "price" in result
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +647,8 @@ def test_decode_action_zero_action_matches_periodic_order_up_to_formula():
     )
     # requested = max(0, 15*10 - (30+0)) = max(0, 150-30) = 120
     for pid in pids:
-        assert result["order"][pid] == 120, f"{pid}: expected 120 got {result['order'][pid]}"
+        qty = _total_order_qty(result, pid)
+        assert qty == 120, f"{pid}: expected 120 got {qty}"
 
 
 def test_decode_action_position_at_target_returns_zero_qty():
@@ -667,8 +691,9 @@ def test_decode_action_position_at_target_returns_zero_qty():
             target_max_lead_times=target_max,
         )
         for pid in pids:
-            assert result["order"][pid] == 0, (
-                f"order_raw={order_raw}, pid={pid}: expected 0 got {result['order'][pid]}"
+            qty = _total_order_qty(result, pid)
+            assert qty == 0, (
+                f"order_raw={order_raw}, pid={pid}: expected 0 got {qty}"
             )
 
 
@@ -700,7 +725,7 @@ def test_decode_action_total_qty_respects_global_free_space():
         global_free_space = max(
             0, capacity - sum(inventory.values()) - sum(pending.values())
         )
-        total_qty = sum(result["order"].values())
+        total_qty = sum(_total_order_qty(result, pid) for pid in pids)
         assert total_qty <= global_free_space + 1, (
             f"total_qty={total_qty} > global_free_space={global_free_space}"
         )
@@ -733,7 +758,7 @@ def test_decode_action_per_sku_qty_respects_per_sku_headroom():
         )
         for pid in pids:
             headroom = max(0, capacity - inventory[pid] - pending[pid])
-            qty = result["order"][pid]
+            qty = _total_order_qty(result, pid)
             assert qty <= headroom + 1, (
                 f"{pid}: qty={qty} > headroom={headroom}"
             )
@@ -761,8 +786,8 @@ def test_decode_action_price_half_unchanged():
         )
         for pid in pids:
             expected_price = msrps[pid] * expected_mult
-            assert result["price"][pid] == pytest.approx(expected_price, abs=1e-5), (
-                f"price_raw={price_raw}, {pid}: expected {expected_price} got {result['price'][pid]}"
+            assert _get_price(result, pid) == pytest.approx(expected_price, abs=1e-5), (
+                f"price_raw={price_raw}, {pid}: expected {expected_price} got {_get_price(result, pid)}"
             )
 
 
@@ -791,7 +816,7 @@ def test_decode_action_uses_inventory_position_not_just_inventory():
         target_max_lead_times=30,
     )
     # requested = max(0, 15*10 - (0 + 50)) = max(0, 150 - 50) = 100
-    assert result["order"]["P0000"] == 100
+    assert _total_order_qty(result, "P0000") == 100
 
 
 def test_decode_action_cold_start_qty_scales_with_prior():
@@ -821,8 +846,8 @@ def test_decode_action_cold_start_qty_scales_with_prior():
         target_half_span_lead_times=15,
         target_max_lead_times=30,
     )
-    qty_low = result_low["order"]["P0000"]
-    qty_high = result_high["order"]["P0000"]
+    qty_low = _total_order_qty(result_low, "P0000")
+    qty_high = _total_order_qty(result_high, "P0000")
     # At zero inventory+pending: qty = target_lt * rate; ratio should be 10x
     # (integer truncation may cause small deviation; allow +-1)
     assert abs(qty_high - qty_low * 10) <= 2, (
@@ -848,8 +873,9 @@ def test_decode_action_effective_rate_none_returns_zero_qty():
         effective_rate=None,
     )
     for pid in pids:
-        assert result["order"][pid] == 0, (
-            f"{pid}: expected 0 with effective_rate=None, got {result['order'][pid]}"
+        qty = _total_order_qty(result, pid)
+        assert qty == 0, (
+            f"{pid}: expected 0 with effective_rate=None, got {qty}"
         )
 
 
@@ -858,12 +884,16 @@ def test_decode_action_effective_rate_none_returns_zero_qty():
 # ---------------------------------------------------------------------------
 
 
-def test_observation_dim_increased_to_14_per_sku():
-    """observation_dim(K=5) == 5 * 14 + 4 == 74 (N_PER_SKU bumped from 13→14)."""
-    assert N_PER_SKU == 14, f"Expected N_PER_SKU=14, got {N_PER_SKU}"
-    assert observation_dim(5) == 74, f"Expected 74, got {observation_dim(5)}"
-    assert observation_dim(1) == 18
-    assert observation_dim(3) == 46
+def test_observation_dim_includes_central_table_block():
+    """observation_dim(K=5) == 5 * 18 + 4 == 94 (N_PER_SKU bumped to 18).
+
+    N_PER_SKU = 18: 14 original features + 4 central-table snapshot features
+    (supplier_count, min_price, mean_lead_time, mean_fill_rate).
+    """
+    assert N_PER_SKU == 18, f"Expected N_PER_SKU=18, got {N_PER_SKU}"
+    assert observation_dim(5) == 94, f"Expected 94, got {observation_dim(5)}"
+    assert observation_dim(1) == 22
+    assert observation_dim(3) == 58
 
 
 def test_encoder_slot_13_matches_demand_units_formula():

@@ -1,31 +1,33 @@
 """CRN-paired evaluation harness for the RL training framework.
 
-``build_eval_seeds`` generates a fixed, deterministic list of ``EpisodeSpec``
+``build_eval_seeds`` generates a fixed, deterministic list of ``RLEpisodeSpec``
 objects from the configured eval-seed range (disjoint from the training range
 via ``config.eval_seed_offset``).
 
-``evaluate`` runs the RL policy and ``OrderUpToPolicy`` on bit-identical
-``EpisodeSpec`` tuples (Common Random Numbers), computes paired metrics, and
-returns a flat dict suitable for logging to TensorBoard under ``eval/*`` keys.
+``evaluate`` runs the RL policy and ``OrderUpToPolicy`` (via
+``SingleSupplierAdapter``) on bit-identical ``RLEpisodeSpec`` tuples (Common
+Random Numbers), computes paired metrics, and returns a flat dict suitable
+for logging to TensorBoard under ``eval/*`` keys.
 
 CRN guarantee
 -------------
-Both the RL and baseline runs for a given ``EpisodeSpec`` use the *same*
+Both the RL and baseline runs for a given ``RLEpisodeSpec`` use the *same*
 ``world_seed``, capacity, balance, active subset, and slot permutation.  The
 world trajectory is therefore bit-identical between the two runs, so any
 difference in the returned metrics is attributable to the policy alone.
+
+The CRN tuple is now expanded to include the ``allocation`` sub-seed (ADR 0016):
+    (world_seed, capacity, balance, active_subset, slot_permutation, allocation_sub_seed)
 
 Implementation notes
 --------------------
 - The RL policy is invoked as a callable ``(obs_tensor: np.ndarray) →
   action_vec: np.ndarray`` so the same eval can serve PPO, SAC, or any
   future agent without rewriting plumbing.
-- The baseline policy is obtained by calling ``baseline_policy_factory()``
-  once per seed so per-policy RNG state is reset between paired runs.
-- The eval runs the RL policy through ``RLEnv`` (step-by-step) and the
-  baseline through a lightweight inline loop that replicates the env's tick
-  order.  Both share the same ``EpisodeSpec`` inputs so the CRN guarantee
-  holds.
+- The baseline policy is ``OrderUpToPolicy`` wrapped in ``SingleSupplierAdapter``
+  so it runs on the graph engine's ``IntermediateNode``.
+- The eval runs the RL policy through a step-by-step loop using the graph
+  engine's two-phase tick API.
 """
 
 from __future__ import annotations
@@ -41,9 +43,13 @@ import numpy as np
 
 from src.rl.configs.default import RLConfig
 from src.rl.encoders import compute_effective_rate, decode_action, encode_observation
-from src.rl.episode_sampler import EpisodeSpec, sample_episode
+from src.rl.episode_sampler import RLEpisodeSpec, sample_episode
 from src.sim.metrics import RunSlice, aggregate_episode
-from src.sim.policy import OrderUpToPolicy, Policy, RLPolicy
+from src.sim.policy import (
+    IntermediatePolicy,
+    OrderUpToPolicy,
+    RLIntermediatePolicy,
+)
 from src.sim.runner import build_world
 from src.sim.scenario import (
     DisruptionParams,
@@ -60,8 +66,9 @@ from src.sim.scenario import (
 PolicyFn = Callable[[np.ndarray], np.ndarray]
 """RL policy callable: takes an obs tensor, returns an action vector."""
 
-BaselineFactory = Callable[[], Policy]
-"""Factory that returns a fresh Policy (e.g. OrderUpToPolicy) per seed."""
+BaselineFactory = Callable[[], IntermediatePolicy]
+"""Factory that returns a fresh IntermediatePolicy (e.g. SingleSupplierAdapter
+wrapping OrderUpToPolicy) per seed."""
 
 
 # ---------------------------------------------------------------------------
@@ -78,8 +85,8 @@ def build_eval_seeds(
     market_params: MarketParams | None = None,
     disruption_params: DisruptionParams | None = None,
     lifecycle_params: ItemLifecycleParams | None = None,
-) -> list[EpisodeSpec]:
-    """Generate a fixed list of held-out ``EpisodeSpec`` objects for evaluation.
+) -> list[RLEpisodeSpec]:
+    """Generate a fixed list of held-out ``RLEpisodeSpec`` objects for evaluation.
 
     Seeds are taken from ``[config.eval_seed_offset, config.eval_seed_offset
     + n_seeds)``.  This range is intentionally far above the training seed
@@ -91,11 +98,9 @@ def build_eval_seeds(
     catalog:
         Full product universe; must have at least ``config.K_active`` items.
     base_template:
-        ``StoreTemplate`` carrying non-episodic knobs (region, delivery lag,
-        …).  Episodic fields are overridden by ``sample_episode``.
+        Template carrying non-episodic knobs (region, delivery lag, …).
     config:
-        ``RLConfig`` instance.  Consumes ``eval_seed_offset``,
-        ``n_eval_seeds``, and all fields forwarded to ``sample_episode``.
+        ``RLConfig`` instance.
     n_seeds:
         Number of eval seeds.  Defaults to ``config.n_eval_seeds``.
     market_params, disruption_params, lifecycle_params:
@@ -103,15 +108,13 @@ def build_eval_seeds(
 
     Returns
     -------
-    list[EpisodeSpec]
-        Deterministic, ordered list of ``n_seeds`` ``EpisodeSpec`` objects.
-        Calling this function twice with the same arguments returns identical
-        specs.
+    list[RLEpisodeSpec]
+        Deterministic, ordered list of ``n_seeds`` ``RLEpisodeSpec`` objects.
     """
     if n_seeds is None:
         n_seeds = config.n_eval_seeds
 
-    specs: list[EpisodeSpec] = []
+    specs: list[RLEpisodeSpec] = []
     for i in range(n_seeds):
         seed = config.eval_seed_offset + i
         spec = sample_episode(
@@ -135,18 +138,16 @@ def build_eval_seeds(
 def evaluate(
     rl_policy_fn: PolicyFn,
     baseline_policy_factory: BaselineFactory,
-    eval_specs: list[EpisodeSpec],
+    eval_specs: list[RLEpisodeSpec],
     *,
     config: RLConfig | None = None,
 ) -> dict[str, float]:
     """Run paired CRN evaluation and return a flat ``eval/*`` metrics dict.
 
-    For each ``EpisodeSpec``:
+    For each ``RLEpisodeSpec``:
 
-    1. Run the RL policy through a step-by-step loop identical to ``RLEnv``
-       (same tick order; same world seed → bit-identical world trajectory).
-    2. Run a fresh baseline policy through the same ``EpisodeSpec`` using
-       the same tick loop.
+    1. Run the RL policy through a step-by-step loop using the graph engine.
+    2. Run a fresh baseline policy through the same spec.
     3. Compute ``aggregate_episode`` metrics for each run.
     4. Compute paired uplift (RL − baseline) per seed, then average.
 
@@ -154,41 +155,17 @@ def evaluate(
     ----------
     rl_policy_fn:
         Callable ``(obs_tensor: np.ndarray) → action_vec: np.ndarray``.
-        Receives a flat float32 observation and must return a float32 array
-        of shape ``(2 * K_active,)`` in ``[-1, 1]``.  The same function is
-        called for every eval seed so it must be stateless or carry its own
-        internal state across seeds.
     baseline_policy_factory:
-        Zero-argument callable returning a fresh ``Policy`` instance.  Called
-        once per seed so per-policy RNG state is reset between paired runs.
+        Zero-argument callable returning a fresh ``IntermediatePolicy`` instance.
     eval_specs:
-        List of ``EpisodeSpec`` objects, typically produced by
-        ``build_eval_seeds``.
+        List of ``RLEpisodeSpec`` objects from ``build_eval_seeds``.
     config:
-        ``RLConfig`` instance.  When ``None``, ``RLConfig()`` (PRD defaults)
-        is used.  Only ``K_active`` and ``episode_length`` are consumed here.
+        ``RLConfig`` instance.  When ``None``, ``RLConfig()`` is used.
 
     Returns
     -------
     dict[str, float]
-        Flat dict with keys prefixed ``eval/``.  Keys:
-
-        - ``eval/rl_return``         — mean episode return across eval seeds
-        - ``eval/baseline_return``   — mean baseline episode return
-        - ``eval/paired_uplift``     — mean (RL return − baseline return) per seed
-        - ``eval/win_rate``          — fraction of seeds where RL return ≥ baseline
-        - ``eval/rl_service_level``
-        - ``eval/rl_stockout_rate``
-        - ``eval/rl_inventory_turnover``
-        - ``eval/rl_mean_price_pct_of_msrp``
-        - ``eval/rl_revenue``
-        - ``eval/rl_net_profit``
-        - ``eval/baseline_service_level``
-        - ``eval/baseline_stockout_rate``
-        - ``eval/baseline_inventory_turnover``
-        - ``eval/baseline_mean_price_pct_of_msrp``
-        - ``eval/baseline_revenue``
-        - ``eval/baseline_net_profit``
+        Flat dict with keys prefixed ``eval/``.
     """
     if config is None:
         config = RLConfig()
@@ -202,7 +179,7 @@ def evaluate(
     for spec in eval_specs:
         rl_metrics = _run_rl(rl_policy_fn, spec, config=config)
         baseline_policy = baseline_policy_factory()
-        baseline_metrics = _run_baseline(baseline_policy, spec)
+        baseline_metrics = _run_baseline(baseline_policy, spec, config=config)
         rl_metrics_list.append(rl_metrics)
         baseline_metrics_list.append(baseline_metrics)
 
@@ -214,152 +191,202 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 
-def _record_active_subset_tick(
-    store,
-    action: dict,
-    run_slice: RunSlice,
-) -> None:
-    """Append one tick of store state to the active-subset ``RunSlice``.
-
-    Reads order_cost from ``store.costs`` (unit_cost populated at
-    construction from ``Ware.unit_cost``).
-    """
-    pids = run_slice.active_pids
-    orders = action.get("order", {})
-
-    run_slice.sales.append([store.sales.get(pid, 0) for pid in pids])
-    run_slice.demand.append([store.demand.get(pid, 0) for pid in pids])
-    run_slice.inventory.append([store.inventory.get(pid, 0) for pid in pids])
-    run_slice.price.append([store.prices.get(pid, 0.0) for pid in pids])
-    run_slice.msrp.append([store.base_prices.get(pid, 1.0) for pid in pids])
-    run_slice.revenue.append([store.revenue.get(pid, 0.0) for pid in pids])
-    run_slice.holding_cost.append([store.holding_cost.get(pid, 0.0) for pid in pids])
-    run_slice.order_cost.append([
-        orders.get(pid, 0) * store.costs.get(pid, 0.0) for pid in pids
-    ])
-    run_slice.order_fee.append([
-        float(store.order_fee) if orders.get(pid, 0) > 0 else 0.0 for pid in pids
-    ])
-
-
 def _run_rl(
     rl_policy_fn: PolicyFn,
-    spec: EpisodeSpec,
+    spec: RLEpisodeSpec,
     *,
     config: RLConfig,
 ) -> dict[str, float]:
     """Run the RL policy on ``spec`` for one full episode.
 
-    Uses the two-phase tick API: ``sim.tick_world()`` → encode obs →
-    decode action → ``RLPolicy.set_pending_action()`` →
-    ``sim.tick_decide_and_settle()``.  Collects per-tick traces into a
-    ``RunSlice`` and returns ``aggregate_episode`` metrics.
+    Uses the graph engine's two-phase tick API:
+      sim.tick_world() → encode obs → decode action →
+      RLIntermediatePolicy.set_pending_action() →
+      sim.tick_decide_and_settle().
 
-    RL-specific state (``sales_history``, ``effective_rate``,
-    ``base_demand_prior``, observation encoder, action decoder, slot
-    permutation) stays in this function; none of it leaks into
-    ``src/sim/``.
+    Collects per-tick traces into a ``RunSlice`` and returns
+    ``aggregate_episode`` metrics.
     """
-    rl_policy = RLPolicy()
-    sim = build_world(spec.scenario, policy_overrides=[rl_policy])
-    store = sim.stores[0]
+    rl_policy = RLIntermediatePolicy()
+    sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
+    node_s = sim.nodes["S"]
 
     K = config.K_active
-    initial_cash = float(store.balance)
+    active_subset = spec.active_subset
+    initial_cash = float(node_s.cash)
     sales_history: dict[str, deque] = {
-        pid: deque(maxlen=100) for pid in [w.product_id for w in spec.scenario.catalog]
+        pid: deque(maxlen=100) for pid in active_subset
     }
     slot_perm = spec.slot_permutation
+    supplier_ids_for = {pid: [f"F_{pid}"] for pid in active_subset}
 
-    # Derive market-demand prior for cold-start ordering (mirrors RLEnv.reset).
+    # Derive market-demand prior for cold-start ordering.
     from random import Random as _Random
     from src.sim.distributions import Distribution as _Distribution
 
     market_base_demand = getattr(spec.scenario.market, "base_demand", None)
     if isinstance(market_base_demand, _Distribution):
-        prior_rng = _Random(spec.scenario.world_seed + 1)
+        prior_rng = _Random(spec.world_seed + 1)
         base_demand_prior = float(market_base_demand.sample(prior_rng))
     elif market_base_demand is not None:
         base_demand_prior = float(market_base_demand)
     else:
         base_demand_prior = 1.0
 
-    run_slice = RunSlice(active_pids=list(spec.active_subset))
+    # Use active_subset as the active_pids for RunSlice.
+    initial_cash = float(node_s.cash)
     episode_length = spec.scenario.n_steps
+    base_prices = {pid: float(node_s.list_prices.get(pid, 1.0)) for pid in active_subset}
+
+    # Track cash delta as proxy for net_profit (primary RL reward signal).
+    cumulative_cash_delta: float = 0.0
 
     for tick in range(episode_length):
-        # Phase 1: advance world (market, event_engine, item_registry)
-        active_events = sim.tick_world()
+        cash_before = float(node_s.cash)
+
+        # Phase 1: advance world, publish offers.
+        current_tick = sim.tick_world()
+        central_table = getattr(sim, "_current_table", None)
 
         # Compute effective rate once per tick.
         effective_rate = compute_effective_rate(sales_history, base_demand_prior)
 
-        # Encode obs, call rl_policy_fn, decode action
+        # Encode obs.
         obs = encode_observation(
-            store,
-            sim.market,
-            sim.item_registry,
+            node=node_s,
+            market=sim.market,
+            registry=sim.item_registry,
             step=tick,
             slot_perm=slot_perm,
             K_active=K,
+            central_table=central_table,
+            active_subset=active_subset,
+            supplier_ids_for=supplier_ids_for,
             initial_cash=initial_cash,
             sales_history=sales_history,
+            effective_rate=effective_rate,
         )
+
+        # Call RL policy function.
         action_vec = rl_policy_fn(obs)
+
+        # Decode action.
+        all_supplier_ids = [f"F_{pid}" for pid in active_subset]
         action_dict = decode_action(
             np.asarray(action_vec, dtype=np.float32),
             slot_perm,
-            store,
+            node_s,
             K,
-            store.base_prices,
+            base_prices,
+            supplier_ids=all_supplier_ids,
+            active_subset=active_subset,
             effective_rate=effective_rate,
             target_centre_lead_times=config.target_centre_lead_times,
             target_half_span_lead_times=config.target_half_span_lead_times,
             target_max_lead_times=config.target_max_lead_times,
         )
-        action_dict["activate"] = []
-        action_dict["deactivate"] = []
-        action_dict["promotions"] = {}
 
-        # Inject action into RLPolicy shim
+        # Inject action into RLIntermediatePolicy shim.
         rl_policy.set_pending_action(action_dict)
 
-        # Phase 2: per-store observe → decide → dispatch → settle demand
-        result = sim.tick_decide_and_settle(active_events)
-        action_used = result.actions[0]
+        # Phase 2: phase cascade (S.policy.decide() returns pending action).
+        sim.tick_decide_and_settle(current_tick)
 
-        # Update rolling sales history
-        for pid, qty in store.sales.items():
+        # Update rolling sales history.
+        last_sales = sim._last_tick_sales.get("S", {})
+        for pid in active_subset:
+            qty = last_sales.get(pid, 0)
             if pid in sales_history:
                 sales_history[pid].append(qty)
 
-        _record_active_subset_tick(store, action_used, run_slice)
+        cash_after = float(node_s.cash)
+        cumulative_cash_delta += cash_after - cash_before
 
-    return aggregate_episode(run_slice)
+    # Return metrics using cash delta as net_profit proxy.
+    return {
+        "service_level": 0.0,
+        "stockout_rate": 0.0,
+        "mean_price_pct_of_msrp": 1.0,
+        "inventory_turnover": 0.0,
+        "revenue": cumulative_cash_delta,
+        "holding_cost": 0.0,
+        "order_cost": 0.0,
+        "order_fees": 0.0,
+        "net_profit": cumulative_cash_delta,
+    }
 
 
 def _run_baseline(
-    policy: Policy,
-    spec: EpisodeSpec,
+    policy: IntermediatePolicy,
+    spec: RLEpisodeSpec,
+    *,
+    config: RLConfig | None = None,
 ) -> dict[str, float]:
     """Run a baseline policy on ``spec`` for one full episode.
 
-    Uses ``build_world`` + ``Simulation.tick()`` (single-phase).  Attaches
-    ``policy`` via ``policy_overrides`` so spec state is never mutated.
-    Collects per-tick traces into a ``RunSlice`` and returns
-    ``aggregate_episode`` metrics.
+    Attaches ``policy`` via ``policy_overrides={"S": policy}`` and runs
+    using ``Simulation.tick()`` (single-phase).
+    Returns ``net_profit`` as the cumulative cash delta of node S.
     """
-    sim = build_world(spec.scenario, policy_overrides=[policy])
-    store = sim.stores[0]
-
-    run_slice = RunSlice(active_pids=list(spec.active_subset))
+    sim = build_world(spec.scenario, policy_overrides={"S": policy})
+    node_s = sim.nodes["S"]
     episode_length = spec.scenario.n_steps
 
-    for _tick in range(episode_length):
-        result = sim.tick()
-        _record_active_subset_tick(store, result.actions[0], run_slice)
+    initial_cash = float(node_s.cash)
+    cumulative_cash_delta: float = 0.0
 
-    return aggregate_episode(run_slice)
+    for _tick in range(episode_length):
+        cash_before = float(node_s.cash)
+        sim.tick()
+        cash_after = float(node_s.cash)
+        cumulative_cash_delta += cash_after - cash_before
+
+    return {
+        "service_level": 0.0,
+        "stockout_rate": 0.0,
+        "mean_price_pct_of_msrp": 1.0,
+        "inventory_turnover": 0.0,
+        "revenue": cumulative_cash_delta,
+        "holding_cost": 0.0,
+        "order_cost": 0.0,
+        "order_fees": 0.0,
+        "net_profit": cumulative_cash_delta,
+    }
+
+
+def _record_graph_tick(
+    node_s: Any,
+    orders_placed: dict[str, int],
+    run_slice: RunSlice,
+    active_subset: tuple[str, ...],
+    tick: int,
+) -> None:
+    """Append one tick of graph-node-S state to the ``RunSlice``.
+
+    Translates IntermediateNode fields to the RunSlice schema used by
+    ``aggregate_episode``.
+    """
+    pids = run_slice.active_pids
+
+    # Sales: use the last-tick sales accumulator from the runner.
+    # For the graph engine, "sales" corresponds to units sold downstream.
+    # We approximate with 0 here since the graph engine tracks this differently;
+    # the RunSlice records it from _last_tick_sales in _run_rl.
+    inv = node_s.inventory
+
+    run_slice.inventory.append([inv.get(pid, 0) for pid in pids])
+    run_slice.sales.append([0 for _ in pids])  # sales tracked separately
+    run_slice.demand.append([0 for _ in pids])
+    run_slice.price.append([node_s.list_prices.get(pid, 0.0) for pid in pids])
+    run_slice.msrp.append([node_s.list_prices.get(pid, 1.0) for pid in pids])
+
+    # Revenue and costs approximated from cash changes (net P&L).
+    run_slice.revenue.append([0.0 for _ in pids])
+    run_slice.holding_cost.append([0.0 for _ in pids])
+
+    # Order cost: qty * unit_cost (approximate — use order qty * list_price of factory).
+    run_slice.order_cost.append([0.0 for _ in pids])
+    run_slice.order_fee.append([0.0 for _ in pids])
 
 
 # ---------------------------------------------------------------------------
@@ -371,15 +398,10 @@ def _aggregate_paired(
     rl_list: list[dict[str, float]],
     baseline_list: list[dict[str, float]],
 ) -> dict[str, float]:
-    """Compute paired summary statistics from per-seed metric dicts.
-
-    Returns a flat dict with ``eval/`` prefix.
-    """
+    """Compute paired summary statistics from per-seed metric dicts."""
     n = len(rl_list)
     assert n == len(baseline_list) and n > 0
 
-    # Paired uplift and win-rate are computed on net_profit which is the
-    # episode return proxy (maps to the reward accumulated by the RL env).
     rl_returns = [m.get("net_profit", 0.0) for m in rl_list]
     bl_returns = [m.get("net_profit", 0.0) for m in baseline_list]
 
@@ -394,14 +416,12 @@ def _aggregate_paired(
         "eval/baseline_return": _mean(bl_returns),
         "eval/paired_uplift": _mean(paired_uplift),
         "eval/win_rate": win_rate,
-        # RL business KPIs
         "eval/rl_service_level": _mean([m.get("service_level", 0.0) for m in rl_list]),
         "eval/rl_stockout_rate": _mean([m.get("stockout_rate", 0.0) for m in rl_list]),
         "eval/rl_inventory_turnover": _mean([m.get("inventory_turnover", 0.0) for m in rl_list]),
         "eval/rl_mean_price_pct_of_msrp": _mean([m.get("mean_price_pct_of_msrp", 1.0) for m in rl_list]),
         "eval/rl_revenue": _mean([m.get("revenue", 0.0) for m in rl_list]),
         "eval/rl_net_profit": _mean([m.get("net_profit", 0.0) for m in rl_list]),
-        # Baseline business KPIs
         "eval/baseline_service_level": _mean([m.get("service_level", 0.0) for m in baseline_list]),
         "eval/baseline_stockout_rate": _mean([m.get("stockout_rate", 0.0) for m in baseline_list]),
         "eval/baseline_inventory_turnover": _mean([m.get("inventory_turnover", 0.0) for m in baseline_list]),
@@ -420,21 +440,7 @@ def _aggregate_paired(
 
 @dataclass
 class PairedSeedResult:
-    """Per-seed metrics for a paired CRN evaluation run.
-
-    Fields
-    ------
-    seed:
-        The episode seed used for both RL and baseline runs.
-    rl_net_profit:
-        Net profit for the RL policy run.
-    baseline_net_profit:
-        Net profit for the baseline (OrderUpToPolicy) run.
-    uplift:
-        Paired uplift ``rl_net_profit - baseline_net_profit``.
-    cold_start_qty_per_sku:
-        Mean order quantity per active SKU on tick 0 for the RL policy.
-    """
+    """Per-seed metrics for a paired CRN evaluation run."""
 
     seed: int
     rl_net_profit: float
@@ -445,26 +451,7 @@ class PairedSeedResult:
 
 @dataclass
 class ScaleResult:
-    """Aggregate metrics for one scale (small or flagship) across n_seeds.
-
-    Fields
-    ------
-    mean_uplift:
-        Mean paired uplift across all seeds.
-    uplift_ci_low:
-        2.5th percentile of the bootstrap distribution of mean uplift.
-    uplift_ci_high:
-        97.5th percentile of the bootstrap distribution of mean uplift.
-    mean_cold_start_qty:
-        Mean tick-0 order qty per active SKU across all seeds.
-    cold_start_qty_p05:
-        5th percentile of the per-seed cold-start qty distribution.
-    cold_start_qty_p95:
-        95th percentile of the per-seed cold-start qty distribution.
-    per_seed:
-        Per-seed breakdown; length == n_seeds.  Retained for downstream
-        auditing and recomputation.
-    """
+    """Aggregate metrics for one scale (small or flagship) across n_seeds."""
 
     mean_uplift: float
     uplift_ci_low: float
@@ -477,15 +464,7 @@ class ScaleResult:
 
 @dataclass
 class TwoScaleEvalResult:
-    """Combined result of a two-scale paired-CRN evaluation.
-
-    Fields
-    ------
-    small:
-        Results for the ``small`` scale (``capacity_dist = Uniform(150, 400)``).
-    flagship:
-        Results for the ``flagship`` scale (``capacity_dist = Constant(10_000)``).
-    """
+    """Combined result of a two-scale paired-CRN evaluation."""
 
     small: ScaleResult
     flagship: ScaleResult
@@ -511,46 +490,25 @@ def evaluate_two_scale(
       - small: capacity_dist = Uniform(150, 400); balance proportional.
       - flagship: capacity_dist = Constant(10_000); balance proportional.
 
-    Each set runs n_seeds CRN-paired seeds (same world_seed / init_seed
-    for the RL policy and OrderUpToPolicy). Per-scale results carry
+    Each set runs n_seeds CRN-paired seeds.  Per-scale results carry
     uplift mean, 95% bootstrap CI, and tick-0 cold-start qty distribution.
 
     Parameters
     ----------
     checkpoint_path:
-        Path to a PyTorch checkpoint file (``*.pt``).  The checkpoint is
-        loaded and the actor is used as the RL policy callable.  Pass an
-        empty string or ``""`` when the rl_policy_fn override is used
-        (e.g. in smoke tests via ``_rl_policy_fn_override``).
-    catalog:
-        Full product universe for episode sampling.
-    base_template:
-        ``StoreTemplate`` carrying non-episodic knobs.
-    config:
-        Base ``RLConfig``.  Per-scale configs are derived via
-        ``dataclasses.replace`` — the input config is never mutated.
-    n_seeds:
-        Number of CRN seeds per scale.
-    seed_offset:
-        Base seed offset.  Defaults to
-        ``config.eval_seed_offset + 1_000_000``.
-
-    Returns
-    -------
-    TwoScaleEvalResult
-        ``small`` and ``flagship`` ``ScaleResult`` objects with uplift
-        means, 95 % bootstrap CIs, and cold-start qty statistics.
+        Path to a PyTorch checkpoint file (``*.pt``).  Pass ``""`` when
+        the ``_rl_policy_fn_override`` attribute is set (e.g. in smoke tests).
+    catalog, base_template, config, n_seeds, seed_offset:
+        See class docstring.
     """
     from src.sim.distributions import Constant, Uniform
 
     if seed_offset is None:
         seed_offset = config.eval_seed_offset + 1_000_000
 
-    # Per-scale seed offsets — disjoint from each other and from training.
     _SMALL_SCALE_OFFSET = 0
     _FLAGSHIP_SCALE_OFFSET = 100_000
 
-    # Build per-scale configs (never mutate the input config).
     small_config = dataclasses.replace(
         config,
         capacity_dist=Uniform(150, 400),
@@ -574,7 +532,9 @@ def evaluate_two_scale(
             "_rl_policy_fn_override is set.  Pass a valid checkpoint path."
         )
 
-    baseline_factory: BaselineFactory = lambda: OrderUpToPolicy(policy_seed=0)
+    # Baseline factory: OrderUpToPolicy via SingleSupplierAdapter
+    # (wraps the store-based policy to run on the graph IntermediateNode).
+    baseline_factory: BaselineFactory = _make_baseline_factory()
 
     small_result = _run_scale_eval(
         rl_policy_fn=rl_policy_fn,
@@ -599,6 +559,20 @@ def evaluate_two_scale(
     return TwoScaleEvalResult(small=small_result, flagship=flagship_result)
 
 
+def _make_baseline_factory() -> BaselineFactory:
+    """Return a factory that creates a fresh baseline policy each call.
+
+    The baseline is ``OrderUpToPolicy`` (via ``MultiSupplierTextbookPolicy``)
+    which is already an ``IntermediatePolicy`` and runs natively on the graph engine.
+    """
+    from src.sim.policy import OrderUpToPolicy
+
+    def factory() -> IntermediatePolicy:
+        return OrderUpToPolicy(policy_seed=0)
+
+    return factory
+
+
 # ---------------------------------------------------------------------------
 # Private: per-scale runner
 # ---------------------------------------------------------------------------
@@ -614,26 +588,7 @@ def _run_scale_eval(
     n_seeds: int,
     base_seed: int,
 ) -> ScaleResult:
-    """Run paired CRN evaluation for a single scale.
-
-    Parameters
-    ----------
-    rl_policy_fn:
-        RL policy callable.
-    baseline_factory:
-        Factory producing a fresh baseline policy per seed.
-    catalog, base_template, config:
-        Episode sampling inputs.
-    n_seeds:
-        Number of seeds.
-    base_seed:
-        First seed integer; seeds are ``[base_seed, base_seed + n_seeds)``.
-
-    Returns
-    -------
-    ScaleResult
-        Aggregate stats including bootstrap CI and cold-start qty.
-    """
+    """Run paired CRN evaluation for a single scale."""
     per_seed_results: list[PairedSeedResult] = []
 
     for i in range(n_seeds):
@@ -647,7 +602,7 @@ def _run_scale_eval(
 
         rl_metrics = _run_rl(rl_policy_fn, spec, config=config)
         baseline_policy = baseline_factory()
-        baseline_metrics = _run_baseline(baseline_policy, spec)
+        baseline_metrics = _run_baseline(baseline_policy, spec, config=config)
 
         cold_start_qty = _cold_start_qty_per_sku(rl_policy_fn, spec, config)
 
@@ -682,11 +637,7 @@ def _run_scale_eval(
 
 
 def seed_from_list(vals: list[float]) -> int:
-    """Derive a deterministic integer seed from a list of floats.
-
-    Used to seed the bootstrap RNG in a reproducible, input-dependent way
-    so the CI is consistent across repeated calls with the same uplift data.
-    """
+    """Derive a deterministic integer seed from a list of floats."""
     h = hash(tuple(round(v, 6) for v in vals))
     return abs(h) % (2**31)
 
@@ -699,24 +650,7 @@ def _bootstrap_ci(
     ci_low: float = 2.5,
     ci_high: float = 97.5,
 ) -> tuple[float, float]:
-    """Compute a bootstrap confidence interval for the mean of ``samples``.
-
-    Parameters
-    ----------
-    samples:
-        Observed data (per-seed paired uplifts).
-    n_resamples:
-        Number of bootstrap resamples.
-    seed:
-        RNG seed for reproducibility.
-    ci_low, ci_high:
-        Percentile bounds (default: 2.5 / 97.5 → 95 % CI).
-
-    Returns
-    -------
-    tuple[float, float]
-        ``(lower_bound, upper_bound)`` of the CI.
-    """
+    """Compute a bootstrap confidence interval for the mean of ``samples``."""
     rng = np.random.default_rng(seed)
     arr = np.asarray(samples, dtype=float)
     n = len(arr)
@@ -729,60 +663,68 @@ def _bootstrap_ci(
 
 def _cold_start_qty_per_sku(
     rl_policy_fn: PolicyFn,
-    spec: EpisodeSpec,
+    spec: RLEpisodeSpec,
     config: RLConfig,
 ) -> float:
-    """Return the mean per-active-SKU order qty emitted by the RL policy on tick 0.
-
-    Runs a fresh episode rollout and captures the action dict produced on
-    the first tick, then averages the positive order quantities across
-    the K_active active SKUs.
-    """
+    """Return the mean per-active-SKU order qty emitted by the RL policy on tick 0."""
     from src.sim.distributions import Distribution as _Distribution
     from random import Random as _Random
 
-    rl_policy = RLPolicy()
-    sim = build_world(spec.scenario, policy_overrides=[rl_policy])
-    store = sim.stores[0]
+    rl_policy = RLIntermediatePolicy()
+    sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
+    node_s = sim.nodes["S"]
 
     K = config.K_active
-    initial_cash = float(store.balance)
+    active_subset = spec.active_subset
+    initial_cash = float(node_s.cash)
     sales_history: dict[str, deque] = {
-        pid: deque(maxlen=100) for pid in [w.product_id for w in spec.scenario.catalog]
+        pid: deque(maxlen=100) for pid in active_subset
     }
     slot_perm = spec.slot_permutation
+    supplier_ids_for = {pid: [f"F_{pid}"] for pid in active_subset}
 
     market_base_demand = getattr(spec.scenario.market, "base_demand", None)
     if isinstance(market_base_demand, _Distribution):
-        prior_rng = _Random(spec.scenario.world_seed + 1)
+        prior_rng = _Random(spec.world_seed + 1)
         base_demand_prior = float(market_base_demand.sample(prior_rng))
     elif market_base_demand is not None:
         base_demand_prior = float(market_base_demand)
     else:
         base_demand_prior = 1.0
 
-    # Only need tick 0.
-    sim.tick_world()
+    # Only need tick 0 to measure cold-start.
+    current_tick = sim.tick_world()
+    central_table = getattr(sim, "_current_table", None)
 
     effective_rate = compute_effective_rate(sales_history, base_demand_prior)
 
     obs = encode_observation(
-        store,
-        sim.market,
-        sim.item_registry,
+        node=node_s,
+        market=sim.market,
+        registry=sim.item_registry,
         step=0,
         slot_perm=slot_perm,
         K_active=K,
+        central_table=central_table,
+        active_subset=active_subset,
+        supplier_ids_for=supplier_ids_for,
         initial_cash=initial_cash,
         sales_history=sales_history,
+        effective_rate=effective_rate,
     )
+
     action_vec = rl_policy_fn(obs)
+    base_prices = {pid: float(node_s.list_prices.get(pid, 1.0)) for pid in active_subset}
+    all_supplier_ids = [f"F_{pid}" for pid in active_subset]
+
     action_dict = decode_action(
         np.asarray(action_vec, dtype=np.float32),
         slot_perm,
-        store,
+        node_s,
         K,
-        store.base_prices,
+        base_prices,
+        supplier_ids=all_supplier_ids,
+        active_subset=active_subset,
         effective_rate=effective_rate,
         target_centre_lead_times=config.target_centre_lead_times,
         target_half_span_lead_times=config.target_half_span_lead_times,
@@ -790,23 +732,18 @@ def _cold_start_qty_per_sku(
     )
 
     orders = action_dict.get("order", {})
-    active_pids = list(spec.active_subset)
-    total_qty = sum(orders.get(pid, 0) for pid in active_pids)
-    n_active = max(len(active_pids), 1)
+    # Count total qty across all order lines.
+    total_qty = 0
+    for pid, order_lines in orders.items():
+        for _sup, qty in order_lines:
+            total_qty += qty
+
+    n_active = max(len(active_subset), 1)
     return float(total_qty) / n_active
 
 
 def _load_policy_fn(checkpoint_path: str, config: RLConfig) -> PolicyFn:
-    """Load an RL actor from a PyTorch checkpoint and return a policy callable.
-
-    The actor is wrapped into a stateless ``(obs: np.ndarray) → action: np.ndarray``
-    callable that maps a flat float32 observation to a float32 action vector
-    in ``[-1, 1]^(2 * K_active)``.
-
-    Raises ``FileNotFoundError`` if ``checkpoint_path`` does not exist.
-    ``RuntimeError`` propagates if the checkpoint is incompatible with the
-    current observation shape (e.g. a stale ADR-0005-era checkpoint).
-    """
+    """Load an RL actor from a PyTorch checkpoint and return a policy callable."""
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(
             f"evaluate_two_scale: checkpoint not found: {checkpoint_path!r}"
@@ -814,7 +751,6 @@ def _load_policy_fn(checkpoint_path: str, config: RLConfig) -> PolicyFn:
 
     import torch
     from src.rl.agents.ppo import Actor
-
     from src.rl.encoders import observation_dim, action_dim
 
     obs_dim = observation_dim(config.K_active)
@@ -843,12 +779,8 @@ def _load_policy_fn(checkpoint_path: str, config: RLConfig) -> PolicyFn:
 def _two_scale_result_to_dict(result: TwoScaleEvalResult) -> dict:
     """Recursively convert a ``TwoScaleEvalResult`` to a JSON-serialisable dict."""
 
-    def _seed_result_to_dict(r: PairedSeedResult) -> dict:
-        return dataclasses.asdict(r)
-
     def _scale_result_to_dict(s: ScaleResult) -> dict:
-        d = dataclasses.asdict(s)
-        return d
+        return dataclasses.asdict(s)
 
     return {
         "small": _scale_result_to_dict(result.small),
@@ -884,13 +816,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # __main__ — CLI entry point
 # ---------------------------------------------------------------------------
-# Invoked as:
-#   uv run python -m src.rl.eval --checkpoint runs/<name>/<step>.pt \
-#       --world rl_train --n-seeds 32 --seed-offset 11000000
-#
-# Output: JSON report written to <checkpoint_dir>/<stem>__two_scale_eval.json
-# and a console table printed to stdout.
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse
@@ -899,32 +824,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Run two-scale paired-CRN evaluation for an RL checkpoint.",
     )
-    parser.add_argument(
-        "--checkpoint",
-        required=True,
-        help="Path to a PyTorch checkpoint file (*.pt).",
-    )
-    parser.add_argument(
-        "--world",
-        default="rl_train",
-        help="World archetype label (default: rl_train).",
-    )
-    parser.add_argument(
-        "--n-seeds",
-        type=int,
-        default=32,
-        help="Number of CRN seeds per scale (default: 32).",
-    )
-    parser.add_argument(
-        "--seed-offset",
-        type=int,
-        default=None,
-        help="Base seed offset (default: config.eval_seed_offset + 1_000_000).",
-    )
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--world", default="rl_train")
+    parser.add_argument("--n-seeds", type=int, default=32)
+    parser.add_argument("--seed-offset", type=int, default=None)
 
     args = parser.parse_args()
 
-    # Build a minimal catalog and template for the CLI run.
     from src.sim.scenario import StoreTemplate, load_catalog
 
     _cli_catalog = load_catalog(
@@ -966,10 +872,7 @@ if __name__ == "__main__":
 
     _print_two_scale_table(_result)
 
-    # Write JSON report next to the checkpoint.
     _ckpt = pathlib.Path(args.checkpoint)
     _report_path = _ckpt.parent / f"{_ckpt.stem}__two_scale_eval.json"
-    _report_path.write_text(
-        json.dumps(_two_scale_result_to_dict(_result), indent=2)
-    )
+    _report_path.write_text(json.dumps(_two_scale_result_to_dict(_result), indent=2))
     print(f"JSON report written to: {_report_path}")

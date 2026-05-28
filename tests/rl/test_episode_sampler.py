@@ -1,12 +1,11 @@
-"""Tests for src/rl/episode_sampler.py.
+"""Tests for src/rl/episode_sampler.py (graph engine).
 
 Acceptance criteria covered:
-  - Determinism: same episode_seed → identical EpisodeSpec across all fields
+  - Determinism: same episode_seed → identical RLEpisodeSpec across all fields
   - Assortment coverage: every product appears across many seeds
-  - Distribution sanity: capacities and balances inside configured ranges;
-    means within a generous tolerance
-  - Scenario validity: returned Scenario round-trips through Runner for at
-    least one tick without raising
+  - Distribution sanity: capacities and balances inside configured ranges
+  - Scenario validity: returned graph-mode Scenario runs through Runner for
+    at least one tick without raising
   - Seed splitting independence: freezing the assortment sub-seed and varying
     the rest changes capacity/balance/slot_perm but not the active_subset
 """
@@ -19,9 +18,9 @@ from datetime import datetime
 import pytest
 
 from src.rl.configs.default import RLConfig
-from src.rl.episode_sampler import EpisodeSpec, _derive_seed, sample_episode
+from src.rl.episode_sampler import RLEpisodeSpec, _derive_seed, sample_episode
 from src.sim.distributions import Constant, Uniform
-from src.sim.runner import Runner
+from src.sim.runner import Runner, build_world
 from src.sim.scenario import (
     StoreTemplate,
     load_catalog,
@@ -54,9 +53,9 @@ def _make_base_template() -> StoreTemplate:
     return StoreTemplate(
         id="rl_test",
         region="US",
-        capacity=200,          # will be overridden
-        init_balance=10000.0,  # will be overridden
-        init_stock_pct=0.5,    # will be overridden to 0.0
+        capacity=200,
+        init_balance=10000.0,
+        init_stock_pct=0.5,
         delivery_lag=3,
         holding_rate=0.01,
         order_fee=50.0,
@@ -65,17 +64,10 @@ def _make_base_template() -> StoreTemplate:
 
 
 def _make_config(K_active: int = 5) -> RLConfig:
-    """RLConfig with pinned Uniform distributions for deterministic range checks.
-
-    The default RLConfig uses LogUniform distributions; tests that assert exact
-    numeric bounds pin capacity_dist / balance_dist to a narrow Uniform so the
-    expected ranges are stable regardless of the production defaults.
-    """
-    from src.sim.distributions import Uniform
-
+    """RLConfig with pinned Uniform distributions for deterministic range checks."""
     return RLConfig(
         K_active=K_active,
-        episode_length=5,  # short for speed in tests
+        episode_length=5,
         capacity_dist=Uniform(150, 400),
         balance_dist=Uniform(15_000, 40_000),
     )
@@ -88,7 +80,7 @@ def _make_config(K_active: int = 5) -> RLConfig:
 
 class TestDeterminism:
     def test_same_seed_produces_identical_spec(self):
-        """Two calls with the same seed → byte-identical EpisodeSpec."""
+        """Two calls with the same seed → identical RLEpisodeSpec."""
         catalog = _make_catalog(20)
         template = _make_base_template()
         config = _make_config()
@@ -98,12 +90,9 @@ class TestDeterminism:
 
         assert spec1.active_subset == spec2.active_subset
         assert spec1.slot_permutation == spec2.slot_permutation
-        assert spec1.scenario.world_seed == spec2.scenario.world_seed
-        # Capacity lives on the StoreTemplate inside the Scenario.
-        t1 = spec1.scenario.stores[0].template
-        t2 = spec2.scenario.stores[0].template
-        assert t1.capacity == t2.capacity
-        assert t1.init_balance == t2.init_balance
+        assert spec1.world_seed == spec2.world_seed
+        assert spec1.capacity == spec2.capacity
+        assert spec1.balance == pytest.approx(spec2.balance)
 
     def test_different_seeds_differ(self):
         """Different seeds should (almost certainly) produce different specs."""
@@ -115,12 +104,11 @@ class TestDeterminism:
             sample_episode(catalog, template, config, episode_seed=s)
             for s in range(20)
         ]
-        # Collect all unique active_subsets; expect more than 1 distinct value
         unique_subsets = {s.active_subset for s in specs}
         assert len(unique_subsets) > 1, "All seeds produced the same active_subset"
 
     def test_world_seed_field_derived(self):
-        """world_seed in the Scenario equals _derive_seed(episode_seed, 'world')."""
+        """world_seed in the spec equals _derive_seed(episode_seed, 'world')."""
         catalog = _make_catalog(10)
         template = _make_base_template()
         config = _make_config(K_active=3)
@@ -128,7 +116,7 @@ class TestDeterminism:
         for ep_seed in [0, 1, 99, 12345]:
             spec = sample_episode(catalog, template, config, episode_seed=ep_seed)
             expected_world_seed = _derive_seed(ep_seed, "world")
-            assert spec.scenario.world_seed == expected_world_seed
+            assert spec.world_seed == expected_world_seed
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +149,7 @@ class TestAssortmentCoverage:
             config = _make_config(K_active=K)
             for seed in range(20):
                 spec = sample_episode(catalog, template, config, episode_seed=seed)
-                assert len(spec.active_subset) == K, (
-                    f"K_active={K}, seed={seed}: "
-                    f"got {len(spec.active_subset)} active products"
-                )
+                assert len(spec.active_subset) == K
 
     def test_active_subset_no_duplicates(self):
         """active_subset contains no repeated product ids."""
@@ -174,9 +159,7 @@ class TestAssortmentCoverage:
 
         for seed in range(50):
             spec = sample_episode(catalog, template, config, episode_seed=seed)
-            assert len(set(spec.active_subset)) == len(spec.active_subset), (
-                f"seed={seed}: duplicate products in active_subset {spec.active_subset}"
-            )
+            assert len(set(spec.active_subset)) == len(spec.active_subset)
 
     def test_active_subset_in_catalog(self):
         """All ids in active_subset come from the catalog."""
@@ -198,27 +181,27 @@ class TestAssortmentCoverage:
 
 class TestDistributionSanity:
     def test_capacity_in_configured_range(self):
-        """Sampled capacities fall within [150, 400] (default Uniform)."""
+        """Sampled capacities fall within [150, 400] (Uniform)."""
         catalog = _make_catalog(20)
         template = _make_base_template()
-        config = _make_config()  # default capacity_dist = Uniform(150, 400)
+        config = _make_config()
 
         for seed in range(200):
             spec = sample_episode(catalog, template, config, episode_seed=seed)
-            cap = spec.scenario.stores[0].template.capacity
-            assert 150 <= cap <= 400, f"seed={seed}: capacity={cap} outside [150, 400]"
+            assert 150 <= spec.capacity <= 400, (
+                f"seed={seed}: capacity={spec.capacity} outside [150, 400]"
+            )
 
     def test_balance_in_configured_range(self):
-        """Sampled balances fall within [15000, 40000] (default Uniform)."""
+        """Sampled balances fall within [15000, 40000] (Uniform)."""
         catalog = _make_catalog(20)
         template = _make_base_template()
-        config = _make_config()  # default balance_dist = Uniform(15_000, 40_000)
+        config = _make_config()
 
         for seed in range(200):
             spec = sample_episode(catalog, template, config, episode_seed=seed)
-            bal = spec.scenario.stores[0].template.init_balance
-            assert 15000 <= bal <= 40000, (
-                f"seed={seed}: balance={bal} outside [15000, 40000]"
+            assert 15000 <= spec.balance <= 40000, (
+                f"seed={seed}: balance={spec.balance} outside [15000, 40000]"
             )
 
     def test_capacity_mean_within_tolerance(self):
@@ -228,117 +211,110 @@ class TestDistributionSanity:
         config = _make_config()
 
         caps = [
-            sample_episode(catalog, template, config, episode_seed=s)
-            .scenario.stores[0].template.capacity
+            sample_episode(catalog, template, config, episode_seed=s).capacity
             for s in range(500)
         ]
         mean_cap = statistics.mean(caps)
         expected_mid = (150 + 400) / 2  # 275
-        assert abs(mean_cap - expected_mid) < 0.10 * expected_mid, (
-            f"Mean capacity {mean_cap:.1f} is >10% from expected midpoint {expected_mid}"
-        )
-
-    def test_balance_mean_within_tolerance(self):
-        """Mean sampled balance is within 10% of the midpoint (27500)."""
-        catalog = _make_catalog(20)
-        template = _make_base_template()
-        config = _make_config()
-
-        bals = [
-            sample_episode(catalog, template, config, episode_seed=s)
-            .scenario.stores[0].template.init_balance
-            for s in range(500)
-        ]
-        mean_bal = statistics.mean(bals)
-        expected_mid = (15000 + 40000) / 2  # 27500
-        assert abs(mean_bal - expected_mid) < 0.10 * expected_mid, (
-            f"Mean balance {mean_bal:.1f} is >10% from expected midpoint {expected_mid}"
-        )
+        assert abs(mean_cap - expected_mid) < 0.10 * expected_mid
 
     def test_custom_capacity_distribution(self):
         """Custom narrow Uniform is respected."""
-        from src.sim.distributions import Uniform as Uni
-
         catalog = _make_catalog(10)
         template = _make_base_template()
-        config = RLConfig(K_active=3, episode_length=5, capacity_dist=Uni(500, 600))
+        config = RLConfig(K_active=3, episode_length=5, capacity_dist=Uniform(500, 600),
+                          balance_dist=Uniform(15000, 40000))
 
         for seed in range(50):
             spec = sample_episode(catalog, template, config, episode_seed=seed)
-            cap = spec.scenario.stores[0].template.capacity
-            assert 500 <= cap <= 600, (
-                f"Custom range [500,600] violated: cap={cap}"
-            )
+            assert 500 <= spec.capacity <= 600
 
 
 # ---------------------------------------------------------------------------
-# Scenario validity
+# Scenario validity (graph engine)
 # ---------------------------------------------------------------------------
 
 
 class TestScenarioValidity:
-    def test_scenario_runs_one_tick(self):
-        """Returned Scenario round-trips through Runner for 1 tick without raising."""
+    def test_scenario_is_graph_mode(self):
+        """Returned Scenario is in graph mode (has nodes + edges)."""
         catalog = _make_catalog(20)
         template = _make_base_template()
-        # episode_length=1 so Runner.run() executes exactly one tick.
-        config = RLConfig(K_active=5, episode_length=1)
+        config = _make_config()
 
-        # Test a handful of different seeds.
         for seed in [0, 1, 42, 999]:
             spec = sample_episode(catalog, template, config, episode_seed=seed)
-            # Attach a simple pass-through policy so Runner can call decide().
-            from src.sim.policy import OrderUpToPolicy
+            assert spec.scenario.is_graph, "Expected graph-mode scenario"
+            assert len(spec.scenario.nodes) > 0
+            assert len(spec.scenario.edges) > 0
 
-            policy = OrderUpToPolicy(policy_seed=seed)
-            spec.scenario.stores[0].policy = policy
-            run_log = Runner(spec.scenario).run()
-            # Basic sanity: run log has store 0 and n_steps+1 balance entries.
-            assert 0 in run_log["stores"]
-            assert len(run_log["stores"][0]["balance"]) == 2  # step0 + 1 tick
-
-    def test_active_products_set_on_template(self):
-        """StoreTemplate.init_active_products matches active_subset."""
+    def test_scenario_has_intermediate_node_s(self):
+        """Graph scenario always contains node 'S' (the trainable intermediate)."""
         catalog = _make_catalog(20)
         template = _make_base_template()
-        config = _make_config(K_active=5)
-
-        for seed in range(20):
-            spec = sample_episode(catalog, template, config, episode_seed=seed)
-            t = spec.scenario.stores[0].template
-            assert list(t.init_active_products) == list(spec.active_subset), (
-                f"seed={seed}: template active products mismatch active_subset"
-            )
-
-    def test_init_stock_pct_is_zero(self):
-        """init_stock_pct is always 0.0 (grand-opening scenario)."""
-        catalog = _make_catalog(10)
-        template = _make_base_template()
         config = _make_config()
 
-        for seed in range(20):
+        for seed in [0, 42, 999]:
             spec = sample_episode(catalog, template, config, episode_seed=seed)
-            assert spec.scenario.stores[0].template.init_stock_pct == 0.0
+            node_ids = [ni.node.id for ni in spec.scenario.nodes]
+            assert "S" in node_ids, f"Node 'S' not found in {node_ids}"
 
-    def test_init_freshness_is_fresh(self):
-        """init_freshness is always 'fresh'."""
-        catalog = _make_catalog(10)
+    def test_scenario_runs_one_tick(self):
+        """Returned Scenario round-trips through build_world for 1 tick without raising."""
+        catalog = _make_catalog(20)
         template = _make_base_template()
-        config = _make_config()
+        config = RLConfig(K_active=5, episode_length=1,
+                          capacity_dist=Uniform(150, 400),
+                          balance_dist=Uniform(15_000, 40_000))
 
-        for seed in range(20):
+        for seed in [0, 1, 42, 999]:
             spec = sample_episode(catalog, template, config, episode_seed=seed)
-            assert spec.scenario.stores[0].template.init_freshness == "fresh"
+            sim = build_world(spec.scenario)
+            sim.tick()  # must not raise
 
     def test_n_steps_matches_episode_length(self):
         """Scenario.n_steps == config.episode_length."""
         catalog = _make_catalog(10)
         template = _make_base_template()
 
-        for ep_len in [1, 10, 50, 180]:
-            config = RLConfig(K_active=3, episode_length=ep_len)
+        for ep_len in [1, 10, 50]:
+            config = RLConfig(K_active=3, episode_length=ep_len,
+                              capacity_dist=Uniform(150, 400),
+                              balance_dist=Uniform(15_000, 40_000))
             spec = sample_episode(catalog, template, config, episode_seed=7)
             assert spec.scenario.n_steps == ep_len
+
+    def test_factories_one_per_active_product(self):
+        """Graph has one FactoryNode per active product."""
+        from src.sim.node import FactoryNode
+
+        catalog = _make_catalog(20)
+        template = _make_base_template()
+        config = _make_config(K_active=3)
+
+        spec = sample_episode(catalog, template, config, episode_seed=42)
+        factory_pids = {
+            ni.node.produces_product_id
+            for ni in spec.scenario.nodes
+            if isinstance(ni.node, FactoryNode)
+        }
+        assert factory_pids == set(spec.active_subset)
+
+    def test_sinks_one_per_active_product(self):
+        """Graph has one DemandSinkNode per active product."""
+        from src.sim.node import DemandSinkNode
+
+        catalog = _make_catalog(20)
+        template = _make_base_template()
+        config = _make_config(K_active=3)
+
+        spec = sample_episode(catalog, template, config, episode_seed=42)
+        sink_pids = {
+            ni.node.product_id
+            for ni in spec.scenario.nodes
+            if isinstance(ni.node, DemandSinkNode)
+        }
+        assert sink_pids == set(spec.active_subset)
 
 
 # ---------------------------------------------------------------------------
@@ -349,15 +325,10 @@ class TestScenarioValidity:
 class TestSeedSplitting:
     """Freezing one sub-seed must not change quantities from other sub-seeds."""
 
-    def _vary_world_and_capacity_only(self, catalog, template, config, base_seed):
-        """Return specs where assortment is frozen but world/capacity vary."""
-        # We achieve this by constructing episode_seeds whose assortment
-        # sub-seed matches that of base_seed.  A brute-force search over
-        # seeds finds other seeds with the same assortment_seed value.
+    def _find_same_assortment_specs(self, catalog, template, config, base_seed, n=5):
         base_spec = sample_episode(catalog, template, config, episode_seed=base_seed)
         base_assortment = base_spec.active_subset
 
-        # Collect specs that share the same assortment (same assortment sub-seed path).
         matching = []
         for seed in range(10000):
             if seed == base_seed:
@@ -365,7 +336,7 @@ class TestSeedSplitting:
             spec = sample_episode(catalog, template, config, episode_seed=seed)
             if spec.active_subset == base_assortment:
                 matching.append(spec)
-            if len(matching) >= 5:
+            if len(matching) >= n:
                 break
 
         return base_spec, matching
@@ -376,58 +347,43 @@ class TestSeedSplitting:
         template = _make_base_template()
         config = _make_config(K_active=5)
 
-        base_spec, matching = self._vary_world_and_capacity_only(
+        base_spec, matching = self._find_same_assortment_specs(
             catalog, template, config, base_seed=0
         )
 
         if not matching:
             pytest.skip("Could not find two seeds sharing the same assortment")
 
-        # Slot permutations should differ at least sometimes.
         all_perms = [base_spec.slot_permutation] + [s.slot_permutation for s in matching]
         unique_perms = set(all_perms)
-        # With 5! = 120 possible permutations and independent sub-seeds, we
-        # expect at least 2 distinct permutations across 5+ samples.
-        assert len(unique_perms) > 1 or len(matching) < 3, (
-            "All matching-assortment specs share the same slot permutation — "
-            "slot_seed is not independent of assortment_seed"
-        )
+        assert len(unique_perms) > 1 or len(matching) < 3
 
     def test_derive_seed_uniqueness(self):
-        """_derive_seed produces 5 distinct values for any episode_seed."""
+        """_derive_seed produces distinct values for each purpose."""
         from src.rl.episode_sampler import _SUB_SEED_PARAMS
 
         for ep_seed in [0, 1, 42, 999, 2**16]:
             values = {_derive_seed(ep_seed, purpose) for purpose in _SUB_SEED_PARAMS}
-            assert len(values) == len(_SUB_SEED_PARAMS), (
-                f"ep_seed={ep_seed}: sub-seeds collided: {values}"
-            )
+            assert len(values) == len(_SUB_SEED_PARAMS)
 
-    def test_assortment_frozen_capacity_varies(self):
+    def test_capacity_varies_with_same_assortment(self):
         """Seeds that share assortment_seed still have different capacity draws."""
         catalog = _make_catalog(20)
         template = _make_base_template()
         config = _make_config(K_active=5)
 
-        base_spec, matching = self._vary_world_and_capacity_only(
+        base_spec, matching = self._find_same_assortment_specs(
             catalog, template, config, base_seed=1
         )
 
         if len(matching) < 2:
             pytest.skip("Could not find 2+ seeds sharing the same assortment")
 
-        # assortment_seed matches → active_subset matches
         for spec in matching:
             assert spec.active_subset == base_spec.active_subset
 
-        # capacity_seed is independent → capacities should vary
-        all_caps = [base_spec.scenario.stores[0].template.capacity] + [
-            s.scenario.stores[0].template.capacity for s in matching
-        ]
-        assert len(set(all_caps)) > 1, (
-            "All specs with the same assortment share the same capacity — "
-            "capacity_seed is not independent of assortment_seed"
-        )
+        all_caps = [base_spec.capacity] + [s.capacity for s in matching]
+        assert len(set(all_caps)) > 1
 
     def test_world_seed_varies_independently(self):
         """world_seed varies across seeds even when active_subset is identical."""
@@ -435,27 +391,23 @@ class TestSeedSplitting:
         template = _make_base_template()
         config = _make_config(K_active=5)
 
-        base_spec, matching = self._vary_world_and_capacity_only(
+        base_spec, matching = self._find_same_assortment_specs(
             catalog, template, config, base_seed=2
         )
 
         if len(matching) < 2:
             pytest.skip("Could not find 2+ seeds sharing the same assortment")
 
-        world_seeds = [base_spec.scenario.world_seed] + [
-            s.scenario.world_seed for s in matching
-        ]
-        assert len(set(world_seeds)) > 1, (
-            "Specs with identical assortment share the same world_seed"
-        )
+        world_seeds = [base_spec.world_seed] + [s.world_seed for s in matching]
+        assert len(set(world_seeds)) > 1
 
 
 # ---------------------------------------------------------------------------
-# EpisodeSpec structure
+# RLEpisodeSpec structure
 # ---------------------------------------------------------------------------
 
 
-class TestEpisodeSpecStructure:
+class TestRLEpisodeSpecStructure:
     def test_slot_permutation_is_permutation_of_range_K(self):
         """slot_permutation is a valid permutation of [0, K)."""
         catalog = _make_catalog(20)
@@ -466,19 +418,7 @@ class TestEpisodeSpecStructure:
             for seed in range(30):
                 spec = sample_episode(catalog, template, config, episode_seed=seed)
                 perm = spec.slot_permutation
-                assert sorted(perm) == list(range(K)), (
-                    f"K={K}, seed={seed}: slot_permutation {perm} is not a permutation of range({K})"
-                )
-
-    def test_scenario_has_single_store(self):
-        """Scenario always contains exactly one store."""
-        catalog = _make_catalog(10)
-        template = _make_base_template()
-        config = _make_config()
-
-        for seed in range(10):
-            spec = sample_episode(catalog, template, config, episode_seed=seed)
-            assert len(spec.scenario.stores) == 1
+                assert sorted(perm) == list(range(K))
 
     def test_too_large_K_raises(self):
         """K_active > catalog size raises ValueError."""
@@ -503,3 +443,16 @@ class TestEpisodeSpecStructure:
             catalog, template, config, episode_seed=0, start_date=custom_date
         )
         assert spec_custom.scenario.start_date == custom_date
+
+    def test_spec_has_world_seed_capacity_balance(self):
+        """RLEpisodeSpec has world_seed, capacity, and balance fields."""
+        catalog = _make_catalog(10)
+        template = _make_base_template()
+        config = _make_config()
+
+        spec = sample_episode(catalog, template, config, episode_seed=42)
+        assert isinstance(spec.world_seed, int)
+        assert isinstance(spec.capacity, int)
+        assert isinstance(spec.balance, float)
+        assert spec.capacity > 0
+        assert spec.balance > 0

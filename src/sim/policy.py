@@ -759,9 +759,67 @@ class HeuristicPolicy(Policy):  # type: ignore[no-redef]
         raise TypeError("HeuristicPolicy has been retired.")
 
 
-# RLPolicy is replaced in issue 12 by RLIntermediatePolicy. The legacy
-# shim class has been deleted in Phase 4 (issue 11). If you import
-# RLPolicy from here, update the import to the new location.
+# ---------------------------------------------------------------------------
+# RLIntermediatePolicy — graph-engine RL shim (issue 12)
+# ---------------------------------------------------------------------------
+
+
+class RLIntermediatePolicy(IntermediatePolicy):
+    """RL shim for an ``IntermediateNode`` in the graph engine.
+
+    The RL environment works in two phases:
+
+    1. The env encodes the observation, calls the actor network, and
+       decodes the action into an ``IntermediatePolicy``-compatible dict.
+    2. The decoded dict is injected via ``set_pending_action()``.
+    3. The runner then calls ``decide()`` which returns the injected action.
+
+    ``decide()`` raises ``RuntimeError`` if called before
+    ``set_pending_action`` — this mirrors the old ``RLPolicy`` contract
+    and makes accidental call-order bugs loud.
+
+    The pending action format is the ``IntermediatePolicy.decide()``
+    return dict::
+
+        {
+          "order":             {pid: [(supplier_id, qty), ...]},
+          "list_price":        {pid: float},
+          "min_order_imposed": {pid: int},
+        }
+
+    ``decide()`` also accepts the legacy store-policy dict shape (with
+    ``"price"`` / ``"activate"`` / etc. keys) — this allows the existing
+    ``decode_action`` helper to work without modification during the
+    transition.  Unrecognised keys are passed through transparently.
+    """
+
+    def __init__(self, policy_seed: int | None = None) -> None:
+        super().__init__(policy_seed=policy_seed)
+        self._pending_action: dict | None = None
+
+    def set_pending_action(self, action_dict: dict) -> None:
+        """Inject the decoded action for the next ``decide()`` call."""
+        self._pending_action = action_dict
+
+    def decide(
+        self, obs_intermediate: Any, central_table: Any = None
+    ) -> dict[str, Any]:
+        """Return the pre-injected action dict.
+
+        Raises
+        ------
+        RuntimeError
+            If called before ``set_pending_action``.
+        """
+        if self._pending_action is None:
+            raise RuntimeError(
+                "RLIntermediatePolicy.decide() called before set_pending_action(). "
+                "The RL environment must call set_pending_action(action_dict) "
+                "before the runner calls decide()."
+            )
+        action = self._pending_action
+        self._pending_action = None  # consume the pending action
+        return action
 
 
 __all__ = [
@@ -781,6 +839,8 @@ __all__ = [
     "ReorderPointPolicy",
     "PeriodicOrderUpToPolicy",
     "PeriodicReorderPolicy",
+    # Phase-5 RL graph-engine shim (issue 12)
+    "RLIntermediatePolicy",
 ]
 
 
