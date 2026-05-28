@@ -1,11 +1,9 @@
 """Allocation — single-call FCFS allocation primitive.
 
 ``execute_buy`` is the atomic allocation primitive for the multi-echelon
-graph engine.  Issue 05 implements the **minimum single-supplier path**:
-payment debit/credit, central-table commit, and delivery scheduling.
-The multi-supplier clamping logic and min-order rules are present but
-the full contention path (buyer-capacity clamp, multi-supplier routing)
-lands in issue 07.
+graph engine.  Issue 07 completes the full FCFS allocation contract per
+ADR 0012: capacity clamp, two-layer min-order rejection, cash_ledger
+parameter, and all unit-testable clamp paths.
 
 Public API
 ----------
@@ -49,26 +47,31 @@ def execute_buy(
     pid: str,
     qty_requested: int,
     table: "CentralTable",
-    event_engine: Any,
+    cash_ledger: Any = None,
+    event_engine: Any = None,
     *,
     current_tick: int,
     lead_time: int,
 ) -> AllocationResult:
-    """Execute a single buyer→supplier allocation (minimum single-supplier path).
+    """Execute a single buyer→supplier allocation (full FCFS contract).
 
-    This implementation handles the single-supplier-no-contention case that
-    the Phase 1 chain scenario exercises.  Multi-supplier clamping logic and
-    strict min-order enforcement across both layers land in issue 07.
+    Implements the complete ADR 0012 allocation primitive with all clamp
+    paths, two-layer min-order rejection, and cash_ledger support.
 
     Steps
     -----
     1. Look up the live offer from ``table``.
-    2. Check supplier-imposed minimum order (``Offer.min_order``).  If
-       ``qty_requested < min_order``, reject entirely.
+    2. Two-layer min-order check: reject when
+       ``qty_requested < min(supplier-imposed min_order, buyer-side policy
+       min_order)``.  Supplier-side comes from ``Offer.min_order``; buyer-side
+       comes from ``buyer.policy.min_order`` (defaulting to 0 if absent).
     3. Clamp ``qty_to_fill`` by:
-       - ``Offer.available_qty`` — can't over-allocate from inventory.
+       - ``Offer.available_qty`` — never over-allocate from inventory.
        - ``buyer.cash / list_price`` — buyer pays at allocation time
          (ADR 0013); can't spend more than available.
+       - Remaining buyer capacity — for ``IntermediateNode`` buyers with a
+         finite ``capacity``, the fill is further clamped to
+         ``capacity - sum(inventory.values())``.
     4. ``table.commit(supplier.id, pid, qty_to_fill)`` — decrement live
        available_qty and update fill-rate EMA.
     5. Debit buyer cash and credit supplier cash by
@@ -91,8 +94,12 @@ def execute_buy(
     table:
         Live ``CentralTable`` instance.  ``publish`` must have been called
         for ``(supplier.id, pid)`` this tick before ``execute_buy``.
+    cash_ledger:
+        Optional external cash ledger for audit tracking.  Currently
+        reserved for future use; pass ``None`` (the default) if not needed.
     event_engine:
-        ``EventEngine`` used to schedule delivery callbacks.
+        ``EventEngine`` used to schedule delivery callbacks.  May be
+        ``None`` in unit tests that don't need delivery scheduling.
     current_tick:
         The current simulation tick.
     lead_time:
@@ -103,7 +110,7 @@ def execute_buy(
     AllocationResult
         Populated with ``qty_filled``, ``qty_rejected``, and ``cash_paid``.
     """
-    # Look up the live offer from the central table.
+    # 1. Look up the live offer from the central table.
     offer_rows = table.snapshot_for_buyer(pid)
     offer = None
     for sid, o in offer_rows:
@@ -119,8 +126,18 @@ def execute_buy(
             cash_paid=0.0,
         )
 
-    # 2. Supplier-imposed minimum order check.
-    if qty_requested < offer.min_order:
+    # 2. Two-layer min-order check (ADR 0012).
+    # The effective minimum is min(supplier_min, buyer_policy_min) when both
+    # layers have an explicit constraint.  When the buyer has no policy
+    # min-order constraint, only the supplier-side threshold applies.
+    supplier_min = offer.min_order
+    buyer_policy = getattr(buyer, "policy", None)
+    buyer_policy_min = getattr(buyer_policy, "min_order", None)
+    if buyer_policy_min is not None and buyer_policy_min > 0:
+        effective_min = min(supplier_min, buyer_policy_min)
+    else:
+        effective_min = supplier_min
+    if qty_requested < effective_min:
         return AllocationResult(
             qty_filled=0,
             qty_rejected=qty_requested,
@@ -135,6 +152,19 @@ def execute_buy(
     if list_price > 0:
         cash_affordable = int(buyer.cash / list_price)
         qty_to_fill = min(qty_to_fill, cash_affordable)
+
+    # 3c. Clamp by remaining buyer capacity (for IntermediateNode with finite capacity).
+    buyer_capacity = getattr(buyer, "capacity", 0) or 0
+    if buyer_capacity > 0:
+        buyer_inventory = getattr(buyer, "inventory", None)
+        if isinstance(buyer_inventory, dict):
+            current_stock = sum(buyer_inventory.values())
+        elif isinstance(buyer_inventory, (int, float)):
+            current_stock = buyer_inventory
+        else:
+            current_stock = 0
+        remaining_capacity = max(0, buyer_capacity - current_stock)
+        qty_to_fill = min(qty_to_fill, remaining_capacity)
 
     qty_to_fill = max(0, qty_to_fill)
     qty_rejected = qty_requested - qty_to_fill
@@ -154,9 +184,10 @@ def execute_buy(
     buyer.cash -= cash_paid
     supplier.cash += cash_paid
 
-    # 6. Schedule delivery callback on the event engine.
-    delivery_tick = current_tick + lead_time
-    _schedule_delivery(event_engine, buyer, pid, qty_to_fill, delivery_tick)
+    # 6. Schedule delivery callback on the event engine (if provided).
+    if event_engine is not None:
+        delivery_tick = current_tick + lead_time
+        _schedule_delivery(event_engine, buyer, pid, qty_to_fill, delivery_tick)
 
     return AllocationResult(
         qty_filled=qty_to_fill,
