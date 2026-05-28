@@ -310,6 +310,7 @@ def _node_to_dict(node: Any) -> dict[str, Any]:
         d["capacity_per_tick"] = _serialize(node.capacity_per_tick)
         d["inventory"] = node.inventory
         d["list_price"] = node.list_price
+        d["cash"] = node.cash
 
     elif isinstance(node, IntermediateNode):
         d["carried_products"] = sorted(node.carried_products)
@@ -319,6 +320,7 @@ def _node_to_dict(node: Any) -> dict[str, Any]:
         d["pending"] = {k: dict(v) for k, v in node.pending.items()}
         d["list_prices"] = dict(node.list_prices)
         d["min_order_imposed"] = dict(node.min_order_imposed)
+        d["cash"] = node.cash
 
     elif isinstance(node, DemandSinkNode):
         d["product_id"] = node.product_id
@@ -354,6 +356,7 @@ def _node_from_dict(d: Mapping[str, Any]) -> Any:
             capacity_per_tick=_deserialize(d["capacity_per_tick"]),
             inventory=d["inventory"],
             list_price=d["list_price"],
+            cash=d.get("cash", 0.0),
         )
 
     elif node_type == "IntermediateNode":
@@ -366,6 +369,7 @@ def _node_from_dict(d: Mapping[str, Any]) -> Any:
             pending={k: dict(v) for k, v in d.get("pending", {}).items()},
             list_prices=dict(d["list_prices"]),
             min_order_imposed=dict(d["min_order_imposed"]),
+            cash=d.get("cash", 0.0),
         )
 
     elif node_type == "DemandSinkNode":

@@ -100,6 +100,7 @@ class FactoryNode(Node):
     capacity_per_tick: int | float | Distribution = 0
     inventory: int = 0
     list_price: float = 0.0
+    cash: float = 0.0
 
     @property
     def _node_type(self) -> str:
@@ -147,6 +148,7 @@ class IntermediateNode(Node):
     pending: dict[str, dict[str, int]] = field(default_factory=dict)
     list_prices: dict[str, float] = field(default_factory=dict)
     min_order_imposed: dict[str, int] = field(default_factory=dict)
+    cash: float = 0.0
 
     @property
     def _node_type(self) -> str:

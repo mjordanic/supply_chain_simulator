@@ -489,3 +489,506 @@ def _make_delivery_callback(store: Store, pid: str, qty: int):
 
 
 __all__ = ["Runner", "Simulation", "TickResult", "build_world"]
+
+
+# ===========================================================================
+# Graph engine — issue 05
+# ===========================================================================
+# ``GraphSimulation``, ``GraphRunner``, and ``build_graph_world`` stand up a
+# runnable graph engine that processes the tick cascade end-to-end on
+# single-supplier-per-buyer topologies (Phase 1 chain scenario).
+#
+# Tick structure (ADR 0014):
+#   tick_world → publish_offers → for p in 1..max_level: shuffle buyers →
+#   per buyer observe/decide/execute_buy → produce → deliver →
+#   consume_demand_sinks
+#
+# ``build_graph_world`` is the parallel entry-point to ``build_world``;
+# selection driven by ``Scenario.is_graph`` at the call site (e.g. main.py).
+# Both engines coexist until Phase 4 retires the legacy Store engine.
+# ===========================================================================
+
+
+class GraphSimulation:
+    """Mutable world bundle for the multi-echelon graph engine.
+
+    Construct via :func:`build_graph_world`.
+
+    Attributes
+    ----------
+    scenario      — the frozen ``Scenario`` used to build this bundle.
+    world_rng     — shared world RNG (market/event/lifecycle draws).
+    allocation_rng — per-phase buyer-shuffle RNG (ADR 0016).
+    item_registry — catalog + per-item lifecycle state.
+    market        — regional demand/supply environment.
+    event_engine  — disruption events + order-delivery callbacks.
+    graph         — validated topology (``Graph`` instance).
+    nodes         — ``{node_id: Node}`` mapping for fast lookup.
+    levels        — ``{node_id: int}`` echelon levels.
+    """
+
+    def __init__(
+        self,
+        scenario: Scenario,
+        world_rng: Random,
+        allocation_rng: Random,
+        item_registry: ItemRegistry,
+        market: Market,
+        event_engine: EventEngine,
+        graph: Any,
+        nodes: dict,
+        levels: dict,
+    ) -> None:
+        self.scenario = scenario
+        self.world_rng = world_rng
+        self.allocation_rng = allocation_rng
+        self.item_registry = item_registry
+        self.market = market
+        self.event_engine = event_engine
+        self.graph = graph
+        self.nodes = nodes
+        self.levels = levels
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def tick(self) -> None:
+        """Run one full tick of the graph cascade (ADR 0014).
+
+        Steps
+        -----
+        1. ``tick_world``        — advance market, events, lifecycle.
+        2. ``publish_offers``    — all sellers publish live offers.
+        3. Phase cascade         — for each level p from 1 to max_level:
+                                   shuffle buyers, then per buyer
+                                   observe → decide → execute_buy per line.
+        4. ``produce``           — factories produce up to capacity.
+        5. ``deliver``           — already scheduled by EventEngine; no-op
+                                   here (callbacks fired in ``tick_world``).
+        6. ``consume_demand_sinks`` — credit income_rate to each sink.
+        """
+        from src.sim.allocation import execute_buy, shuffle_buyers
+        from src.sim.central_table import CentralTable, Offer
+        from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+        from src.sim.observation import (
+            build_factory_obs,
+            build_intermediate_obs,
+            build_sink_obs,
+        )
+
+        # -------------------------------------------------------------------
+        # 1. tick_world — advance shared world state.
+        # -------------------------------------------------------------------
+        self.market.tick()
+        self.event_engine.tick(self.market)
+        self.item_registry.tick()
+
+        current_tick = self.market.current_step()
+
+        # -------------------------------------------------------------------
+        # 2. publish_offers — all sellers post current inventory to the table.
+        # -------------------------------------------------------------------
+        table = CentralTable()
+        for node_id, node in self.nodes.items():
+            if isinstance(node, FactoryNode):
+                pid = node.produces_product_id
+                table.publish(
+                    node_id,
+                    pid,
+                    Offer(
+                        available_qty=node.inventory,
+                        list_price=node.list_price,
+                        min_order=0,
+                    ),
+                )
+            elif isinstance(node, IntermediateNode):
+                for pid in node.carried_products:
+                    qty = node.inventory.get(pid, 0)
+                    price = node.list_prices.get(pid, 0.0)
+                    min_order = node.min_order_imposed.get(pid, 0)
+                    table.publish(
+                        node_id,
+                        pid,
+                        Offer(
+                            available_qty=qty,
+                            list_price=price,
+                            min_order=min_order,
+                        ),
+                    )
+
+        # -------------------------------------------------------------------
+        # 3. Phase cascade — levels 1 .. max_level.
+        # -------------------------------------------------------------------
+        if self.levels:
+            max_level = max(self.levels.values())
+        else:
+            max_level = 0
+
+        for p in range(1, max_level + 1):
+            # Collect all buyers at this echelon level.
+            buyers_at_level = [
+                node
+                for node_id, node in self.nodes.items()
+                if self.levels.get(node_id, 0) == p
+            ]
+            if not buyers_at_level:
+                continue
+
+            # Shuffle buyers deterministically (ADR 0016).
+            buyers_at_level = shuffle_buyers(buyers_at_level, self.allocation_rng)
+
+            for buyer in buyers_at_level:
+                if isinstance(buyer, DemandSinkNode):
+                    # Demand target is sampled from demand_dist (simplified for
+                    # Phase 1; full lifecycle/freshness composition in issue 10).
+                    demand_target = 0.0
+                    if buyer.demand_dist is not None:
+                        demand_target = float(
+                            buyer.demand_dist.sample(self.world_rng)
+                        )
+                    obs = build_sink_obs(
+                        buyer, tick=current_tick, demand_target=demand_target
+                    )
+                    # Compute the set of direct suppliers for this buyer.
+                    direct_supplier_ids = self.graph.suppliers_of(buyer.id)
+                    if buyer.policy is not None:
+                        action = buyer.policy.decide(obs, table)
+                    else:
+                        # Default greedy: buy from cheapest available direct supplier.
+                        action = _default_sink_action(
+                            buyer, demand_target, table,
+                            allowed_supplier_ids=direct_supplier_ids,
+                        )
+
+                    # Execute each buy line.
+                    for supplier_id, qty in action.get("buy", []):
+                        if qty <= 0:
+                            continue
+                        # Safety: only buy from direct suppliers.
+                        if supplier_id not in direct_supplier_ids:
+                            continue
+                        supplier = self.nodes.get(supplier_id)
+                        if supplier is None:
+                            continue
+                        lt = self.graph.lead_time(supplier_id, buyer.id, buyer.product_id)
+                        execute_buy(
+                            buyer=buyer,
+                            supplier=supplier,
+                            pid=buyer.product_id,
+                            qty_requested=qty,
+                            table=table,
+                            event_engine=self.event_engine,
+                            current_tick=current_tick,
+                            lead_time=lt,
+                        )
+
+                elif isinstance(buyer, IntermediateNode):
+                    obs = build_intermediate_obs(buyer, tick=current_tick)
+                    direct_supplier_ids = self.graph.suppliers_of(buyer.id)
+                    if buyer.policy is not None:
+                        action = buyer.policy.decide(obs, table)
+                    else:
+                        action = {"order": {}, "list_price": {}, "min_order_imposed": {}}
+
+                    orders = action.get("order", {})
+                    for pid, order_lines in orders.items():
+                        for supplier_id, qty in order_lines:
+                            if qty <= 0:
+                                continue
+                            # Safety: only buy from direct suppliers.
+                            if supplier_id not in direct_supplier_ids:
+                                continue
+                            supplier = self.nodes.get(supplier_id)
+                            if supplier is None:
+                                continue
+                            lt = self.graph.lead_time(supplier_id, buyer.id, pid)
+                            execute_buy(
+                                buyer=buyer,
+                                supplier=supplier,
+                                pid=pid,
+                                qty_requested=qty,
+                                table=table,
+                                event_engine=self.event_engine,
+                                current_tick=current_tick,
+                                lead_time=lt,
+                            )
+
+        # -------------------------------------------------------------------
+        # 4. produce — factories run policy and produce up to capacity.
+        # -------------------------------------------------------------------
+        for node_id, node in self.nodes.items():
+            if isinstance(node, FactoryNode):
+                obs = build_factory_obs(node, tick=current_tick)
+                if node.policy is not None:
+                    action = node.policy.decide(obs)
+                else:
+                    # Default: produce up to capacity.
+                    from src.sim.distributions import Distribution
+                    cap = node.capacity_per_tick
+                    if isinstance(cap, Distribution):
+                        produce_qty = int(cap.sample(self.world_rng))
+                    else:
+                        produce_qty = int(cap)
+                    action = {"produce_qty": produce_qty, "list_price": node.unit_cost}
+
+                produce_qty = int(action.get("produce_qty", 0))
+                node.inventory += produce_qty
+                # Update list price if provided.
+                new_price = action.get("list_price")
+                if new_price is not None:
+                    node.list_price = float(new_price)
+
+        # -------------------------------------------------------------------
+        # 5. deliver — EventEngine already fired delivery callbacks in
+        #    tick_world (step 1 above) so no additional work here.
+        # -------------------------------------------------------------------
+
+        # -------------------------------------------------------------------
+        # 6. consume_demand_sinks — credit income_rate cash to each sink.
+        # -------------------------------------------------------------------
+        for node_id, node in self.nodes.items():
+            if isinstance(node, DemandSinkNode):
+                node.cash += node.income_rate
+
+
+def _default_sink_action(
+    sink: Any,
+    demand_target: float,
+    table: Any,
+    *,
+    allowed_supplier_ids: set | None = None,
+) -> dict:
+    """Default greedy action for a DemandSinkNode without an attached policy.
+
+    Buys from the cheapest available direct supplier that has stock, up to
+    ``demand_target`` units.  Returns ``{"buy": [(supplier_id, qty)]}``.
+
+    Parameters
+    ----------
+    sink:
+        The DemandSinkNode making the purchase decision.
+    demand_target:
+        Desired quantity to purchase this tick.
+    table:
+        Live CentralTable snapshot.
+    allowed_supplier_ids:
+        Set of supplier IDs that are direct graph neighbours. Only offers
+        from these suppliers are considered. If ``None``, all offers are
+        considered (useful in tests).
+    """
+    pid = sink.product_id
+    offers = table.snapshot_for_buyer(pid)
+    if not offers:
+        return {"buy": []}
+
+    # Filter to direct suppliers only.
+    if allowed_supplier_ids is not None:
+        offers = [(sid, o) for sid, o in offers if sid in allowed_supplier_ids]
+
+    if not offers:
+        return {"buy": []}
+
+    # Sort by price ascending, use cheapest first.
+    sorted_offers = sorted(offers, key=lambda t: t[1].list_price)
+
+    remaining = int(demand_target)
+    buys: list[tuple[str, int]] = []
+    for supplier_id, offer in sorted_offers:
+        if remaining <= 0:
+            break
+        if offer.available_qty <= 0:
+            continue
+        # Cash check.
+        affordable_qty = (
+            int(sink.cash / offer.list_price)
+            if offer.list_price > 0
+            else offer.available_qty
+        )
+        qty = min(remaining, offer.available_qty, affordable_qty)
+        if qty > 0:
+            buys.append((supplier_id, qty))
+            remaining -= qty
+
+    return {"buy": buys}
+
+
+def build_graph_world(
+    scenario: Scenario,
+    *,
+    policy_overrides: dict | None = None,
+) -> GraphSimulation:
+    """Construct and return a ``GraphSimulation`` bundle from *scenario*.
+
+    *scenario* must have ``is_graph == True`` (i.e. at least one
+    ``NodeInstance`` in ``scenario.nodes``).
+
+    Parameters
+    ----------
+    scenario:
+        A graph-mode ``Scenario`` with ``nodes`` and ``edges`` populated.
+    policy_overrides:
+        Optional ``{node_id: NodePolicy}`` mapping.  When supplied, the
+        node with the matching id receives the override policy in place of
+        ``NodeInstance.policy``.
+
+    Returns
+    -------
+    GraphSimulation
+        A fully-initialised bundle ready for ``GraphSimulation.tick()``.
+    """
+    from src.sim.episode_sampler import _derive_seed
+    from src.sim.graph import Graph, EdgeSpec, build_graph, compute_levels
+    from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+
+    if not scenario.is_graph:
+        raise ValueError(
+            "build_graph_world requires a graph-mode scenario "
+            "(scenario.is_graph must be True)"
+        )
+
+    # Seeding (ADR 0016): world_rng from world_seed; allocation_rng from the
+    # "allocation" sub-seed derived via _derive_seed.
+    world_rng: Random = Random(scenario.world_seed)
+    allocation_seed = _derive_seed(scenario.world_seed, "allocation")
+    allocation_rng: Random = Random(allocation_seed)
+
+    # Shared world objects — same construction order as build_world.
+    item_registry = ItemRegistry(
+        scenario.item_lifecycle, scenario.catalog, world_rng
+    )
+    market = Market(
+        scenario.market,
+        world_rng,
+        scenario.start_date,
+        registry=item_registry,
+    )
+    event_engine = EventEngine(scenario.disruption, world_rng)
+
+    # Build the Graph topology.
+    node_ids = [ni.node.id for ni in scenario.nodes]
+    edges: list[EdgeSpec] = list(scenario.edges)
+    graph = build_graph(node_ids, edges)
+
+    # Compute echelon levels.
+    levels = compute_levels(graph)
+
+    # Attach policies and build the node lookup dict.
+    overrides = policy_overrides or {}
+    nodes: dict[str, Any] = {}
+    for ni in scenario.nodes:
+        node = ni.node
+        policy = overrides.get(node.id, ni.policy)
+        node.policy = policy
+        # Assign the computed echelon level onto the node.
+        node.level = levels.get(node.id)
+        nodes[node.id] = node
+
+    return GraphSimulation(
+        scenario=scenario,
+        world_rng=world_rng,
+        allocation_rng=allocation_rng,
+        item_registry=item_registry,
+        market=market,
+        event_engine=event_engine,
+        graph=graph,
+        nodes=nodes,
+        levels=levels,
+    )
+
+
+class GraphRunner:
+    """Drive a graph-mode ``Scenario`` for ``n_steps`` ticks.
+
+    Wraps ``build_graph_world`` + ``GraphSimulation.tick()`` into a
+    simple ``run() -> dict`` interface that mirrors ``Runner``.
+
+    The run log is intentionally minimal for Phase 1: it records per-tick
+    node cash balances and total inventory to support cash-conservation
+    and no-negative-inventory assertions without requiring the full
+    per-product trace that ``Runner`` maintains.
+
+    Usage::
+
+        runner = GraphRunner(scenario)
+        log = runner.run()
+
+    Parameters
+    ----------
+    scenario:
+        A graph-mode ``Scenario`` (``scenario.is_graph`` must be True).
+    policy_overrides:
+        Optional ``{node_id: NodePolicy}`` mapping forwarded to
+        ``build_graph_world``.
+    """
+
+    def __init__(
+        self,
+        scenario: Scenario,
+        *,
+        policy_overrides: dict | None = None,
+    ) -> None:
+        self.scenario = scenario
+        self._gsim = build_graph_world(scenario, policy_overrides=policy_overrides)
+
+    @property
+    def nodes(self) -> dict:
+        """Expose the node lookup dict for post-run inspection."""
+        return self._gsim.nodes
+
+    def run(self) -> dict[str, Any]:
+        """Execute the full simulation and return a minimal run log.
+
+        Returns
+        -------
+        dict
+            Keys:
+            ``"ticks"`` — list of per-tick log dicts, each with:
+                ``"tick"``, ``"node_cash"``, ``"node_inventory"``
+            ``"n_steps"`` — number of ticks run.
+        """
+        ticks: list[dict[str, Any]] = []
+        for _ in range(self.scenario.n_steps):
+            self._gsim.tick()
+            tick_log = self._snapshot_tick()
+            ticks.append(tick_log)
+
+        return {
+            "n_steps": self.scenario.n_steps,
+            "ticks": ticks,
+        }
+
+    def _snapshot_tick(self) -> dict[str, Any]:
+        """Capture a minimal per-tick state snapshot."""
+        from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+
+        node_cash: dict[str, float] = {}
+        node_inventory: dict[str, Any] = {}
+
+        for node_id, node in self._gsim.nodes.items():
+            if isinstance(node, (DemandSinkNode,)):
+                node_cash[node_id] = node.cash
+                node_inventory[node_id] = {}
+            elif isinstance(node, FactoryNode):
+                node_cash[node_id] = getattr(node, "cash", 0.0)
+                node_inventory[node_id] = {"_total": node.inventory}
+            elif isinstance(node, IntermediateNode):
+                node_cash[node_id] = getattr(node, "cash", 0.0)
+                node_inventory[node_id] = dict(node.inventory)
+
+        return {
+            "tick": self._gsim.market.current_step(),
+            "node_cash": node_cash,
+            "node_inventory": node_inventory,
+        }
+
+
+__all__ = [
+    "Runner",
+    "Simulation",
+    "TickResult",
+    "build_world",
+    "GraphSimulation",
+    "GraphRunner",
+    "build_graph_world",
+]

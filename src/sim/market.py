@@ -306,5 +306,64 @@ class Market:
             return self.peak_factor
         return self.off_factor
 
+    def demand_multiplier(
+        self,
+        pid: str,
+        region: str,
+        tick: int,
+    ) -> float:
+        """Return the combined demand multiplier for a product in a region at a tick.
+
+        Bundles the three market-level factors without drawing from ``world_rng``:
+
+        1. **Seasonal factor** — ``peak_factor`` or ``off_factor`` depending on
+           the product's season and the current month.  Derived from the internal
+           date (already advanced by ``tick_world`` before this is called).
+        2. **Regional demand factor** — the region's current ``market_demand``
+           state, floored at ``demand_factor_min``.
+        3. **Active disruption multiplier** — disruption shocks are applied by
+           ``EventEngine`` directly to ``market_state`` so they are already
+           folded into the regional demand factor above.
+
+        This method is the ``Market`` surface called by ``DemandSinkNode``
+        demand-target composition (ADR 0015).  It does *not* consume
+        ``world_rng``; all stochastic state was already advanced by
+        ``market.tick()``.
+
+        Parameters
+        ----------
+        pid:
+            Product ID — used to look up the seasonal label from
+            ``ItemRegistry``.
+        region:
+            Region key; must be present in ``self.market_state``.
+        tick:
+            Current simulation tick.  Not consumed in the current
+            implementation but accepted for forward compatibility.
+
+        Returns
+        -------
+        float
+            A ≥ 0 multiplier.  Values < 1 indicate suppressed demand;
+            values > 1 indicate elevated demand.
+        """
+        if self.registry is None:
+            raise RuntimeError(
+                "Market.demand_multiplier requires an attached ItemRegistry"
+            )
+
+        # 1. Seasonal factor driven by the current wall-clock month.
+        season = self.registry.seasonality(pid)
+        month = self.date.month
+        seasonal = self.season_factor(season, month)
+
+        # 2. Regional demand factor — current market_demand for this region.
+        regional = max(
+            self.params.demand_factor_min,
+            self.market_state[region]["market_demand"],
+        )
+
+        return seasonal * regional
+
 
 __all__ = ["Market"]
