@@ -788,6 +788,10 @@ __all__ = [
     "ReorderPointPolicy",
     "PeriodicOrderUpToPolicy",
     "PeriodicReorderPolicy",
+    # Phase-1 graph-engine concrete policies (issue 06)
+    "StaticFactoryPolicy",
+    "DefaultDemandSinkPolicy",
+    "IntermediatePolicy",
 ]
 
 
@@ -1775,3 +1779,306 @@ class PeriodicReorderPolicy(TextbookReorderPolicy):
         applies float-to-int conversion.
         """
         return int(round(S - position))
+
+
+# =============================================================================
+# Phase-1 graph-engine concrete policies  (issue 06)
+# =============================================================================
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# StaticFactoryPolicy — produces at fixed capacity, lists at unit_cost
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class StaticFactoryPolicy(FactoryPolicy):
+    """Simple factory policy: produce exactly ``capacity_per_tick`` units each
+    tick and publish at ``unit_cost`` (zero-margin, per ADR 0013).
+
+    Parameters
+    ----------
+    capacity_per_tick:
+        Fixed number of units to produce each tick.
+    unit_cost:
+        Manufacturing cost per unit. ``list_price`` is set to this value.
+    policy_seed:
+        RNG seed (unused in this deterministic policy; included for
+        interface uniformity).
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity_per_tick: int,
+        unit_cost: float,
+        policy_seed: int | None = None,
+    ) -> None:
+        super().__init__(policy_seed=policy_seed)
+        self.capacity_per_tick = capacity_per_tick
+        self.unit_cost = unit_cost
+
+    def decide(self, obs_factory: Mapping[str, Any]) -> dict[str, Any]:  # type: ignore[override]
+        """Return ``{"produce_qty": capacity_per_tick, "list_price": unit_cost}``."""
+        return {
+            "produce_qty": self.capacity_per_tick,
+            "list_price": self.unit_cost,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DefaultDemandSinkPolicy — greedy cheapest-feasible buyer
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class DefaultDemandSinkPolicy(DemandSinkPolicy):
+    """Greedy demand-sink policy: buy from the cheapest available direct
+    supplier, constrained by the sink's cash balance.
+
+    This policy mirrors the engine's built-in default greedy action
+    (``_default_sink_action``), but as an explicit ``DemandSinkPolicy``
+    subclass so it can be attached to a node, swapped in tests, and
+    introspected.
+
+    The buy plan is: sort available direct-supplier offers by ``list_price``
+    ascending, allocate as many units as possible from the cheapest first,
+    constrained by ``demand_target`` and ``sink.cash``.
+
+    Parameters
+    ----------
+    policy_seed:
+        RNG seed (unused — this policy is deterministic given a stable
+        sort order).
+    """
+
+    def __init__(self, *, policy_seed: int | None = None) -> None:
+        super().__init__(policy_seed=policy_seed)
+
+    def decide(
+        self,
+        obs_sink: Mapping[str, Any],
+        central_table: Any,
+    ) -> dict[str, Any]:
+        """Return ``{"buy": [(supplier_id, qty), ...]}``.
+
+        Parameters
+        ----------
+        obs_sink:
+            Observation dict from ``build_sink_obs``.  Must contain:
+            ``product_id``, ``cash``, ``demand_target``.
+        central_table:
+            Live ``CentralTable`` — queried via ``snapshot_for_buyer``.
+        """
+        pid: str = obs_sink["product_id"]
+        cash: float = float(obs_sink.get("cash", 0.0))
+        demand_target: float = float(obs_sink.get("demand_target", 0.0))
+
+        offers = central_table.snapshot_for_buyer(pid)
+        if not offers:
+            return {"buy": []}
+
+        # Sort by price ascending — cheapest first.
+        sorted_offers = sorted(offers, key=lambda t: t[1].list_price)
+
+        remaining = int(demand_target)
+        buys: list[tuple[str, int]] = []
+        for supplier_id, offer in sorted_offers:
+            if remaining <= 0:
+                break
+            if offer.available_qty <= 0:
+                continue
+            list_price = offer.list_price
+            affordable_qty = (
+                int(cash / list_price) if list_price > 0 else offer.available_qty
+            )
+            qty = min(remaining, offer.available_qty, affordable_qty)
+            if qty > 0:
+                buys.append((supplier_id, qty))
+                remaining -= qty
+                cash -= qty * list_price
+
+        return {"buy": buys}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IntermediatePolicy.SingleSupplierAdapter
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Note: ``IntermediatePolicy`` is already defined above as the ABC.  We attach
+# ``SingleSupplierAdapter`` as a nested class so callers can do
+# ``IntermediatePolicy.SingleSupplierAdapter(supplier_id=..., ...)`` — a
+# natural namespace that matches the issue spec.
+#
+# Python allows adding class attributes to a class after the original
+# definition, so we assign the nested class here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _SingleSupplierAdapter(IntermediatePolicy):
+    """Wraps the ``OrderUpToPolicy`` (s,S) textbook math for a single named
+    upstream supplier.
+
+    This adapter bridges the ``IntermediatePolicy`` interface (which receives
+    ``obs_intermediate, central_table``) to the ``TextbookReorderPolicy``
+    pipeline (which expects a Store-style observation dict).  It:
+
+    1. Translates the intermediate-node observation into the textbook format.
+    2. Calls ``OrderUpToPolicy.decide()`` to get the per-pid desired qty.
+    3. Emits the new ``{"order": {pid: [(supplier_id, qty)]}}`` format,
+       routing all qty to ``self.supplier_id``.
+
+    The rate-estimate / safety-horizon math from ``TextbookReorderPolicy``
+    is preserved exactly.  Only the observation-translation and output-
+    reformatting layers are added here.
+
+    Parameters
+    ----------
+    supplier_id:
+        The single upstream supplier to route all orders to.
+    cover_horizon_ticks:
+        Passed through to ``OrderUpToPolicy``.  Default 14.
+    safety_lead_pct_of_lag:
+        Passed through to ``OrderUpToPolicy``.  Default 1/3.
+    delivery_lag:
+        Fixed delivery lag (ticks) from this supplier.  Used to build
+        the textbook observation's ``delivery_lags`` map.  Default 2.
+    unit_cost:
+        Cost per unit for the supplied product.  Used by the pilot-sizing
+        and allocation pass inside the textbook policy.  Default 1.0.
+    list_price_out:
+        Selling price to advertise downstream.  Returned in ``list_price``
+        key.  Default 0.0 (no pricing change this tick).
+    policy_seed:
+        RNG seed for the inner textbook policy.
+    """
+
+    def __init__(
+        self,
+        *,
+        supplier_id: str,
+        cover_horizon_ticks: int = 14,
+        safety_lead_pct_of_lag: float = 1 / 3,
+        delivery_lag: int = 2,
+        unit_cost: float = 1.0,
+        list_price_out: float = 0.0,
+        policy_seed: int | None = None,
+    ) -> None:
+        super().__init__(policy_seed=policy_seed)
+        self.supplier_id = supplier_id
+        self.delivery_lag = delivery_lag
+        self.unit_cost = unit_cost
+        self.list_price_out = list_price_out
+        # Inner textbook policy — owns the reorder-level math.
+        self._inner = OrderUpToPolicy(
+            cover_horizon_ticks=cover_horizon_ticks,
+            safety_lead_pct_of_lag=safety_lead_pct_of_lag,
+            policy_seed=policy_seed,
+        )
+
+    def decide(
+        self,
+        obs_intermediate: Mapping[str, Any],
+        central_table: Any,
+    ) -> dict[str, Any]:
+        """Compute reorder decisions and route all orders to ``self.supplier_id``.
+
+        Parameters
+        ----------
+        obs_intermediate:
+            Observation dict from ``build_intermediate_obs``.  Must contain:
+            ``tick``, ``inventory``, ``pending``, ``list_prices``,
+            ``min_order_imposed``.
+        central_table:
+            Live ``CentralTable`` — not consumed by this policy (single-
+            supplier routing ignores offer comparisons); included for
+            interface uniformity.
+
+        Returns
+        -------
+        dict with keys:
+            ``order``             — ``{pid: [(supplier_id, qty)]}``
+            ``list_price``        — ``{pid: float}``
+            ``min_order_imposed`` — ``{pid: int}``
+        """
+        tick: int = int(obs_intermediate.get("tick", 0))
+        inventory: dict[str, int] = dict(obs_intermediate.get("inventory", {}))
+        pending_nested: dict[str, dict[str, int]] = dict(
+            obs_intermediate.get("pending", {})
+        )
+        list_prices: dict[str, float] = dict(obs_intermediate.get("list_prices", {}))
+        min_order_imposed: dict[str, int] = dict(
+            obs_intermediate.get("min_order_imposed", {})
+        )
+
+        if not inventory:
+            return {
+                "order": {},
+                "list_price": list_prices,
+                "min_order_imposed": min_order_imposed,
+            }
+
+        # Flatten pending: {supplier: {pid: qty}} → {pid: total_qty}.
+        pending_flat: dict[str, int] = {}
+        for sup_pending in pending_nested.values():
+            for pid, qty in sup_pending.items():
+                pending_flat[pid] = pending_flat.get(pid, 0) + qty
+
+        # The textbook policy needs "sales" to update its rolling log.
+        # The intermediate-node observation doesn't carry an explicit sales
+        # field (sales are inferred from inventory drops in the Store engine).
+        # For the single-supplier adapter we approximate sales as 0 each tick;
+        # the rate estimate will surface naturally once demand is observed via
+        # inventory level changes over multiple ticks.  The pilot pass on tick 0
+        # will fire and seed the inventory.
+        sales_approx: dict[str, int] = {pid: 0 for pid in inventory}
+
+        # Build a Store-compatible observation for the textbook policy.
+        # ``max_capacity`` comes from the node's ``capacity`` field if
+        # passed in obs, otherwise we use a large sentinel so the capacity
+        # clamp never binds.
+        node_capacity = int(obs_intermediate.get("capacity", 0)) or 10_000
+
+        textbook_obs: dict[str, Any] = {
+            "current_sim_step": tick,
+            "active_products": list(inventory.keys()),
+            "inventory": inventory,
+            "sales": sales_approx,
+            "outstanding_orders": pending_flat,
+            "max_capacity": node_capacity,
+            "balance": float(obs_intermediate.get("cash", 10_000.0)),
+            "unit_costs": {pid: self.unit_cost for pid in inventory},
+            "base_prices": dict(list_prices),
+            "delivery_lags": {
+                pid: float(self.delivery_lag) for pid in inventory
+            },
+        }
+
+        # Run the textbook pipeline.
+        textbook_result = self._inner.decide(textbook_obs)
+        textbook_orders: dict[str, int] = textbook_result.get("order", {})
+
+        # Translate {pid: qty} → {pid: [(supplier_id, qty)]} routing to
+        # the single named upstream supplier.
+        new_order: dict[str, list[tuple[str, int]]] = {}
+        for pid, qty in textbook_orders.items():
+            if qty > 0:
+                new_order[pid] = [(self.supplier_id, qty)]
+
+        # Emit selling prices: keep existing prices unless list_price_out set.
+        price_out: dict[str, float] = {}
+        for pid in inventory:
+            price_out[pid] = (
+                self.list_price_out
+                if self.list_price_out > 0
+                else list_prices.get(pid, 0.0)
+            )
+
+        return {
+            "order": new_order,
+            "list_price": price_out,
+            "min_order_imposed": min_order_imposed,
+        }
+
+
+# Attach as a nested class on IntermediatePolicy so callers can write
+# ``IntermediatePolicy.SingleSupplierAdapter(...)``.
+IntermediatePolicy.SingleSupplierAdapter = _SingleSupplierAdapter  # type: ignore[attr-defined]

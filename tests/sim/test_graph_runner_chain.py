@@ -346,6 +346,37 @@ class TestGraphRunnerChain:
                 f"Cash diverged at tick {t1['tick']}"
             )
 
+    def test_cash_conservation_50_ticks(self):
+        """Total system cash grows exactly by sum(income_rates) each tick.
+
+        In Phase 1, the only source of new cash is ``DemandSinkNode.income_rate``.
+        No cash is destroyed (no fees, no holding costs, no write-offs).
+
+        Conservation invariant:
+            total_cash(t) = total_cash(0) + t * sum(income_rates)
+        """
+        scenario = _build_chain_scenario(n_steps=50)
+        gsim = build_graph_world(scenario)
+
+        # Record initial total cash before any ticks.
+        initial_total = sum(
+            getattr(node, "cash", 0.0) for node in gsim.nodes.values()
+        )
+        income_per_tick = sum(
+            getattr(node, "income_rate", 0.0) for node in gsim.nodes.values()
+        )
+
+        for t in range(1, 51):
+            gsim.tick()
+            current_total = sum(
+                getattr(node, "cash", 0.0) for node in gsim.nodes.values()
+            )
+            expected_total = initial_total + t * income_per_tick
+            assert abs(current_total - expected_total) < 1e-6, (
+                f"Cash conservation violated at tick {t}: "
+                f"got {current_total:.6f}, expected {expected_total:.6f}"
+            )
+
 
 class TestMarketDemandMultiplier:
     def _build_market_with_registry(self) -> tuple[Market, str]:

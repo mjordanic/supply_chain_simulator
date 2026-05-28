@@ -81,6 +81,8 @@ def build_intermediate_obs(
         "pending": {k: dict(v) for k, v in node.pending.items()},
         "list_prices": dict(node.list_prices),
         "min_order_imposed": dict(node.min_order_imposed),
+        "capacity": node.capacity,
+        "cash": node.cash,
     }
 
 
