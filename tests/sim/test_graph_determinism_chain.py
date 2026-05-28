@@ -1,4 +1,4 @@
-"""Determinism invariants for the 3-node chain (issue 06).
+"""Determinism invariants for the 3-node chain (issues 06 + 08).
 
 Three invariants are tested:
 
@@ -9,11 +9,13 @@ Three invariants are tested:
    step-0 node state regardless of which policy is attached.
 
 3. **Policy-swap invariant** — swapping the policy on one node does NOT perturb
-   ``world_rng``; the world sequence is identical to a run with any other policy
-   on that node.
+   ``world_rng`` *or* ``allocation_rng``; both world and shuffle sequences are
+   identical to a run with any other policy on that node.
 
-   Note: ``allocation_rng`` isolation (invariant 3b in the issue) is deferred to
-   issue 8 since ``allocation_rng`` is not yet consumed in Phase 1.
+   3a. ``world_rng`` isolation — tested in ``TestPolicySwapInvariant``.
+   3b. ``allocation_rng`` isolation — tested in
+       ``TestAllocationRngPolicySwapInvariant`` (added in issue 08 once
+       ``allocation_rng`` is wired and consumed by ``GraphSimulation.tick``).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import pytest
 
 from src.sim.central_table import CentralTable
 from src.sim.distributions import Constant
+from src.sim.episode_sampler import _derive_seed
 from src.sim.graph import EdgeSpec
 from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
 from src.sim.policy import (
@@ -434,3 +437,92 @@ class TestPolicySwapInvariant:
         v1 = [g1.world_rng.random() for _ in range(5)]
         v2 = [g2.world_rng.random() for _ in range(5)]
         assert v1 == v2, "world_rng state diverged due to factory policy differences"
+
+
+# ---------------------------------------------------------------------------
+# Invariant 3b: Policy swap does not perturb allocation_rng (issue 08)
+# ---------------------------------------------------------------------------
+
+class TestAllocationRngPolicySwapInvariant:
+    """Explicit allocation_rng isolation — invariant 3b (ADR 0016).
+
+    ``allocation_rng`` is seeded independently from ``world_rng`` via
+    ``_derive_seed(world_seed, "allocation")``.  Swapping the policy on any
+    node must not change how many times ``allocation_rng`` is consumed per tick
+    (shuffle calls depend only on graph topology, not on policy identity).
+    """
+
+    def test_allocation_rng_seeded_independently_of_world_rng(self):
+        """allocation_rng and world_rng start at different states for any world_seed.
+
+        Verifies that _derive_seed("allocation") produces a seed distinct from
+        _derive_seed("world") so the two streams never accidentally alias.
+        """
+        for seed in [1, 42, 99, 1234, 0xDEAD_BEEF]:
+            alloc_seed = _derive_seed(seed, "allocation")
+            world_seed_val = _derive_seed(seed, "world")
+            assert alloc_seed != world_seed_val, (
+                f"allocation and world sub-seeds collide for world_seed={seed}"
+            )
+
+    def test_allocation_rng_state_unaffected_by_policy_at_build_time(self):
+        """After build_graph_world, allocation_rng state depends only on world_seed.
+
+        Two builds with the same world_seed but different policies attached
+        must have bit-identical allocation_rng states (policy constructors must
+        not touch allocation_rng).
+        """
+        world_seed = 55
+        s_no_policy = _build_chain_scenario(world_seed=world_seed)
+        s_all_policies = _build_chain_scenario(
+            world_seed=world_seed,
+            factory_policy=StaticFactoryPolicy(capacity_per_tick=50, unit_cost=5.0, policy_seed=1),
+            shop_policy=IntermediatePolicy.SingleSupplierAdapter(
+                supplier_id="factory-1", policy_seed=7
+            ),
+            sink_policy=DefaultDemandSinkPolicy(policy_seed=13),
+        )
+
+        g_no = build_graph_world(s_no_policy)
+        g_all = build_graph_world(s_all_policies)
+
+        v_no = [g_no.allocation_rng.random() for _ in range(10)]
+        v_all = [g_all.allocation_rng.random() for _ in range(10)]
+        assert v_no == v_all, (
+            "allocation_rng state differs after build due to policy attachment — "
+            "policy constructors must not consume allocation_rng"
+        )
+
+    def test_allocation_rng_state_unaffected_by_policy_after_ticks(self):
+        """After N ticks, allocation_rng state is identical regardless of policies.
+
+        The shuffle is called once per level per tick regardless of policy; the
+        number of RNG draws per tick is topology-determined, not policy-determined.
+        """
+        world_seed = 77
+        n_ticks = 10
+
+        s_no_policy = _build_chain_scenario(world_seed=world_seed, n_steps=n_ticks)
+        s_all_policies = _build_chain_scenario(
+            world_seed=world_seed,
+            n_steps=n_ticks,
+            factory_policy=StaticFactoryPolicy(capacity_per_tick=50, unit_cost=5.0, policy_seed=99),
+            shop_policy=IntermediatePolicy.SingleSupplierAdapter(
+                supplier_id="factory-1", policy_seed=101
+            ),
+            sink_policy=DefaultDemandSinkPolicy(policy_seed=202),
+        )
+
+        g_no = build_graph_world(s_no_policy)
+        g_all = build_graph_world(s_all_policies)
+
+        for tick_i in range(n_ticks):
+            g_no.tick()
+            g_all.tick()
+
+            probe_no = g_no.allocation_rng.random()
+            probe_all = g_all.allocation_rng.random()
+            assert probe_no == probe_all, (
+                f"allocation_rng diverged at tick {tick_i} after policy swap: "
+                f"no-policy={probe_no} vs with-policies={probe_all}"
+            )
