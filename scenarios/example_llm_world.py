@@ -17,11 +17,14 @@ Run it directly::
 or hand the path to the CLI shim::
 
     OPENAI_API_KEY=... uv run python main.py scenarios/example_llm_world.py
+
+Phase 4 (issue 11): migrated to the graph engine via ``world_to_graph``.
 """
 
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -33,15 +36,20 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.llm.openai_client import OpenAIClient
 from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
-from src.sim.distributions import Constant, Uniform
-from src.sim.policy import HeuristicPolicy
+from src.sim.distributions import Constant
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import (
+    DefaultDemandSinkPolicy,
+    OrderUpToPolicy,
+    StaticFactoryPolicy,
+)
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     Scenario,
-    make_stores,
 )
+from src.sim.world import world_to_graph
 
 
 # LLM build parameters — kept tiny to keep first-run cost low.
@@ -65,25 +73,48 @@ _world = load_or_build_world(
 _template = next(iter(_world.store_templates.values()))
 
 
-# Author the policy here — never authored by the LLM.
-_policy = HeuristicPolicy(
-    policy_seed=1000,
-    min_qty=1,
-    init_qty_factor=0.3,
-    promo_len=Uniform(3, 5),
-    promo_cd_len=5,
-    review_interval=10,
-    promo_threshold=0.4,
-    target_active_count=4,
-    slow_sales_limit=2,
-    history_window=4,
-    max_history=50,
-    promo_discount=0.7,
+# Author the policy here — never authored by the LLM. The legacy
+# ``HeuristicPolicy`` was retired in Phase 4 (issue 11); the graph engine's
+# shop equivalent is ``OrderUpToPolicy``. A fresh instance per shop keeps
+# each shop's per-pid policy state independent.
+def _build_policy(seed: int) -> OrderUpToPolicy:
+    return OrderUpToPolicy(policy_seed=seed)
+
+
+# Graph engine (Phase 4): synthesise a topology from the World. Build one
+# store template per shop so ``world_to_graph`` emits ``_N_STORES``
+# independent factory→shop→sink sub-graphs (distinct node ids give each
+# shop its own deterministic init seed, mirroring the old per-store
+# ``init_seed`` diversity).
+_world = replace(
+    _world,
+    store_templates={
+        f"{_template.id}_{i}": replace(_template, id=f"{_template.id}_{i}")
+        for i in range(_N_STORES)
+    },
 )
+_topology = world_to_graph(_world, sink_density=1.0)
+
+
+# Attach policies to the synthesised graph: a static factory, one fresh
+# ``OrderUpToPolicy`` per shop, and the default greedy demand-sink policy.
+_shop_idx = 0
+for _ni in _topology["node_instances"]:
+    _node = _ni.node
+    if isinstance(_node, FactoryNode):
+        _ni.policy = StaticFactoryPolicy(
+            capacity_per_tick=_node.capacity_per_tick,
+            unit_cost=_node.unit_cost,
+        )
+    elif isinstance(_node, IntermediateNode):
+        _ni.policy = _build_policy(seed=1000 + _shop_idx)
+        _shop_idx += 1
+    elif isinstance(_node, DemandSinkNode):
+        _ni.policy = DefaultDemandSinkPolicy()
 
 
 # ``Scenario.from_world`` merges the LLM-derived catalog/market with
-# author-supplied disruption / lifecycle / store roster / seeds.
+# author-supplied disruption / lifecycle / graph topology / seeds.
 scenario = Scenario.from_world(
     _world,
     disruption=DisruptionParams(
@@ -102,10 +133,8 @@ scenario = Scenario.from_world(
             for s in ["introduction", "growth", "maturity", "decline", "dead"]
         },
     ),
-    # ``_N_STORES`` stores from the same template, varying init seeds.
-    stores=make_stores(
-        [(_template, 1 + i, _policy) for i in range(_N_STORES)]
-    ),
+    nodes=_topology["node_instances"],
+    edges=_topology["edges"],
     n_steps=50,
     start_date=datetime(2024, 1, 1),
     world_seed=42,

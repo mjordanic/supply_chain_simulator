@@ -203,8 +203,13 @@ def _build_scenario() -> Scenario:
     )
 
 
+# Module-level ``scenario`` so the CLI shim (``main.py``) can load and run
+# this file like any other scenario. ``main()`` below preserves the
+# standalone smoke-test output when the file is executed directly.
+scenario = _build_scenario()
+
+
 def main() -> None:
-    scenario = _build_scenario()
     runner = GraphRunner(scenario)
     log = runner.run()
 

@@ -1,9 +1,9 @@
-"""1000-item fashion-retail world, 5 stores, single policy.
+"""20-item fashion-retail world, single shop, single policy.
 
 The world is built once via the LLM and cached at
-``data/worlds/fashion_retail_1000/world.json``. Subsequent runs reload it
+``data/worlds/fashion_retail_20/world.json``. Subsequent runs reload it
 silently. Approximate first-run cost: ~6 small calls + chunked
-correlations (~20) + chunked freshness (~20) ≈ 46 LLM calls.
+correlations + chunked freshness.
 
 Run it directly::
 
@@ -13,19 +13,9 @@ or via the CLI shim::
 
     uv run python main.py scenarios/llm_world_20.py
 
-Notes on calibration for a 1000-item catalog:
-
-- ``target_active_count=80`` — a fashion store carries roughly 5-15 % of a
-  large back-catalog at any moment; 8 % keeps the active set diverse
-  without overwhelming a single ``HeuristicPolicy`` review pass.
-- The LLM-authored templates are sized for a generic fashion store and
-  do not know the catalog size. We rescale ``capacity``, ``init_balance``
-  and ``init_active_count`` so a flagship can hold the active set plus
-  reorder headroom, then use a single rescaled template across all five
-  stores (varying ``init_seed`` for diversity in the starting roster).
-- Lifecycle transitions are non-trivial: every SKU starts at ``maturity``
-  but can drift toward ``decline``/``dead``, so the run exercises the PLC
-  machinery (ADR 0001/0002) instead of freezing every product at maturity.
+Phase 4 (issue 11): migrated to the graph engine. The rescaled store
+template is expanded into a factory→shop→sink sub-graph via
+``world_to_graph``; policies are then attached to the synthesised nodes.
 """
 
 from __future__ import annotations
@@ -56,14 +46,19 @@ from src.llm.openai_client import OpenAIClient
 from src.llm.world_builder import WorldBuilder, load_or_build_world
 from src.sim.data_exporter import DataExporter
 from src.sim.distributions import Constant, Normal, Uniform
-from src.sim.policy import OrderUpToPolicy
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import (
+    DefaultDemandSinkPolicy,
+    OrderUpToPolicy,
+    StaticFactoryPolicy,
+)
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     Scenario,
-    make_stores,
 )
+from src.sim.world import world_to_graph
 
 
 # Build parameters.
@@ -90,7 +85,7 @@ _world = load_or_build_world(
 )
 
 
-# Rescale the first authored template for the 1000-item catalog.
+# Rescale the first authored template for this catalog.
 _base_template = next(iter(_world.store_templates.values()))
 _template = replace(
     _base_template,
@@ -116,12 +111,12 @@ if not isinstance(_template.delivery_lag, (int, float)):
 _COVER_HORIZON_TICKS = int(_template.delivery_lag)
 
 
-# Policy factory: one ``OrderUpToPolicy`` per store. A fresh instance
-# per store is REQUIRED for the TextbookReorderPolicy family — the
+# Policy factory: one ``OrderUpToPolicy`` per shop. A fresh instance per
+# shop is REQUIRED for the TextbookReorderPolicy family — the
 # rate-estimator logs (``sales_log`` / ``inv_before_settle_log``) are
-# keyed by ``pid`` only, so sharing one instance across stores would
+# keyed by ``pid`` only, so sharing one instance across shops would
 # conflate their per-pid sales into a single log and corrupt the rate
-# estimate. Distinct ``policy_seed`` per store also keeps any
+# estimate. Distinct ``policy_seed`` per shop also keeps any
 # ``policy_rng`` draws independent.
 def _build_policy(seed: int) -> OrderUpToPolicy:
     return OrderUpToPolicy(policy_seed=seed,
@@ -130,6 +125,38 @@ def _build_policy(seed: int) -> OrderUpToPolicy:
         opening_budget_pct=0.50,
         stockout_safety_bonus_pct_of_lag=1.0,
         min_qty=0)
+
+
+# Graph engine (Phase 4): synthesise a topology from the World. Build one
+# store template per shop so ``world_to_graph`` emits ``_N_STORES``
+# independent factory→shop→sink sub-graphs (distinct node ids give each
+# shop its own deterministic init seed, mirroring the old per-store
+# ``init_seed`` diversity).
+_world = replace(
+    _world,
+    store_templates={
+        f"{_template.id}_{i}": replace(_template, id=f"{_template.id}_{i}")
+        for i in range(_N_STORES)
+    },
+)
+_topology = world_to_graph(_world, sink_density=1.0)
+
+
+# Attach policies to the synthesised graph: a static factory, one fresh
+# ``OrderUpToPolicy`` per shop, and the default greedy demand-sink policy.
+_shop_idx = 0
+for _ni in _topology["node_instances"]:
+    _node = _ni.node
+    if isinstance(_node, FactoryNode):
+        _ni.policy = StaticFactoryPolicy(
+            capacity_per_tick=_node.capacity_per_tick,
+            unit_cost=_node.unit_cost,
+        )
+    elif isinstance(_node, IntermediateNode):
+        _ni.policy = _build_policy(seed=1000 + _shop_idx)
+        _shop_idx += 1
+    elif isinstance(_node, DemandSinkNode):
+        _ni.policy = DefaultDemandSinkPolicy()
 
 
 # Stage list kept as a module constant so the comprehension below stays readable.
@@ -163,9 +190,8 @@ scenario = Scenario.from_world(
             "dead": 0.0001,
         },
     ),
-    stores=make_stores(
-        [(_template, 1 + i, _build_policy(seed=1000 + i)) for i in range(_N_STORES)]
-    ),
+    nodes=_topology["node_instances"],
+    edges=_topology["edges"],
     n_steps=_N_STEPS,
     start_date=datetime(2024, 1, 1),
     world_seed=42,
@@ -177,9 +203,12 @@ def main() -> None:
     run_log = Runner(scenario).run()
     output = _PROJECT_ROOT / "data" / "llm_world_20"
     DataExporter(scenario, run_log).export_all(str(output))
+    n_shops = sum(
+        1 for ni in scenario.nodes if isinstance(ni.node, IntermediateNode)
+    )
     print(f"Archetype: {_ARCHETYPE}")
     print(f"Catalog: {len(_world.catalog)} items")
-    print(f"Stores: {len(scenario.stores)} "
+    print(f"Shops: {n_shops} "
           f"(template={_template.id}, capacity={_template.capacity})")
     print(f"Regions: {_world.market.regions}")
     print(f"Wrote run artifacts to {output}")
