@@ -1,6 +1,6 @@
 # Doc sync — `CONTEXT.md` + `README.md` notebook references
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -30,9 +30,9 @@ point at deleted/renamed files; do not rewrite surrounding prose beyond what the
 
 ## Acceptance criteria
 
-- [ ] No reference in `CONTEXT.md` or `README.md` points at a deleted/old notebook name or number
-- [ ] All notebook references match the new ten-notebook lineup above
-- [ ] No new ADR; changes are confined to the stale references (plus minimal wording the rename forces)
+- [x] No reference in `CONTEXT.md` or `README.md` points at a deleted/old notebook name or number
+- [x] All notebook references match the new ten-notebook lineup above
+- [x] No new ADR; changes are confined to the stale references (plus minimal wording the rename forces)
 
 ## Blocked by
 

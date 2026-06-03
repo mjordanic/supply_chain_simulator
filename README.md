@@ -26,7 +26,7 @@ The simulator core. A scenario bundles a product catalog, a market, stochastic d
 
 ![Equity composition and cumulative P&L](docs/images/sim_equity_composition.png)
 
-Full reference: [`src/sim/README.md`](src/sim/README.md) · walkthrough: `notebooks/04a-deep_dive_active_only.ipynb`
+Full reference: [`src/sim/README.md`](src/sim/README.md) · walkthrough: `notebooks/04-deep-dive-per-product.ipynb`
 
 ### LLM world generator (`src/llm/`)
 
@@ -52,7 +52,7 @@ A pipeline that drafts a coherent world — taxonomy, catalog with prices and se
 | P0192 | Women's Leather Tote Bag | Accessories | 118.00 | 46.00 | all_season |
 | P0241 | Kids' Graphic Tee Pack | Kids' Apparel | 24.00 | 7.50 | spring/summer |
 
-Full reference: [`src/llm/README.md`](src/llm/README.md) · walkthroughs: `notebooks/01-openai_world_builder.ipynb`, `notebooks/02-inspect_world.ipynb`
+Full reference: [`src/llm/README.md`](src/llm/README.md) · walkthroughs: `notebooks/00-build-or-load-world.ipynb`, `notebooks/01-inspect-world.ipynb`
 
 ### Hyperparameter tuning (`src/tuning/`)
 
@@ -60,7 +60,7 @@ An Optuna-based hyperparameter search for any policy. Each trial runs the policy
 
 ![Pareto front: profit vs service level](docs/images/tuning_pareto_front.png)
 
-Full reference: [`src/tuning/README.md`](src/tuning/README.md) · walkthrough: `notebooks/08-tune_textbook_policy.ipynb`
+Full reference: [`src/tuning/README.md`](src/tuning/README.md) · walkthrough: `notebooks/07-tune-textbook-policy.ipynb`
 
 ### Reinforcement learning (`src/rl/`)
 
@@ -68,7 +68,7 @@ A PPO training loop on top of a Gymnasium wrapper around the simulator. The agen
 
 ![RL vs OrderUpToPolicy KPIs](docs/images/rl_vs_baseline_kpis.png)
 
-Full reference: [`src/rl/README.md`](src/rl/README.md) · walkthroughs: `notebooks/05-monitor_rl_training.ipynb`, `notebooks/06-compare_rl_vs_baseline.ipynb`
+Full reference: [`src/rl/README.md`](src/rl/README.md) · walkthroughs: `notebooks/08-monitor-rl-training.ipynb`, `notebooks/09-rl-vs-baseline.ipynb`
 
 ## Repo layout
 
