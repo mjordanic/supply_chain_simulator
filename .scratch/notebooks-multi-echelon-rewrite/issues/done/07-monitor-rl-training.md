@@ -1,6 +1,6 @@
 # Notebook `08-monitor-rl-training`
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
