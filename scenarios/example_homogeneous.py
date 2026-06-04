@@ -205,7 +205,8 @@ def _make_store_subgraph(store_index: int, seed_offset: int):
         )
         node_instances.append(
             NodeInstance(node=factory, init_seed=factory.init_seed,
-                         policy=StaticFactoryPolicy(capacity_per_tick=100, unit_cost=ware.unit_cost))
+                         policy=StaticFactoryPolicy(capacity_per_tick=100, unit_cost=ware.unit_cost,
+                                                    target_inventory=200))
         )
         edges.append(
             EdgeSpec(supplier_id=factory_id, buyer_id=shop_id, default_lead_time=2)

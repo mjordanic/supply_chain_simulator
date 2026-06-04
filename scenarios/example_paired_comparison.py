@@ -186,7 +186,8 @@ def _make_paired_subgraph(pair_index: int, shop_policy, label: str):
 
     node_instances = [
         NodeInstance(node=factory, init_seed=factory.init_seed,
-                     policy=StaticFactoryPolicy(capacity_per_tick=100, unit_cost=_CATALOG[0].unit_cost)),
+                     policy=StaticFactoryPolicy(capacity_per_tick=100, unit_cost=_CATALOG[0].unit_cost,
+                                                target_inventory=200)),
         NodeInstance(node=shop, init_seed=shop.init_seed,
                      policy=shop_policy),
     ]

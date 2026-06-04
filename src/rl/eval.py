@@ -44,7 +44,12 @@ import numpy as np
 from src.rl.configs.default import RLConfig
 from src.rl.encoders import compute_effective_rate, decode_action, encode_observation
 from src.rl.episode_sampler import RLEpisodeSpec, sample_episode
-from src.sim.metrics import RunSlice, aggregate_episode
+from src.sim.metrics import (
+    RunSlice,
+    inventory_turnover,
+    mean_price_pct_of_msrp,
+    stockout_rate,
+)
 from src.sim.policy import (
     IntermediatePolicy,
     OrderUpToPolicy,
@@ -191,6 +196,35 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 
+def _episode_metrics(
+    run_slice: RunSlice,
+    net_profit: float,
+) -> dict[str, float]:
+    """Assemble a per-episode metrics dict from observable traces.
+
+    Only the KPIs that can be measured from node-S state the eval already
+    holds are reported:
+
+    - ``net_profit`` — cumulative cash delta of node S (the RL reward signal;
+      reconciles per the audit).
+    - ``stockout_rate`` — fraction of (active-SKU, tick) pairs with zero
+      on-hand inventory at decision time.
+    - ``inventory_turnover`` — realised sales / mean on-hand inventory.
+    - ``mean_price_pct_of_msrp`` — mean selling-price / MSRP ratio.
+
+    ``service_level`` and the revenue / holding / order-cost decomposition are
+    intentionally absent: true demand (pre-stockout) and the per-component cash
+    split are not surfaced by the graph engine here, so emitting them would be a
+    fabricated 0.0 rather than a measurement.
+    """
+    return {
+        "net_profit": net_profit,
+        "stockout_rate": stockout_rate(run_slice),
+        "inventory_turnover": inventory_turnover(run_slice),
+        "mean_price_pct_of_msrp": mean_price_pct_of_msrp(run_slice),
+    }
+
+
 def _run_rl(
     rl_policy_fn: PolicyFn,
     spec: RLEpisodeSpec,
@@ -241,12 +275,27 @@ def _run_rl(
     # Track cash delta as proxy for net_profit (primary RL reward signal).
     cumulative_cash_delta: float = 0.0
 
+    # Collect the per-tick traces that are observable from node S without
+    # new engine plumbing (inventory at decision time, realised sales, prices).
+    # demand / revenue / cost decomposition are NOT recoverable here, so the
+    # KPIs that need them are omitted rather than reported as a fake 0.0.
+    run_slice = RunSlice(active_pids=list(active_subset))
+
     for tick in range(episode_length):
         cash_before = float(node_s.cash)
 
         # Phase 1: advance world, publish offers.
         current_tick = sim.tick_world()
         central_table = getattr(sim, "_current_table", None)
+
+        # Inventory snapshot at decision time (before this tick's settlement).
+        run_slice.inventory.append(
+            [float(node_s.inventory.get(pid, 0)) for pid in active_subset]
+        )
+        run_slice.price.append(
+            [float(node_s.list_prices.get(pid, 0.0)) for pid in active_subset]
+        )
+        run_slice.msrp.append([base_prices[pid] for pid in active_subset])
 
         # Compute effective rate once per tick.
         effective_rate = compute_effective_rate(sales_history, base_demand_prior)
@@ -294,6 +343,9 @@ def _run_rl(
 
         # Update rolling sales history.
         last_sales = sim._last_tick_sales.get("S", {})
+        run_slice.sales.append(
+            [float(last_sales.get(pid, 0)) for pid in active_subset]
+        )
         for pid in active_subset:
             qty = last_sales.get(pid, 0)
             if pid in sales_history:
@@ -302,18 +354,7 @@ def _run_rl(
         cash_after = float(node_s.cash)
         cumulative_cash_delta += cash_after - cash_before
 
-    # Return metrics using cash delta as net_profit proxy.
-    return {
-        "service_level": 0.0,
-        "stockout_rate": 0.0,
-        "mean_price_pct_of_msrp": 1.0,
-        "inventory_turnover": 0.0,
-        "revenue": cumulative_cash_delta,
-        "holding_cost": 0.0,
-        "order_cost": 0.0,
-        "order_fees": 0.0,
-        "net_profit": cumulative_cash_delta,
-    }
+    return _episode_metrics(run_slice, cumulative_cash_delta)
 
 
 def _run_baseline(
@@ -331,27 +372,35 @@ def _run_baseline(
     sim = build_world(spec.scenario, policy_overrides={"S": policy})
     node_s = sim.nodes["S"]
     episode_length = spec.scenario.n_steps
+    active_subset = spec.active_subset
+    base_prices = {pid: float(node_s.list_prices.get(pid, 1.0)) for pid in active_subset}
 
-    initial_cash = float(node_s.cash)
     cumulative_cash_delta: float = 0.0
+    run_slice = RunSlice(active_pids=list(active_subset))
 
     for _tick in range(episode_length):
         cash_before = float(node_s.cash)
+
+        # Inventory / price snapshot at decision time (before this tick settles).
+        run_slice.inventory.append(
+            [float(node_s.inventory.get(pid, 0)) for pid in active_subset]
+        )
+        run_slice.price.append(
+            [float(node_s.list_prices.get(pid, 0.0)) for pid in active_subset]
+        )
+        run_slice.msrp.append([base_prices[pid] for pid in active_subset])
+
         sim.tick()
+
+        last_sales = sim._last_tick_sales.get("S", {})
+        run_slice.sales.append(
+            [float(last_sales.get(pid, 0)) for pid in active_subset]
+        )
+
         cash_after = float(node_s.cash)
         cumulative_cash_delta += cash_after - cash_before
 
-    return {
-        "service_level": 0.0,
-        "stockout_rate": 0.0,
-        "mean_price_pct_of_msrp": 1.0,
-        "inventory_turnover": 0.0,
-        "revenue": cumulative_cash_delta,
-        "holding_cost": 0.0,
-        "order_cost": 0.0,
-        "order_fees": 0.0,
-        "net_profit": cumulative_cash_delta,
-    }
+    return _episode_metrics(run_slice, cumulative_cash_delta)
 
 
 def _record_graph_tick(
@@ -411,22 +460,21 @@ def _aggregate_paired(
     def _mean(vals: list[float]) -> float:
         return sum(vals) / len(vals)
 
+    # Only the measured KPIs are surfaced (see ``_episode_metrics``).
+    # service_level / revenue / cost decomposition are not recoverable from the
+    # eval loop, so they are omitted rather than reported as a fabricated 0.0.
     result: dict[str, float] = {
         "eval/rl_return": _mean(rl_returns),
         "eval/baseline_return": _mean(bl_returns),
         "eval/paired_uplift": _mean(paired_uplift),
         "eval/win_rate": win_rate,
-        "eval/rl_service_level": _mean([m.get("service_level", 0.0) for m in rl_list]),
         "eval/rl_stockout_rate": _mean([m.get("stockout_rate", 0.0) for m in rl_list]),
         "eval/rl_inventory_turnover": _mean([m.get("inventory_turnover", 0.0) for m in rl_list]),
         "eval/rl_mean_price_pct_of_msrp": _mean([m.get("mean_price_pct_of_msrp", 1.0) for m in rl_list]),
-        "eval/rl_revenue": _mean([m.get("revenue", 0.0) for m in rl_list]),
         "eval/rl_net_profit": _mean([m.get("net_profit", 0.0) for m in rl_list]),
-        "eval/baseline_service_level": _mean([m.get("service_level", 0.0) for m in baseline_list]),
         "eval/baseline_stockout_rate": _mean([m.get("stockout_rate", 0.0) for m in baseline_list]),
         "eval/baseline_inventory_turnover": _mean([m.get("inventory_turnover", 0.0) for m in baseline_list]),
         "eval/baseline_mean_price_pct_of_msrp": _mean([m.get("mean_price_pct_of_msrp", 1.0) for m in baseline_list]),
-        "eval/baseline_revenue": _mean([m.get("revenue", 0.0) for m in baseline_list]),
         "eval/baseline_net_profit": _mean([m.get("net_profit", 0.0) for m in baseline_list]),
     }
 

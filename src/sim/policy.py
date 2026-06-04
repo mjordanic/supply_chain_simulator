@@ -1848,15 +1848,29 @@ class _PeriodicReorderCore(TextbookReorderPolicy):
 
 
 class StaticFactoryPolicy(FactoryPolicy):
-    """Simple factory policy: produce exactly ``capacity_per_tick`` units each
-    tick and publish at ``unit_cost`` (zero-margin, per ADR 0013).
+    """Simple factory policy that lists at ``unit_cost`` (zero-margin, per
+    ADR 0013) and produces by one of two rules:
+
+    - ``target_inventory is None`` (default): produce exactly
+      ``capacity_per_tick`` units every tick, unconditionally. Preserves the
+      original demo/test behaviour.
+    - ``target_inventory`` set: a **base-stock** rule — produce
+      ``clamp(target_inventory - current_inventory, 0, capacity_per_tick)``.
+      Once on-hand reaches the target, production stops; as the downstream
+      shop draws inventory down, the factory refills up to capacity. This
+      self-limits factory inventory to ~``target_inventory`` so long-run
+      production tracks units sold instead of piling up unsold stock at
+      cost (which, under ADR 0013, drives factory/system cash deeply
+      negative).
 
     Parameters
     ----------
     capacity_per_tick:
-        Fixed number of units to produce each tick.
+        Maximum number of units producible in a single tick.
     unit_cost:
         Manufacturing cost per unit. ``list_price`` is set to this value.
+    target_inventory:
+        Base-stock target. ``None`` ⇒ unconditional produce-at-capacity.
     policy_seed:
         RNG seed (unused in this deterministic policy; included for
         interface uniformity).
@@ -1867,16 +1881,28 @@ class StaticFactoryPolicy(FactoryPolicy):
         *,
         capacity_per_tick: int,
         unit_cost: float,
+        target_inventory: int | None = None,
         policy_seed: int | None = None,
     ) -> None:
         super().__init__(policy_seed=policy_seed)
         self.capacity_per_tick = capacity_per_tick
         self.unit_cost = unit_cost
+        self.target_inventory = target_inventory
 
     def decide(self, obs_factory: Mapping[str, Any]) -> dict[str, Any]:  # type: ignore[override]
-        """Return ``{"produce_qty": capacity_per_tick, "list_price": unit_cost}``."""
+        """Return ``{"produce_qty": int, "list_price": unit_cost}``.
+
+        ``produce_qty`` is ``capacity_per_tick`` when no target is set, else
+        the base-stock refill ``clamp(target - inventory, 0, capacity)``.
+        """
+        if self.target_inventory is None:
+            produce_qty = self.capacity_per_tick
+        else:
+            current = int(obs_factory.get("inventory", 0))
+            shortfall = self.target_inventory - current
+            produce_qty = max(0, min(shortfall, self.capacity_per_tick))
         return {
-            "produce_qty": self.capacity_per_tick,
+            "produce_qty": produce_qty,
             "list_price": self.unit_cost,
         }
 
@@ -1929,6 +1955,14 @@ class DefaultDemandSinkPolicy(DemandSinkPolicy):
         demand_target: float = float(obs_sink.get("demand_target", 0.0))
 
         offers = central_table.snapshot_for_buyer(pid)
+        # Restrict to the sink's direct suppliers when the runner supplies
+        # them.  The central table lists every seller of ``pid`` — including
+        # indirect upstream nodes (e.g. the factory two echelons up) — so
+        # without this filter the sink would buy from a cheaper indirect
+        # seller and bypass its own shop, starving the shop's demand signal.
+        direct_supplier_ids = obs_sink.get("direct_supplier_ids")
+        if direct_supplier_ids is not None:
+            offers = [(sid, o) for sid, o in offers if sid in direct_supplier_ids]
         if not offers:
             return {"buy": []}
 
@@ -2078,14 +2112,18 @@ class _SingleSupplierAdapter(IntermediatePolicy):
             for pid, qty in sup_pending.items():
                 pending_flat[pid] = pending_flat.get(pid, 0) + qty
 
-        # The textbook policy needs "sales" to update its rolling log.
-        # The intermediate-node observation doesn't carry an explicit sales
-        # field (sales are inferred from inventory drops in the Store engine).
-        # For the single-supplier adapter we approximate sales as 0 each tick;
-        # the rate estimate will surface naturally once demand is observed via
-        # inventory level changes over multiple ticks.  The pilot pass on tick 0
-        # will fire and seed the inventory.
-        sales_approx: dict[str, int] = {pid: 0 for pid in inventory}
+        # The textbook policy needs "sales" to update its rolling log so the
+        # rate estimate (and hence the reorder point ``s``) becomes non-zero.
+        # Prefer the runner-injected ``prev_tick_sales`` (exact units sold to
+        # downstream buyers last tick); fall back to 0 only when it is absent.
+        # Hardcoding 0 here left ``s == 0`` forever, so ``position < s`` never
+        # held and the shop never reordered.
+        prev_tick_sales: dict[str, int] = dict(
+            obs_intermediate.get("prev_tick_sales", {})
+        )
+        sales_approx: dict[str, int] = {
+            pid: prev_tick_sales.get(pid, 0) for pid in inventory
+        }
 
         # Build a Store-compatible observation for the textbook policy.
         # ``max_capacity`` comes from the node's ``capacity`` field if

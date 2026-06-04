@@ -151,6 +151,8 @@ for _ni in _topology["node_instances"]:
         _ni.policy = StaticFactoryPolicy(
             capacity_per_tick=_node.capacity_per_tick,
             unit_cost=_node.unit_cost,
+            # Base-stock target (4x capacity) bounds factory inventory.
+            target_inventory=4 * _node.capacity_per_tick,
         )
     elif isinstance(_node, IntermediateNode):
         _ni.policy = _build_policy(seed=1000 + _shop_idx)

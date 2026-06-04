@@ -80,6 +80,10 @@ def _build_scenario() -> Scenario:
     factory_policy = StaticFactoryPolicy(
         capacity_per_tick=FACTORY_CAPACITY,
         unit_cost=PRODUCT_UNIT_COST,
+        # Base-stock: bound factory inventory at ~one full shop order-up-to
+        # draw ((lag+safety)·rate + cover_horizon·rate ≈ 170 at rate 10) plus
+        # buffer, so production tracks units sold instead of piling up at cost.
+        target_inventory=200,
         policy_seed=1,
     )
     shop_policy = IntermediatePolicy.SingleSupplierAdapter(

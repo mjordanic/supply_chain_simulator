@@ -112,6 +112,11 @@ def _build_scenario() -> Scenario:
     f_lo.policy = StaticFactoryPolicy(
         capacity_per_tick=F_LO_CAPACITY,
         unit_cost=F_LO_UNIT_COST,
+        # Base-stock: bound inventory while staying generous enough to feed
+        # BOTH shops (each draws up to ~(lag+safety)·rate + cover·rate ≈ 270
+        # at rate 15). f_lo is the cheaper, preferred source so it gets the
+        # larger target.
+        target_inventory=300,
         policy_seed=10,
     )
 
@@ -129,6 +134,9 @@ def _build_scenario() -> Scenario:
     f_hi.policy = StaticFactoryPolicy(
         capacity_per_tick=F_HI_CAPACITY,
         unit_cost=F_HI_UNIT_COST,
+        # Base-stock buffer behind f_lo: covers residual shop pull when f_lo
+        # runs dry, bounding inventory instead of piling up unsold stock.
+        target_inventory=400,
         policy_seed=11,
     )
 

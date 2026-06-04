@@ -229,6 +229,13 @@ class Simulation:
                     )
                     # Compute the set of direct suppliers for this buyer.
                     direct_supplier_ids = self.graph.suppliers_of(buyer.id)
+                    # Inject the direct suppliers so an attached policy can
+                    # restrict its buys to them — without this a sink whose
+                    # product is also published by an *indirect* seller (e.g.
+                    # the factory two echelons up) would buy from that seller
+                    # and bypass its own shop, leaving the shop's demand
+                    # signal at zero so it never reorders.
+                    obs["direct_supplier_ids"] = direct_supplier_ids
                     if buyer.policy is not None:
                         action = buyer.policy.decide(obs, table)
                     else:
@@ -332,6 +339,12 @@ class Simulation:
 
                 produce_qty = int(action.get("produce_qty", 0))
                 node.inventory += produce_qty
+                # ADR 0013 rule 3: production absorbs cash at unit_cost
+                # (factories are zero-margin). The factory recovers exactly
+                # this when it later sells at list_price == unit_cost, so the
+                # produce-then-sell cycle nets to zero. Without this leg the
+                # factory accumulated phantom cash from sale revenue alone.
+                node.cash -= node.unit_cost * produce_qty
                 # Update list price if provided.
                 new_price = action.get("list_price")
                 if new_price is not None:
@@ -470,6 +483,10 @@ class Simulation:
                         buyer, tick=current_tick, demand_target=demand_target
                     )
                     direct_supplier_ids = self.graph.suppliers_of(buyer.id)
+                    # See the cascade above: inject direct suppliers so an
+                    # attached sink policy buys only from its own shops, not
+                    # from an indirect upstream seller of the same product.
+                    obs["direct_supplier_ids"] = direct_supplier_ids
                     if buyer.policy is not None:
                         action = buyer.policy.decide(obs, table)
                     else:
@@ -558,6 +575,10 @@ class Simulation:
 
                 produce_qty = int(action.get("produce_qty", 0))
                 node.inventory += produce_qty
+                # ADR 0013 rule 3: production absorbs cash at unit_cost
+                # (zero-margin factory). Recovered exactly on sale at
+                # list_price == unit_cost, so produce-then-sell nets to zero.
+                node.cash -= node.unit_cost * produce_qty
                 new_price = action.get("list_price")
                 if new_price is not None:
                     node.list_price = float(new_price)
@@ -690,7 +711,13 @@ def build_world(
     nodes: dict[str, Any] = {}
     for ni in scenario.nodes:
         node = copy.deepcopy(ni.node)
-        policy = overrides.get(node.id, ni.policy)
+        # Resolve the policy with a three-level precedence: an explicit
+        # override wins, else ``NodeInstance.policy``, else the policy
+        # already attached to the node object (``node.policy``). The last
+        # fallback keeps scenarios that set ``node.policy = ...`` directly
+        # (instead of passing ``NodeInstance(policy=...)``) working —
+        # otherwise their shops would be left policy-less and never order.
+        policy = overrides.get(node.id, ni.policy if ni.policy is not None else node.policy)
         node.policy = policy
         # Assign the computed echelon level onto the node.
         node.level = levels.get(node.id)

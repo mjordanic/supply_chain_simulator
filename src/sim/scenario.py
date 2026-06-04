@@ -779,20 +779,29 @@ class Scenario:
         )
 
     def summary_df(self) -> Any:
-        """Single-row top-level summary (counts, seed, start date)."""
-        import pandas as pd
+        """Single-row top-level summary (counts, seed, start date).
 
-        return pd.DataFrame(
-            [
-                {
-                    "n_steps": self.n_steps,
-                    "start_date": self.start_date,
-                    "world_seed": self.world_seed,
-                    "n_stores": len(self.stores),
-                    "n_products": len(self.catalog),
-                }
-            ]
-        )
+        Graph-mode scenarios report the node-roster size (``n_nodes`` plus a
+        per-node-type count, e.g. ``n_IntermediateNode``) instead of the legacy
+        ``n_stores`` field, which would always be 0 for graph scenarios.
+        """
+        import pandas as pd
+        from collections import Counter
+
+        row = {
+            "n_steps": self.n_steps,
+            "start_date": self.start_date,
+            "world_seed": self.world_seed,
+            "n_products": len(self.catalog),
+        }
+        if self.is_graph:
+            row["n_nodes"] = len(self.nodes)
+            type_counts = Counter(type(ni.node).__name__ for ni in self.nodes)
+            for node_type, count in sorted(type_counts.items()):
+                row[f"n_{node_type}"] = count
+        else:
+            row["n_stores"] = len(self.stores)
+        return pd.DataFrame([row])
 
     def nodes_df(self) -> Any:
         """One-row-per-NodeInstance DataFrame.

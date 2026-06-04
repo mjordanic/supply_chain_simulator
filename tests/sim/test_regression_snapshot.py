@@ -43,7 +43,7 @@ from src.sim.scenario import (
 
 # Bump this constant when simulator numerics change intentionally. A
 # failing assertion prints the observed digest so it can be copied here.
-EXPECTED_HASH = "e39cd97b30c6c4d01547023a0657d99ec5c6427e6ad36dd2577a132a339a46d2"
+EXPECTED_HASH = "81b817b7f7f3702c924ec6aebb87b30fa1df8c22b158ab3276cbcd8eddddefcd"
 
 
 N_STEPS = 30

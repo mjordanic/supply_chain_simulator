@@ -216,6 +216,7 @@ def world_to_graph(
     from src.sim.distributions import Normal
     from src.sim.graph import EdgeSpec
     from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+    from src.sim.policy import StaticFactoryPolicy
     from src.sim.scenario import NodeInstance
 
     if not (0 < sink_density <= 1.0):
@@ -245,7 +246,18 @@ def world_to_graph(
         shop_id = f"{tmpl_id}-shop"
         # All sink products are carried by this shop.
         carried = set(sink_products)
-        base_price = catalog[0].base_price if catalog else 2.0
+        # Price each SKU from its OWN catalog economics. ``base_price`` is the
+        # intended retail price and is ``> unit_cost`` by construction (see
+        # ``CatalogItem`` validation), so no shop SKU is ever sold below its
+        # purchase cost. A single flat price here put several SKUs below cost.
+        shop_list_prices = {
+            pid: (
+                catalog_by_pid[pid].base_price
+                if pid in catalog_by_pid
+                else 2.0
+            )
+            for pid in sink_products
+        }
         shop = IntermediateNode(
             id=shop_id,
             region=region,
@@ -255,7 +267,7 @@ def world_to_graph(
             tags=["shop"],
             inventory={pid: 20 for pid in sink_products},
             pending={},
-            list_prices={pid: base_price for pid in sink_products},
+            list_prices=shop_list_prices,
             min_order_imposed={pid: 0 for pid in sink_products},
             cash=float(tmpl.init_balance) if isinstance(tmpl.init_balance, (int, float)) else 1000.0,
         )
@@ -279,7 +291,22 @@ def world_to_graph(
                 cash=0.0,
             )
             all_node_instances.append(
-                NodeInstance(node=factory, init_seed=factory.init_seed)
+                NodeInstance(
+                    node=factory,
+                    init_seed=factory.init_seed,
+                    # Base-stock production so factory inventory stays bounded.
+                    # Without a target the factory produces ``capacity_per_tick``
+                    # (50) every tick regardless of demand (sinks pull ~10/tick),
+                    # piling up unsold stock that — under ADR 0013 — drives
+                    # factory/system cash deeply negative. Target = 4×capacity
+                    # comfortably covers one full shop order-up-to draw over the
+                    # factory→shop lead time while staying bounded.
+                    policy=StaticFactoryPolicy(
+                        capacity_per_tick=factory.capacity_per_tick,
+                        unit_cost=factory.unit_cost,
+                        target_inventory=4 * factory.capacity_per_tick,
+                    ),
+                )
             )
             # Factory → shop edge.
             all_edges.append(

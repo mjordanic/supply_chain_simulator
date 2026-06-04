@@ -192,6 +192,10 @@ class RolloutBuffer:
         self.rewards = torch.zeros(n_steps, n_envs, device=device)
         self.dones = torch.zeros(n_steps, n_envs, device=device)
         self.values = torch.zeros(n_steps, n_envs, device=device)
+        # 1.0 for real transitions, 0.0 for Gymnasium NEXT_STEP dummy autoreset
+        # steps (which carry a placeholder reward/obs and must not enter the
+        # PPO loss or advantage normalisation). Defaults to all-real.
+        self.masks = torch.ones(n_steps, n_envs, device=device)
 
         # Filled by compute_gae.
         self.advantages = torch.zeros(n_steps, n_envs, device=device)
@@ -207,8 +211,13 @@ class RolloutBuffer:
         reward: torch.Tensor,
         done: torch.Tensor,
         value: torch.Tensor,
+        mask: torch.Tensor | None = None,
     ) -> None:
-        """Store one step's data at the current pointer, then advance."""
+        """Store one step's data at the current pointer, then advance.
+
+        ``mask`` is 1.0 for a real transition and 0.0 for a Gymnasium
+        NEXT_STEP dummy autoreset step; defaults to all-real.
+        """
         t = self._ptr
         self.obs[t] = obs
         self.actions[t] = action
@@ -216,6 +225,8 @@ class RolloutBuffer:
         self.rewards[t] = reward
         self.dones[t] = done
         self.values[t] = value
+        if mask is not None:
+            self.masks[t] = mask
         self._ptr += 1
 
     def compute_gae(
@@ -254,7 +265,10 @@ class RolloutBuffer:
 
         Returns
         -------
-        obs, actions, log_probs_old, advantages, returns
+        obs, actions, log_probs_old, advantages, returns, masks
+
+        ``masks`` is 1.0 for real transitions and 0.0 for NEXT_STEP dummy
+        autoreset steps; callers use it to drop dummy rows from the update.
         """
         b = self.n_steps * self.n_envs
         return (
@@ -263,6 +277,7 @@ class RolloutBuffer:
             self.log_probs.view(b),
             self.advantages.view(b),
             self.returns.view(b),
+            self.masks.view(b),
         )
 
 
@@ -384,13 +399,28 @@ def train_ppo(
             reward = torch.tensor(reward_np, dtype=torch.float32, device=device)
             done_next = torch.tensor(done_next_np, dtype=torch.float32, device=device)
 
-            buffer.store(obs, action, log_prob, reward, done, value)
+            # Under Gymnasium's AutoresetMode.NEXT_STEP, the transition that
+            # immediately follows a done step is a dummy autoreset step (the
+            # underlying env was reset, not stepped): its reward/obs/done are
+            # placeholders, not a real environment transition. ``done`` still
+            # holds the *previous* step's flags here, so it flags exactly those
+            # dummy steps. We pass ``mask = 1 - done`` (0 for dummy, 1 for real)
+            # so dummy steps are excluded from the PPO loss and advantage
+            # normalisation, and we reuse the same signal to skip them in
+            # episode accounting (otherwise every episode after the first is
+            # counted one tick too long — length 181 instead of 180).
+            autoreset_np = done.cpu().numpy().astype(bool)
+            mask = 1.0 - done
+
+            buffer.store(obs, action, log_prob, reward, done, value, mask)
 
             obs = torch.tensor(obs_next_np, dtype=torch.float32, device=device)
             done = done_next
 
             # Track episode returns.
             for i in range(n_envs):
+                if autoreset_np[i]:
+                    continue
                 ep_ret[i] += float(reward_np[i])
                 ep_len[i] += 1
                 if done_next_np[i]:
@@ -407,13 +437,22 @@ def train_ppo(
         # ----------------------------------------------------------------
         # PPO update.
         # ----------------------------------------------------------------
-        b_obs, b_actions, b_log_probs_old, b_advantages, b_returns = buffer.get_flat()
+        b_obs, b_actions, b_log_probs_old, b_advantages, b_returns, b_masks = buffer.get_flat()
 
-        # Normalise advantages over the full batch.
-        b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
+        # Drop Gymnasium NEXT_STEP dummy autoreset steps (mask == 0) from the
+        # update: they carry placeholder reward/obs and must not bias advantage
+        # normalisation or the policy/value loss.
+        real_indices = np.flatnonzero(b_masks.cpu().numpy() > 0.5)
 
-        # Indices for minibatch permutation.
-        indices = np.arange(batch_size)
+        # Normalise advantages over the real transitions only. Clone first so
+        # the in-place write does not mutate the buffer's view.
+        b_advantages = b_advantages.clone()
+        b_advantages[real_indices] = (
+            b_advantages[real_indices] - b_advantages[real_indices].mean()
+        ) / (b_advantages[real_indices].std() + 1e-8)
+
+        # Indices for minibatch permutation (real steps only).
+        indices = real_indices
 
         # Accumulate update statistics for TensorBoard.
         value_losses: list[float] = []
@@ -427,9 +466,14 @@ def train_ppo(
             if kl_early_stop:
                 break
             np.random.shuffle(indices)
-            for start in range(0, batch_size, minibatch_size):
+            # ``indices`` holds only real-step rows (dummy autoreset steps
+            # dropped), so iterate over its actual length rather than the full
+            # batch_size.
+            for start in range(0, len(indices), minibatch_size):
                 end = start + minibatch_size
                 mb_idx = indices[start:end]
+                if mb_idx.size == 0:
+                    continue
 
                 mb_obs = b_obs[mb_idx]
                 mb_actions = b_actions[mb_idx]

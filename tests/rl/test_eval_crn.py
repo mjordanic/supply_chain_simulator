@@ -188,7 +188,7 @@ class TestCRNSelfEval:
             assert m1["net_profit"] == pytest.approx(m2["net_profit"], abs=1e-6), (
                 f"Two identical RL runs diverged: {m1['net_profit']} vs {m2['net_profit']}"
             )
-            assert m1["service_level"] == pytest.approx(m2["service_level"], abs=1e-6)
+            assert m1["stockout_rate"] == pytest.approx(m2["stockout_rate"], abs=1e-6)
 
     def test_baseline_self_eval_paired_difference_zero(self):
         """Running the baseline against itself gives paired_uplift = 0."""
