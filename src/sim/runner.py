@@ -275,6 +275,12 @@ class Simulation:
                     # would make the inventory-delta proxy misleading).
                     obs["prev_tick_sales"] = prev_tick_sales.get(buyer.id, {})
                     direct_supplier_ids = self.graph.suppliers_of(buyer.id)
+                    # Inject the buyer's direct upstream suppliers so the policy
+                    # routes reorders to them, not to its own published offers
+                    # (a shop publishes its carried inventory for downstream
+                    # sinks, so the central table would otherwise list the shop
+                    # itself as a "supplier" and the lines below would drop it).
+                    obs["direct_supplier_ids"] = direct_supplier_ids
                     if buyer.policy is not None:
                         action = buyer.policy.decide(obs, table)
                     else:
@@ -500,6 +506,12 @@ class Simulation:
                     obs = build_intermediate_obs(buyer, tick=current_tick)
                     obs["prev_tick_sales"] = prev_tick_sales.get(buyer.id, {})
                     direct_supplier_ids = self.graph.suppliers_of(buyer.id)
+                    # Inject the buyer's direct upstream suppliers so the policy
+                    # routes reorders to them, not to its own published offers
+                    # (a shop publishes its carried inventory for downstream
+                    # sinks, so the central table would otherwise list the shop
+                    # itself as a "supplier" and the lines below would drop it).
+                    obs["direct_supplier_ids"] = direct_supplier_ids
                     if buyer.policy is not None:
                         action = buyer.policy.decide(obs, table)
                     else:

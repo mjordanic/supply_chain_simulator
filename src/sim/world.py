@@ -181,7 +181,7 @@ def world_to_graph(
     Each ``StoreTemplate`` in ``world.store_templates`` expands to one
     3-node sub-graph:
 
-        FactoryNode(``<tmpl_id>-factory``)
+        FactoryNode(``<tmpl_id>-factory-<pid>``) per product
             → IntermediateNode(``<tmpl_id>-shop``)
             → DemandSinkNode(``<tmpl_id>-sink-<pid>``) per product
 
@@ -233,24 +233,13 @@ def world_to_graph(
     for tmpl_id, tmpl in world.store_templates.items():
         region = tmpl.region
 
-        # One factory per template, produces the first product in the catalog.
-        # For single-product catalogs this is the only product.
-        # For multi-product catalogs the factory covers P0000 by convention.
-        primary_pid = catalog[0].product_id if catalog else "P0000"
-        unit_cost = catalog[0].unit_cost if catalog else 1.0
-        factory_id = f"{tmpl_id}-factory"
-        factory = FactoryNode(
-            id=factory_id,
-            region=region,
-            init_seed=_deterministic_seed(factory_id),
-            produces_product_id=primary_pid,
-            unit_cost=unit_cost,
-            capacity_per_tick=50,
-            inventory=100,
-            list_price=unit_cost,
-            cash=0.0,
+        # One factory per carried product. ``FactoryNode`` produces a single
+        # product, so a multi-product shop needs one factory per product to
+        # have an upstream source for every SKU it carries.
+        catalog_by_pid = {w.product_id: w for w in catalog}
+        factory_lead = (
+            int(tmpl.delivery_lag) if isinstance(tmpl.delivery_lag, (int, float)) else 2
         )
-        factory_instance = NodeInstance(node=factory, init_seed=factory.init_seed)
 
         # One shop (intermediate) per template.
         shop_id = f"{tmpl_id}-shop"
@@ -271,19 +260,35 @@ def world_to_graph(
             cash=float(tmpl.init_balance) if isinstance(tmpl.init_balance, (int, float)) else 1000.0,
         )
         shop_instance = NodeInstance(node=shop, init_seed=shop.init_seed)
-
-        all_node_instances.append(factory_instance)
         all_node_instances.append(shop_instance)
 
-        # Factory → shop edge.
-        factory_lead = int(tmpl.delivery_lag) if isinstance(tmpl.delivery_lag, (int, float)) else 2
-        all_edges.append(
-            EdgeSpec(
-                supplier_id=factory_id,
-                buyer_id=shop_id,
-                default_lead_time=factory_lead,
+        # One factory per carried product, each feeding the shop.
+        for pid in sink_products:
+            item = catalog_by_pid.get(pid)
+            unit_cost = item.unit_cost if item is not None else 1.0
+            factory_id = f"{tmpl_id}-factory-{pid}"
+            factory = FactoryNode(
+                id=factory_id,
+                region=region,
+                init_seed=_deterministic_seed(factory_id),
+                produces_product_id=pid,
+                unit_cost=unit_cost,
+                capacity_per_tick=50,
+                inventory=100,
+                list_price=unit_cost,
+                cash=0.0,
             )
-        )
+            all_node_instances.append(
+                NodeInstance(node=factory, init_seed=factory.init_seed)
+            )
+            # Factory → shop edge.
+            all_edges.append(
+                EdgeSpec(
+                    supplier_id=factory_id,
+                    buyer_id=shop_id,
+                    default_lead_time=factory_lead,
+                )
+            )
 
         # One sink per product for this template.
         for pid in sink_products:

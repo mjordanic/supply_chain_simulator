@@ -1,7 +1,8 @@
 """Example: a homogeneous fleet of stores on the graph engine.
 
 Demonstrates a 3-store topology where each "store" expands to a
-3-node sub-graph: FactoryNode → IntermediateNode → DemandSinkNode.
+sub-graph: one FactoryNode per product → IntermediateNode → one
+DemandSinkNode per product.
 Each sub-graph uses the same policy configuration but a distinct seed
 so each store's step-0 active SKU set and stock allocation is distinct.
 
@@ -154,7 +155,6 @@ _LIFECYCLE = ItemLifecycleParams(
 
 
 _PIDS = [w.product_id for w in _CATALOG]
-_PRIMARY_PID = _PIDS[0]
 
 
 def _make_store_subgraph(store_index: int, seed_offset: int):
@@ -164,20 +164,8 @@ def _make_store_subgraph(store_index: int, seed_offset: int):
     """
     base_seed = (store_index + 1) * 1000 + seed_offset
 
-    factory_id = f"store{store_index}-factory"
     shop_id = f"store{store_index}-shop"
 
-    factory = FactoryNode(
-        id=factory_id,
-        region="US",
-        init_seed=base_seed,
-        produces_product_id=_PRIMARY_PID,
-        unit_cost=_CATALOG[0].unit_cost,
-        capacity_per_tick=100,
-        inventory=200,
-        list_price=_CATALOG[0].unit_cost,
-        cash=0.0,
-    )
     shop = IntermediateNode(
         id=shop_id,
         region="US",
@@ -193,14 +181,35 @@ def _make_store_subgraph(store_index: int, seed_offset: int):
     )
 
     node_instances = [
-        NodeInstance(node=factory, init_seed=factory.init_seed,
-                     policy=StaticFactoryPolicy(capacity_per_tick=100, unit_cost=_CATALOG[0].unit_cost)),
         NodeInstance(node=shop, init_seed=shop.init_seed,
                      policy=OrderUpToPolicy(policy_seed=base_seed + 2)),
     ]
-    edges = [
-        EdgeSpec(supplier_id=factory_id, buyer_id=shop_id, default_lead_time=2),
-    ]
+    edges: list[EdgeSpec] = []
+
+    # One factory per carried product. ``FactoryNode`` is single-product, so a
+    # multi-product shop needs one producer per SKU it carries — otherwise the
+    # uncovered products have no upstream source and can never be restocked.
+    for idx, ware in enumerate(_CATALOG):
+        pid = ware.product_id
+        factory_id = f"store{store_index}-factory-{pid}"
+        factory = FactoryNode(
+            id=factory_id,
+            region="US",
+            init_seed=base_seed + 100 + idx,
+            produces_product_id=pid,
+            unit_cost=ware.unit_cost,
+            capacity_per_tick=100,
+            inventory=200,
+            list_price=ware.unit_cost,
+            cash=0.0,
+        )
+        node_instances.append(
+            NodeInstance(node=factory, init_seed=factory.init_seed,
+                         policy=StaticFactoryPolicy(capacity_per_tick=100, unit_cost=ware.unit_cost))
+        )
+        edges.append(
+            EdgeSpec(supplier_id=factory_id, buyer_id=shop_id, default_lead_time=2)
+        )
 
     for pid in _PIDS:
         sink_id = f"store{store_index}-sink-{pid}"
