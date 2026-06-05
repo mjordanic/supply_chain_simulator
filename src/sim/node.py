@@ -33,9 +33,9 @@ from typing import TYPE_CHECKING, Any
 from src.sim.distributions import Distribution
 
 if TYPE_CHECKING:
-    from src.sim.item_registry import ItemRegistry
     from src.sim.market import Market
     from src.sim.policy import NodePolicy
+    from src.sim.scenario import Ware
 
 
 @dataclass
@@ -165,8 +165,7 @@ class DemandSinkNode(Node):
     Demand-sinks are the highest echelon. They generate cash at
     ``income_rate`` each tick and buy units from upstream intermediates.
     Each sink is bound to a single product; ``demand_dist`` drives the
-    per-tick demand target (multiplied by lifecycle/freshness/market
-    factors in later phases).
+    per-tick demand target (multiplied by market factors).
 
     Fields
     ------
@@ -181,14 +180,14 @@ class DemandSinkNode(Node):
         Current cash balance. Grows by ``income_rate`` each tick; decreases
         as allocation payments land.
     activation_tick:
-        Per-product tick at which the freshness curve was activated:
-        ``{pid: tick}``. Used for lifecycle + freshness composition.
+        Kept for RL/tuning compatibility; not used by ``demand_target``.
     """
 
     product_id: str = ""
     demand_dist: Distribution | None = None
     income_rate: float = 0.0
     cash: float = 0.0
+    # Kept for RL/tuning compatibility; no longer used by demand_target.
     activation_tick: dict[str, int] = field(default_factory=dict)
 
     @property
@@ -199,12 +198,12 @@ class DemandSinkNode(Node):
         self,
         tick: int,
         market: "Market",
-        registry: "ItemRegistry",
+        catalog: "list[Ware]",
         world_rng: Random,
     ) -> int:
-        """Compute the demand target for this tick with full multiplier composition.
+        """Compute the demand target for this tick.
 
-        Samples ``world_rng`` for every catalog product in registry iteration
+        Samples ``world_rng`` once per catalog product in catalog iteration
         order — load-bearing for the CRN contract (ADR 0003): the RNG stream
         position after this call depends only on catalog size and tick count,
         never on which product this sink is bound to or which products are
@@ -212,11 +211,10 @@ class DemandSinkNode(Node):
 
         Multiplier composition for each catalog pid::
 
-            mult = market.demand_multiplier(pid, region, tick)
-                   * stage_multiplier
-                   * freshness_curve.multiplier(α, β, τ)
+            demand_target = demand_dist.sample(world_rng)
+                            * market.demand_multiplier(pid, region, tick)
 
-        Only the raw value for ``self.product_id`` is returned as the integer
+        Only the value for ``self.product_id`` is returned as the integer
         demand target; the draws for all other pids advance ``world_rng`` to
         preserve CRN alignment across paired sinks.
 
@@ -227,76 +225,35 @@ class DemandSinkNode(Node):
         market:
             Live ``Market`` instance; ``demand_multiplier`` must not draw
             from ``world_rng`` (it is a pure multiplier — see ADR 0015).
-        registry:
-            ``ItemRegistry`` providing per-product lifecycle stage and
-            freshness ``(α, β)`` parameters.
+        catalog:
+            The scenario catalog list. Iterated in declaration order to
+            preserve the CRN draw sequence (ADR 0003).
         world_rng:
-            Shared world RNG.  Exactly ``len(registry.items)`` draws are
-            consumed per call.
+            Shared world RNG.  Exactly ``len(catalog)`` draws are consumed
+            per call.
 
         Returns
         -------
         int
             Realised demand target (≥ 0) for ``self.product_id``.
         """
-        # Inline import avoids a circular-import at module load time (node.py
-        # is imported before freshness_curve in several test fixtures).
-        from src.sim import freshness_curve as _fc
-
         result_for_product = 0
 
-        for pid, item in registry.items.items():
-            # ----------------------------------------------------------------
-            # 1. Market multiplier — deterministic, no RNG draw.
-            # ----------------------------------------------------------------
+        for ware in catalog:
+            pid = ware.product_id
+            # Market multiplier — deterministic, no RNG draw (ADR 0015).
             market_mult = market.demand_multiplier(pid, self.region, tick)
 
-            # ----------------------------------------------------------------
-            # 2. Lifecycle stage multiplier.
-            # ----------------------------------------------------------------
-            stage = registry.stage(pid)
-            stage_mult = market.stage_multipliers.get(stage, 1.0)
-
-            # ----------------------------------------------------------------
-            # 3. Per-product freshness multiplier.
-            #    τ = tick − activation_tick[pid].
-            #    Products never activated have τ = float('inf') so the
-            #    curve asymptotes to 1.0 (matching Store.freshness_multiplier
-            #    behaviour for never-activated products).
-            # ----------------------------------------------------------------
-            if pid in self.activation_tick:
-                tau: float = float(tick - self.activation_tick[pid])
-            else:
-                tau = float("inf")
-            alpha = registry.freshness_alpha(pid)
-            decay = registry.freshness_decay(pid)
-            fresh_mult = _fc.multiplier(alpha, decay, tau)
-
-            # ----------------------------------------------------------------
-            # 4. Combined multiplier × one demand sample (load-bearing draw).
-            #
-            # ``demand_dist.sample(world_rng)`` is called for *every*
-            # catalog pid in registry iteration order — not just for
-            # ``self.product_id``.  This is the CRN invariant (ADR 0003):
-            # the world_rng stream position after this call depends only
-            # on catalog size and tick count, never on which product this
-            # particular sink is bound to.
-            #
-            # The distribution must consume exactly one world_rng draw per
-            # call for the CRN guarantee to hold end-to-end.  ``Uniform``
-            # and ``Normal`` satisfy this; ``Constant`` does not (it skips
-            # the draw entirely).  Callers that need strict CRN alignment
-            # across paired sinks must use a draw-consuming distribution
-            # (as documented on ``Constant`` and in ``test_freshness_integration``).
-            # ----------------------------------------------------------------
-            mult = market_mult * stage_mult * fresh_mult
-
+            # One demand sample per catalog pid — load-bearing CRN draw.
+            # ``Uniform`` / ``Normal`` each consume exactly one world_rng.random()
+            # call. ``Constant`` skips the draw; callers requiring strict CRN
+            # alignment must use a draw-consuming distribution.
             if self.demand_dist is not None:
                 base = float(self.demand_dist.sample(world_rng))
             else:
                 base = 0.0
 
-            raw = base * mult
+            raw = base * market_mult
             if pid == self.product_id:
                 result_for_product = max(0, int(raw))
 

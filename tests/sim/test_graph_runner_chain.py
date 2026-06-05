@@ -23,7 +23,6 @@ from src.sim.distributions import Constant
 from src.sim.episode_sampler import _derive_seed
 from src.sim.event_engine import EventEngine
 from src.sim.graph import EdgeSpec
-from src.sim.item_registry import ItemRegistry
 from src.sim.market import Market
 from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
 from src.sim.runner import GraphRunner, GraphSimulation, build_graph_world
@@ -402,56 +401,52 @@ class TestGraphRunnerChain:
 
 
 class TestMarketDemandMultiplier:
-    def _build_market_with_registry(self) -> tuple[Market, str]:
+    def _build_market_with_catalog(self) -> tuple[Market, str]:
         """Return a Market + pid pair where demand_multiplier can be called."""
         catalog = _minimal_catalog()
         pid = catalog[0].product_id
 
-        lifecycle = _minimal_lifecycle_params()
-        world_rng = Random(1)
-        registry = ItemRegistry(lifecycle, catalog, world_rng)
-
         params = _minimal_market_params()
-        market = Market(params, world_rng, datetime(2024, 7, 15), registry=registry)
+        world_rng = Random(1)
+        market = Market(params, world_rng, datetime(2024, 7, 15), catalog=catalog)
         return market, pid
 
     def test_demand_multiplier_returns_float(self):
-        market, pid = self._build_market_with_registry()
+        market, pid = self._build_market_with_catalog()
         result = market.demand_multiplier(pid, "US", 0)
         assert isinstance(result, float)
 
     def test_demand_multiplier_is_positive(self):
-        market, pid = self._build_market_with_registry()
+        market, pid = self._build_market_with_catalog()
         result = market.demand_multiplier(pid, "US", 0)
         assert result > 0.0
 
     def test_demand_multiplier_does_not_consume_world_rng(self):
         """demand_multiplier must not advance world_rng."""
-        market, pid = self._build_market_with_registry()
+        market, pid = self._build_market_with_catalog()
         # Save RNG state via a snapshot of the next value.
-        # We'll draw one value, then call demand_multiplier, then draw again
-        # and compare with a fresh RNG advanced by the same amount.
         rng_before = market.rng.getstate()
         market.demand_multiplier(pid, "US", 0)
         rng_after = market.rng.getstate()
         assert rng_before == rng_after, "demand_multiplier must not consume world_rng"
 
-    def test_demand_multiplier_raises_without_registry(self):
+    def test_demand_multiplier_works_without_catalog_for_unknown_pid(self):
+        """Market without a catalog falls back gracefully (unknown pid -> off_factor)."""
         params = _minimal_market_params()
-        market = Market(params, Random(1), datetime(2024, 1, 1), registry=None)
-        with pytest.raises(RuntimeError, match="ItemRegistry"):
-            market.demand_multiplier("P0000", "US", 0)
+        market = Market(params, Random(1), datetime(2024, 1, 1))
+        # Unknown pid with no catalog — seasonality falls back to None -> off_factor.
+        result = market.demand_multiplier("P9999", "US", 0)
+        assert isinstance(result, float)
+        assert result > 0.0
 
     def test_demand_multiplier_respects_demand_factor_min(self):
         """Even in a depressed market, multiplier >= demand_factor_min * off_factor."""
         catalog = _minimal_catalog()
         pid = catalog[0].product_id
-        lifecycle = _minimal_lifecycle_params()
-        world_rng = Random(1)
-        registry = ItemRegistry(lifecycle, catalog, world_rng)
 
-        from src.sim.distributions import Constant, Normal
+        from src.sim.distributions import Constant
         params = _minimal_market_params()
+        world_rng = Random(1)
         # Force demand to be very low (below demand_factor_min=0.1).
         params_modified = MarketParams(
             **{
@@ -461,7 +456,7 @@ class TestMarketDemandMultiplier:
                 "demand_shock": Constant(0.0),
             }
         )
-        market = Market(params_modified, world_rng, datetime(2024, 1, 1), registry=registry)
+        market = Market(params_modified, world_rng, datetime(2024, 1, 1), catalog=catalog)
         # Suppress season effect.
         market.off_factor = 1.0
         market.peak_factor = 1.0

@@ -179,7 +179,6 @@ def test_runner_run_equals_simulation_tick_loop() -> None:
     - per-node cash (scalar accounting)
     - per-node inventory (IntermediateNode dict, FactoryNode scalar)
     - market.market_state (regional supply/demand)
-    - item_registry lifecycle stage map
     """
     scenario = _canonical_scenario()
 
@@ -209,19 +208,6 @@ def test_runner_run_equals_simulation_tick_loop() -> None:
     # --- Market state ---
     assert runner._sim.market.market_state == sim.market.market_state, (
         "market.market_state diverged"
-    )
-
-    # --- Lifecycle stage map ---
-    runner_stages = {
-        pid: item.lifecycle_stage
-        for pid, item in runner._sim.item_registry.items.items()
-    }
-    sim_stages = {
-        pid: item.lifecycle_stage
-        for pid, item in sim.item_registry.items.items()
-    }
-    assert runner_stages == sim_stages, (
-        "ItemRegistry lifecycle stages diverged"
     )
 
 

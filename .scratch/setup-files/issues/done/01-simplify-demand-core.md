@@ -1,6 +1,6 @@
 # 01 — Simplify the demand core: remove life-cycle & freshness, relocate CRN
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

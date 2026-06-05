@@ -36,8 +36,8 @@ def _make_tracking_sink_class():
 
         _last_demand: int = 0
 
-        def demand_target(self, tick, market, registry, world_rng):  # type: ignore[override]
-            result = super().demand_target(tick, market, registry, world_rng)
+        def demand_target(self, tick, market, catalog, world_rng):  # type: ignore[override]
+            result = super().demand_target(tick, market, catalog, world_rng)
             self._last_demand = int(result)
             return result
 

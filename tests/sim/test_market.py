@@ -19,13 +19,9 @@ from types import SimpleNamespace
 import pytest
 
 from src.sim.distributions import Constant, Normal
-from src.sim.item_registry import ItemRegistry
 from src.sim.market import Market
 from src.sim.scenario import (
-    ItemLifecycleParams,
     MarketParams,
-    Ware,
-    load_catalog,
 )
 
 
@@ -154,28 +150,16 @@ def _store_stub(active_items: list[str], inventory: dict[str, int], capacity: fl
     )
 
 
-def _registry_with_related(related_map: dict[str, list[tuple[str, float]]]) -> ItemRegistry:
-    """Build an ``ItemRegistry`` whose items carry the given related_products."""
-    catalog = load_catalog(
-        [
-            {
-                "name": pid,
-                "category": "test",
-                "related_products": related_map.get(f"P{i:04d}", []),
-                "base_price": 10.0,
-                "unit_cost": 5.0,
-                "seasonality": "all_season",
-            }
-            for i, pid in enumerate(related_map)
-        ]
-    )
-    stages = ["introduction", "growth", "maturity", "decline", "dead"]
-    lifecycle = ItemLifecycleParams(
-        stages=stages,
-        init_stage="maturity",
-        default_stage_change_probs={s: 0.0 for s in stages},
-    )
-    return ItemRegistry(lifecycle, catalog, Random(0))
+def _registry_with_related(related_map: dict[str, list[tuple[str, float]]]):
+    """Return a minimal registry stub with a ``related(pid)`` method.
+
+    ``Market.cross_demand_factor`` only calls ``self.registry.related(pid)``,
+    so a ``SimpleNamespace`` with that method is sufficient.
+    """
+    def related(pid: str) -> list[tuple[str, float]]:
+        return related_map.get(pid, [])
+
+    return SimpleNamespace(related=related)
 
 
 def test_cross_demand_factor_clamped_to_range():

@@ -336,31 +336,6 @@ def test_exporter_writes_products_parquet(exported_outputs):
     )
 
 
-def test_exporter_products_parquet_includes_resolved_freshness(exported_outputs):
-    """``freshness_alpha`` / ``freshness_decay`` columns are populated."""
-    folder, scenario, _ = exported_outputs
-    path = os.path.join(folder, "data", "products.parquet")
-    df = pd.read_parquet(path)
-    assert {"freshness_alpha", "freshness_decay"} <= set(df.columns)
-    default_alpha = scenario.item_lifecycle.default_freshness_alpha
-    default_decay = scenario.item_lifecycle.default_freshness_decay
-    for alpha in df["freshness_alpha"]:
-        assert alpha == default_alpha
-    for decay in df["freshness_decay"]:
-        assert decay == default_decay
-
-
-def test_exporter_products_parquet_includes_resolved_init_stock_share(
-    exported_outputs,
-):
-    """``init_stock_share`` column is populated."""
-    folder, scenario, _ = exported_outputs
-    path = os.path.join(folder, "data", "products.parquet")
-    df = pd.read_parquet(path)
-    assert "init_stock_share" in df.columns
-    default_share = scenario.item_lifecycle.default_init_stock_share
-    for share in df["init_stock_share"]:
-        assert share == default_share
 
 
 def test_exporter_writes_overview_png(exported_outputs):

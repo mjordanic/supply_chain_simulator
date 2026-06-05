@@ -86,6 +86,18 @@ Ware = namedtuple(
 )
 
 
+# Canonical product-lifecycle stage ordering.  Exposed here so both the
+# simulator and the RL encoder can import it without depending on the
+# (deleted) lifecycle_clock module.
+CANONICAL_STAGES: list[str] = [
+    "introduction",
+    "growth",
+    "maturity",
+    "decline",
+    "dead",
+]
+
+
 def load_catalog(items: Iterable[Mapping[str, Any]]) -> list[Ware]:
     """Build a catalog of ``Ware``s, assigning ``P{i:04d}`` ids in order.
 

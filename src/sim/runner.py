@@ -34,7 +34,6 @@ from random import Random
 from typing import Any
 
 from src.sim.event_engine import EventEngine, WorldEvent
-from src.sim.item_registry import ItemRegistry
 from src.sim.market import Market
 from src.sim.scenario import Scenario
 
@@ -69,9 +68,8 @@ class Simulation:
     Attributes
     ----------
     scenario       — the frozen ``Scenario`` used to build this bundle.
-    world_rng      — shared world RNG (market/event/lifecycle draws).
+    world_rng      — shared world RNG (market/event draws).
     allocation_rng — per-phase buyer-shuffle RNG (ADR 0016).
-    item_registry  — catalog + per-item lifecycle state.
     market         — regional demand/supply environment.
     event_engine   — disruption events + order-delivery callbacks.
     graph          — validated topology (``Graph`` instance).
@@ -84,7 +82,6 @@ class Simulation:
         scenario: Scenario,
         world_rng: Random,
         allocation_rng: Random,
-        item_registry: ItemRegistry,
         market: Market,
         event_engine: EventEngine,
         graph: Any,
@@ -94,12 +91,14 @@ class Simulation:
         self.scenario = scenario
         self.world_rng = world_rng
         self.allocation_rng = allocation_rng
-        self.item_registry = item_registry
         self.market = market
         self.event_engine = event_engine
         self.graph = graph
         self.nodes = nodes
         self.levels = levels
+        # Removed in issue 01; kept as None so downstream callers that
+        # guard ``if registry is not None`` still work without modification.
+        self.item_registry = None
         # Per-tick order-quantity accumulator: ``{buyer_id: {pid: qty}}``.
         # Populated during ``tick()`` and consumed by the runner's snapshot.
         self._last_tick_orders: dict[str, dict[str, int]] = {}
@@ -145,7 +144,6 @@ class Simulation:
         # -------------------------------------------------------------------
         self.market.tick()
         self.event_engine.tick(self.market)
-        self.item_registry.tick()
 
         current_tick = self.market.current_step()
 
@@ -213,14 +211,13 @@ class Simulation:
 
             for buyer in buyers_at_level:
                 if isinstance(buyer, DemandSinkNode):
-                    # Full lifecycle/freshness composition via demand_target
-                    # (ADR 0015, issue 10). Samples world_rng for every catalog
-                    # pid in registry iteration order — CRN invariant preserved.
+                    # Samples world_rng for every catalog pid in catalog order —
+                    # CRN invariant preserved (ADR 0003).
                     demand_target = float(
                         buyer.demand_target(
                             tick=current_tick,
                             market=self.market,
-                            registry=self.item_registry,
+                            catalog=self.scenario.catalog,
                             world_rng=self.world_rng,
                         )
                     )
@@ -380,7 +377,6 @@ class Simulation:
 
         self.market.tick()
         self.event_engine.tick(self.market)
-        self.item_registry.tick()
 
         current_tick = self.market.current_step()
 
@@ -475,7 +471,7 @@ class Simulation:
                         buyer.demand_target(
                             tick=current_tick,
                             market=self.market,
-                            registry=self.item_registry,
+                            catalog=self.scenario.catalog,
                             world_rng=self.world_rng,
                         )
                     )
@@ -683,15 +679,12 @@ def build_world(
     allocation_seed = _derive_seed(scenario.world_seed, "allocation")
     allocation_rng: Random = Random(allocation_seed)
 
-    # Shared world objects — same construction order as the old build_world.
-    item_registry = ItemRegistry(
-        scenario.item_lifecycle, scenario.catalog, world_rng
-    )
+    # Shared world objects.
     market = Market(
         scenario.market,
         world_rng,
         scenario.start_date,
-        registry=item_registry,
+        catalog=scenario.catalog,
     )
     event_engine = EventEngine(scenario.disruption, world_rng)
 
@@ -727,7 +720,6 @@ def build_world(
         scenario=scenario,
         world_rng=world_rng,
         allocation_rng=allocation_rng,
-        item_registry=item_registry,
         market=market,
         event_engine=event_engine,
         graph=graph,
@@ -827,16 +819,6 @@ class Runner:
                     float(self._sim.market.market_state[r]["market_demand"])
                 )
 
-        # Build the ``global.products`` section from the item registry.
-        products_global: dict[str, dict[str, Any]] = {}
-        for pid, item in self._sim.item_registry.items.items():
-            products_global[pid] = {
-                "freshness_alpha": item.freshness_alpha,
-                "freshness_decay": item.freshness_decay,
-                "init_stock_share": item.init_stock_share,
-                "lifecycle_stage": [item.lifecycle_stage] * len(step_series),
-            }
-
         return {
             "n_steps": self.scenario.n_steps,
             "ticks": ticks,
@@ -847,7 +829,6 @@ class Runner:
                 },
                 "market_supply": market_supply_series,
                 "market_demand": market_demand_series,
-                "products": products_global,
                 "events": {"occurrences": [None] * self.scenario.n_steps},
             },
         }

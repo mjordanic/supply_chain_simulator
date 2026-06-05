@@ -65,7 +65,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from src.sim.lifecycle_clock import CANONICAL_STAGES
+from src.sim.scenario import CANONICAL_STAGES
 
 # ---------------------------------------------------------------------------
 # Shape constants

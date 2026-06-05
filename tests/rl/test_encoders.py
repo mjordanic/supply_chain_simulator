@@ -503,7 +503,7 @@ def test_effective_rate_zero_prior_allows_zero_output():
 
 def test_lifecycle_stage_one_hot():
     """Each of the 5 stages produces a one-hot in positions 6..10."""
-    from src.sim.lifecycle_clock import CANONICAL_STAGES
+    from src.sim.scenario import CANONICAL_STAGES
 
     K = 1
     pids = ["P0000"]

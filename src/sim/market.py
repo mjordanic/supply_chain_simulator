@@ -32,8 +32,7 @@ from random import Random
 from typing import Any
 
 from src.sim.distributions import Distribution
-from src.sim.item_registry import ItemRegistry
-from src.sim.scenario import MarketParams
+from src.sim.scenario import MarketParams, Ware
 
 
 def _maybe_sample(value: Any, rng: Random) -> Any:
@@ -51,15 +50,24 @@ class Market:
         params: MarketParams,
         world_rng: Random,
         start_date: datetime,
-        registry: ItemRegistry | None = None,
+        registry: Any = None,
+        catalog: list[Ware] | None = None,
     ) -> None:
         # Keep the typed params for downstream sampling (shocks, trend).
         self.params = params
         # Shared world RNG. Every shock / trend draw goes through this.
         self.rng = world_rng
-        # Optional item registry. ``sample_demand`` requires one;
-        # ``cross_demand_factor`` short-circuits to 1.0 without one.
-        self.registry = registry
+        # Seasonality lookup: {pid: seasonality_label}.
+        # Built from the catalog when supplied; falls back to registry
+        # (legacy store-path) when catalog is None and registry is provided.
+        if catalog is not None:
+            self._seasonality: dict[str, str | None] = {
+                w.product_id: w.seasonality for w in catalog
+            }
+            self.registry = None
+        else:
+            self._seasonality = {}
+            self.registry = registry
         # Late-bound list of stores (filled in via ``add_store`` if a
         # caller wants Market-side store iteration; the Runner doesn't
         # use this hook today).
@@ -280,13 +288,15 @@ class Market:
             A ≥ 0 multiplier.  Values < 1 indicate suppressed demand;
             values > 1 indicate elevated demand.
         """
-        if self.registry is None:
-            raise RuntimeError(
-                "Market.demand_multiplier requires an attached ItemRegistry"
-            )
-
         # 1. Seasonal factor driven by the current wall-clock month.
-        season = self.registry.seasonality(pid)
+        # Prefer the catalog-derived lookup; fall back to ItemRegistry for
+        # the legacy store-path (registry is None in the graph engine path).
+        if pid in self._seasonality:
+            season = self._seasonality.get(pid)
+        elif self.registry is not None:
+            season = self.registry.seasonality(pid)
+        else:
+            season = None
         month = self.date.month
         seasonal = self.season_factor(season, month)
 
