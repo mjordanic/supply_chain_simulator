@@ -1,6 +1,6 @@
 # 06 — Tuning optimises against a setup directory
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

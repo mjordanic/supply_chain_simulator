@@ -37,7 +37,7 @@ from typing import Any, Callable
 
 from src.sim.policy import Policy
 from src.tuning.episode import TuningEpisodeSpec
-from src.tuning.rollout import run_policy_episode
+from src.tuning.rollout import run_policy_episode  # noqa: F401 (public re-export)
 
 
 def evaluate_policy_normalised(
@@ -76,8 +76,8 @@ def evaluate_policy_normalised(
         policy = policy_factory()
         metrics = run_policy_episode(policy, spec)
 
-        initial_cash = float(spec.scenario.stores[0].template.init_balance)
-        capacity = float(spec.scenario.stores[0].template.capacity)
+        initial_cash = float(spec.balance)
+        capacity = float(spec.capacity)
 
         per_seed_net_profit.append(metrics["net_profit"])
         per_seed_initial_cash.append(initial_cash)

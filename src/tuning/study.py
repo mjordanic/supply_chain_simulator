@@ -46,7 +46,7 @@ import optuna
 from src.sim.policy import Policy
 from src.sim.scenario import StoreTemplate, Ware
 from src.tuning.config import TuningConfig
-from src.tuning.episode import TuningEpisodeSpec, sample_episode
+from src.tuning.episode import TuningEpisodeSpec, load_catalog_and_market_from_setup, sample_episode
 from src.tuning.evaluator import evaluate_policy_normalised
 from src.tuning.search_spaces import (
     order_up_to_space,
@@ -695,6 +695,17 @@ def _cli_main(argv: list[str] | None = None) -> None:
     )
 
     parser.add_argument(
+        "--setup-dir",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a setup directory (catalog.csv + setup.yaml). "
+            "When set, catalog + market are loaded from here instead of "
+            "the world-loader / world.json cache."
+        ),
+    )
+
+    parser.add_argument(
         "--output-dir",
         default="runs/tuning",
         metavar="PATH",
@@ -719,9 +730,31 @@ def _cli_main(argv: list[str] | None = None) -> None:
         sampler_seed=args.sampler_seed,
         top_k_for_holdout=args.top_k,
         world_archetype=args.world,
+        setup_dir=args.setup_dir,
     )
 
-    catalog, base_template, market_params, disruption_params = load_world(tuning_config)
+    if tuning_config.setup_dir is not None:
+        catalog, market_params = load_catalog_and_market_from_setup(tuning_config.setup_dir)
+        disruption_params = None
+        # Build a minimal StoreTemplate consistent with the config.
+        base_template = StoreTemplate(
+            id="tuning_setup_dir",
+            region="US",
+            capacity=200,
+            init_balance=20_000.0,
+            init_stock_pct=0.0,
+            delivery_lag=tuning_config.delivery_lag,
+            holding_rate=tuning_config.holding_rate,
+            order_fee=tuning_config.order_fee,
+            init_active_count=tuning_config.K_active,
+        )
+        print(
+            f"[tuning] Loaded catalog ({len(catalog)} products) + market "
+            f"from setup directory: {tuning_config.setup_dir}",
+            file=sys.stderr,
+        )
+    else:
+        catalog, base_template, market_params, disruption_params = load_world(tuning_config)
 
     policy_space = _POLICY_DISPATCH[args.policy]
 

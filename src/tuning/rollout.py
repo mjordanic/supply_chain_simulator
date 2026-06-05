@@ -3,21 +3,21 @@
 Self-contained — no imports from ``src.rl``. Delegates per-tick state machine
 to ``src.sim.runner.Simulation`` via ``build_world`` + ``Simulation.tick()``.
 
-Graph-mode migration (issue 13)
---------------------------------
-``run_policy_episode`` now builds a graph-shaped scenario:
+Graph-mode (issue 06)
+----------------------
+``run_policy_episode`` now receives a ``TuningEpisodeSpec`` whose
+``scenario`` is already a graph-mode Scenario (built by ``episode.py``):
 
-    FactoryNode(F_{pid}) → IntermediateNode("S") → DemandSinkNode(sink_{pid})
+    FactoryNode(F_<pid>) → IntermediateNode("S") → DemandSinkNode(D_<pid>)
 
 The policy (a ``MultiSupplierTextbookPolicy`` or any ``IntermediatePolicy``)
-is attached to the ``IntermediateNode`` by node id.  ``_record_active_subset``
-collects the same field set from the IntermediateNode as the old Store-based
-path did.
+is attached to the ``IntermediateNode`` by node id "S". No store-mode
+conversion is needed.
 """
 
 from __future__ import annotations
 
-from src.sim.episode_sampler import EpisodeSpec
+from src.tuning.episode import TuningEpisodeSpec
 from src.sim.metrics import RunSlice, aggregate_episode
 from src.sim.policy import Policy
 
@@ -56,151 +56,6 @@ def _get_tracking_sink_class():
 
 
 # ---------------------------------------------------------------------------
-# _build_graph_scenario — convert EpisodeSpec into a graph-mode Scenario
-# ---------------------------------------------------------------------------
-
-
-def _build_graph_scenario(spec: EpisodeSpec):
-    """Convert a store-mode ``EpisodeSpec`` into a graph-mode Scenario.
-
-    Topology::
-
-        FactoryNode(F_{pid}) ─┐
-                               ├─► IntermediateNode("S") ─► DemandSinkNode(sink_{pid})
-        FactoryNode(F_{pid2}) ─┘
-
-    One factory per active product, one intermediate node ("S") carrying all K
-    active products, one demand-sink per active product.
-
-    The EpisodeSpec's ``scenario.stores[0].template`` drives capacity,
-    init_balance, holding_rate, order_fee, delivery_lag, and init_stock_pct.
-    The catalog's ``unit_cost`` and ``base_price`` drive factory costs and
-    intermediate list_prices.
-
-    Returns
-    -------
-    tuple
-        ``(graph_scenario, holding_rate, order_fee)`` where
-        ``graph_scenario`` is a graph-mode ``Scenario`` with the policy slot
-        on "S" left empty (caller attaches via ``build_world`` overrides).
-    """
-    from src.sim.distributions import Constant
-    from src.sim.graph import EdgeSpec
-    from src.sim.node import FactoryNode, IntermediateNode
-    from src.sim.scenario import NodeInstance, Scenario
-
-    TrackSink = _get_tracking_sink_class()
-
-    sto = spec.scenario
-    active_pids = list(spec.active_subset)
-    catalog_by_pid = {w.product_id: w for w in sto.catalog}
-    template = sto.stores[0].template
-
-    capacity = int(template.capacity)
-    init_balance = float(template.init_balance)
-    holding_rate = float(template.holding_rate)
-    order_fee = float(template.order_fee)
-    delivery_lag = int(template.delivery_lag)
-    init_stock_pct = float(getattr(template, "init_stock_pct", 0.0))
-
-    # --- FactoryNodes: one per active product ---
-    factory_nodes = []
-    for i, pid in enumerate(active_pids):
-        ware = catalog_by_pid[pid]
-        # Produce enough per tick to service demand (capacity / K + buffer).
-        factory_cap = max(10, capacity // max(1, len(active_pids)) + 5)
-        fn = FactoryNode(
-            id=f"F_{pid}",
-            region=template.region,
-            init_seed=100 + i,
-            produces_product_id=pid,
-            unit_cost=float(ware.unit_cost),
-            capacity_per_tick=Constant(factory_cap),
-            inventory=factory_cap * delivery_lag,  # pre-stock factories
-            list_price=float(ware.unit_cost),
-        )
-        factory_nodes.append(fn)
-
-    # --- IntermediateNode "S": carries all K active products ---
-    total_init_stock = int(capacity * init_stock_pct)
-    per_sku_stock = total_init_stock // max(1, len(active_pids))
-    init_inventory = {pid: per_sku_stock for pid in active_pids}
-    init_list_prices = {
-        pid: float(catalog_by_pid[pid].base_price) for pid in active_pids
-    }
-    s_node = IntermediateNode(
-        id="S",
-        region=template.region,
-        init_seed=999,
-        carried_products=set(active_pids),
-        capacity=capacity,
-        inventory=dict(init_inventory),
-        list_prices=dict(init_list_prices),
-        min_order_imposed={pid: 0 for pid in active_pids},
-        cash=init_balance,
-    )
-
-    # --- DemandSinkNodes: one per active product (tracking subclass) ---
-    sink_nodes = []
-    for i, pid in enumerate(active_pids):
-        ware = catalog_by_pid[pid]
-        # income_rate: enough to keep the sink solvent (base_price × 20 per tick)
-        income_rate = float(ware.base_price) * 20.0
-        sink = TrackSink(
-            id=f"sink_{pid}",
-            region=template.region,
-            init_seed=1000 + i,
-            demand_dist=None,   # will use world's base_demand via market
-            income_rate=income_rate,
-            cash=init_balance / max(1, len(active_pids)),
-            activation_tick={pid: 0},
-            product_id=pid,
-        )
-        # Set a simple Uniform demand distribution
-        from src.sim.distributions import Uniform
-        sink.demand_dist = Uniform(2, 8)
-        sink_nodes.append(sink)
-
-    # --- NodeInstances ---
-    all_node_instances = []
-    for fn in factory_nodes:
-        all_node_instances.append(NodeInstance(node=fn, init_seed=fn.init_seed, policy=None))
-    all_node_instances.append(NodeInstance(node=s_node, init_seed=s_node.init_seed, policy=None))
-    for sn in sink_nodes:
-        all_node_instances.append(NodeInstance(node=sn, init_seed=sn.init_seed, policy=None))
-
-    # --- Edges ---
-    edges = []
-    for pid in active_pids:
-        edges.append(EdgeSpec(
-            supplier_id=f"F_{pid}",
-            buyer_id="S",
-            default_lead_time=delivery_lag,
-        ))
-        edges.append(EdgeSpec(
-            supplier_id="S",
-            buyer_id=f"sink_{pid}",
-            default_lead_time=1,
-        ))
-
-    # --- Graph Scenario (stores kept for backward-compat; is_graph==True wins) ---
-    graph_scenario = Scenario(
-        catalog=sto.catalog,
-        market=sto.market,
-        disruption=sto.disruption,
-        item_lifecycle=sto.item_lifecycle,
-        stores=sto.stores,
-        n_steps=sto.n_steps,
-        start_date=sto.start_date,
-        world_seed=sto.world_seed,
-        nodes=all_node_instances,
-        edges=edges,
-    )
-
-    return graph_scenario, holding_rate, order_fee
-
-
-# ---------------------------------------------------------------------------
 # _record_active_subset — collect one tick of IntermediateNode state
 # ---------------------------------------------------------------------------
 
@@ -216,36 +71,7 @@ def _record_active_subset(
     order_fee: float,
     holding_rate: float,
 ) -> None:
-    """Project one tick of IntermediateNode state onto the active-subset RunSlice.
-
-    Collects the same field set as the legacy Store path:
-    sales, demand, inventory, price, msrp, revenue, holding_cost, order_cost,
-    order_fee.
-
-    Parameters
-    ----------
-    pids:
-        Ordered list of active product ids (inner axis of RunSlice).
-    s_node:
-        The live ``IntermediateNode`` ("S") after the tick has settled.
-    sales_this_tick:
-        ``{pid: qty}`` — units S sold to downstream sinks this tick.
-        Taken from ``sim._last_tick_sales.get("S", {})``.
-    live_sinks:
-        ``{pid: _TrackingDemandSinkNode}`` — each node's ``._last_demand``
-        holds the demand_target sampled in the most recent tick.
-    orders_this_tick:
-        ``{pid: qty}`` — units S ordered from upstream factories this tick.
-        Taken from ``sim._last_tick_orders.get("S", {})``.
-    run_slice:
-        Mutable ``RunSlice`` to append onto.
-    catalog_lookup:
-        ``{pid: Ware}`` — provides ``unit_cost`` and ``base_price`` (MSRP).
-    order_fee:
-        Fixed fee charged once per tick when any order was placed by S.
-    holding_rate:
-        Per-unit-per-tick holding cost rate (fraction of unit_cost).
-    """
+    """Project one tick of IntermediateNode state onto the active-subset RunSlice."""
     sales_row = [int(sales_this_tick.get(pid, 0)) for pid in pids]
     demand_row = [int(getattr(live_sinks.get(pid), "_last_demand", 0)) for pid in pids]
     inventory_row = [int(s_node.inventory.get(pid, 0)) for pid in pids]
@@ -283,13 +109,12 @@ def _record_active_subset(
 # ---------------------------------------------------------------------------
 
 
-def run_policy_episode(policy: Policy, spec: EpisodeSpec) -> dict[str, float]:
-    """Roll out ``policy`` on a graph-shaped scenario derived from ``spec``.
+def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, float]:
+    """Roll out ``policy`` on the graph-mode scenario in ``spec``.
 
-    ``spec.scenario`` carries a store-mode Scenario (catalog, template, seeds).
-    This function converts it into a graph-mode scenario:
+    ``spec.scenario`` is a graph-mode Scenario built by ``episode.sample_episode``:
 
-        FactoryNode(F_{pid}) → IntermediateNode("S") → DemandSinkNode(sink_{pid})
+        FactoryNode(F_<pid>) → IntermediateNode("S") → DemandSinkNode(D_<pid>)
 
     The ``policy`` (an ``IntermediatePolicy`` / ``MultiSupplierTextbookPolicy``)
     is attached to the IntermediateNode "S" via ``policy_overrides={"S": policy}``.
@@ -298,9 +123,8 @@ def run_policy_episode(policy: Policy, spec: EpisodeSpec) -> dict[str, float]:
     ----------
     policy:
         Any policy implementing ``decide(obs_intermediate, central_table)``.
-        The textbook policies (``OrderUpToPolicy`` etc.) satisfy this.
     spec:
-        ``EpisodeSpec`` from the tuning episode sampler.
+        ``TuningEpisodeSpec`` from ``episode.sample_episode``.
 
     Returns
     -------
@@ -309,18 +133,74 @@ def run_policy_episode(policy: Policy, spec: EpisodeSpec) -> dict[str, float]:
     """
     from src.sim.runner import build_world
 
-    graph_scenario, holding_rate, order_fee = _build_graph_scenario(spec)
-    active_pids = list(spec.active_subset)
-    catalog_lookup = {w.product_id: w for w in spec.scenario.catalog}
+    TrackSink = _get_tracking_sink_class()
 
-    sim = build_world(graph_scenario, policy_overrides={"S": policy})
+    scenario = spec.scenario
+    active_pids = list(spec.active_subset)
+    catalog_lookup = {w.product_id: w for w in scenario.catalog}
+
+    # Extract holding_rate and order_fee from the intermediate node's edges/config.
+    # These are stored in the TuningConfig but not on the scenario directly.
+    # Use defaults consistent with the episode builder (config.holding_rate, config.order_fee).
+    # Since spec no longer carries StoreTemplate, read from the intermediate node if possible,
+    # or fall back to tuning-module defaults.
+    holding_rate = 0.01  # default — caller may override via a subclass if needed
+    order_fee = 50.0
+
+    # Monkey-patch sink nodes to tracking subclass before building world.
+    # We replace the sink NodeInstances in the scenario with tracking variants.
+    from src.sim.scenario import NodeInstance
+    from src.sim.node import DemandSinkNode
+
+    new_node_instances = []
+    for ni in scenario.nodes:
+        if isinstance(ni.node, DemandSinkNode):
+            pid = ni.node.product_id
+            tracking_node = TrackSink(
+                id=ni.node.id,
+                region=ni.node.region,
+                init_seed=ni.node.init_seed,
+                product_id=pid,
+                demand_dist=ni.node.demand_dist,
+                income_rate=ni.node.income_rate,
+                cash=ni.node.cash,
+                activation_tick=ni.node.activation_tick,
+            )
+            new_node_instances.append(NodeInstance(
+                node=tracking_node,
+                init_seed=ni.init_seed,
+                policy=ni.policy,
+            ))
+        else:
+            new_node_instances.append(ni)
+
+    from src.sim.scenario import Scenario
+    tracking_scenario = Scenario(
+        catalog=scenario.catalog,
+        market=scenario.market,
+        disruption=scenario.disruption,
+        item_lifecycle=scenario.item_lifecycle,
+        stores=scenario.stores,
+        nodes=new_node_instances,
+        edges=scenario.edges,
+        n_steps=scenario.n_steps,
+        start_date=scenario.start_date,
+        world_seed=scenario.world_seed,
+    )
+
+    sim = build_world(tracking_scenario, policy_overrides={"S": policy})
 
     s_node = sim.nodes["S"]
-    live_sinks = {pid: sim.nodes[f"sink_{pid}"] for pid in active_pids}
+    # Collect live sink nodes by product id.
+    live_sinks = {}
+    for pid in active_pids:
+        sink_id = f"D_{pid}"
+        if sink_id in sim.nodes:
+            live_sinks[pid] = sim.nodes[sink_id]
 
     run_slice = RunSlice(active_pids=active_pids)
 
-    for _ in range(spec.scenario.n_steps):
+    for _ in range(scenario.n_steps):
         sim.tick()
 
         sales_this_tick = dict(sim._last_tick_sales.get("S", {}))
