@@ -63,11 +63,6 @@ class RLEnv(gym.Env):
     ----------
     catalog:
         The full product universe built via ``load_catalog``.
-    base_template:
-        A template object carrying non-episodic knobs (delivery_lag,
-        holding_rate, order_fee). The ``StoreTemplate`` format is still
-        accepted for backward-compatibility; only ``delivery_lag``,
-        ``holding_rate``, and ``order_fee`` are consumed.
     config:
         An ``RLConfig`` instance. Defaults to ``RLConfig()`` (PRD defaults).
     market_params, lifecycle_params, disruption_params:
@@ -86,7 +81,6 @@ class RLEnv(gym.Env):
     def __init__(
         self,
         catalog: list[Ware],
-        base_template: Any,
         config: RLConfig | None = None,
         *,
         market_params: MarketParams | None = None,
@@ -96,7 +90,6 @@ class RLEnv(gym.Env):
         super().__init__()
 
         self.catalog = catalog
-        self.base_template = base_template
         self.config: RLConfig = config if config is not None else RLConfig()
         self._market_params = market_params
         self._lifecycle_params = lifecycle_params
@@ -172,7 +165,6 @@ class RLEnv(gym.Env):
         # Sample a fully deterministic episode specification.
         spec = sample_episode(
             catalog=self.catalog,
-            base_template=self.base_template,
             config=self.config,
             episode_seed=episode_seed,
             market_params=self._market_params,

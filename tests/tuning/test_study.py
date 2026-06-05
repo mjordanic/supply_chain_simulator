@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from src.sim.policy import OrderUpToPolicy
-from src.sim.scenario import StoreTemplate, load_catalog
+from src.sim.scenario import load_catalog
 from src.tuning.config import TuningConfig
 from src.tuning.study import confirm_top_k, run_study
 
@@ -34,23 +34,6 @@ def _make_catalog(n: int = 15) -> list:
             }
             for i in range(n)
         ]
-    )
-
-
-def _make_base_template(
-    capacity: int = 200,
-    init_balance: float = 20_000.0,
-) -> StoreTemplate:
-    return StoreTemplate(
-        id="study_test",
-        region="US",
-        capacity=capacity,
-        init_balance=init_balance,
-        init_stock_pct=0.0,
-        delivery_lag=3,
-        holding_rate=0.01,
-        order_fee=50.0,
-        init_active_count=5,
     )
 
 
@@ -128,13 +111,11 @@ class TestRunStudySmoke3Trials:
     def smoke_study_result(self, tmp_path_factory):
         tmp_path = tmp_path_factory.mktemp("smoke")
         catalog = _make_catalog()
-        template = _make_base_template()
         tuning_config = _make_smoke_tuning_config()
 
         study = run_study(
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_name="smoke",
             output_dir=str(tmp_path),
@@ -215,13 +196,11 @@ class TestRunStudyArtifactsLoadWithPandasOnly:
     def artifacts(self, tmp_path_factory):
         tmp_path = tmp_path_factory.mktemp("pandas_only")
         catalog = _make_catalog()
-        template = _make_base_template()
         tuning_config = _make_smoke_tuning_config()
 
         run_study(
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_name="pandas_only",
             output_dir=str(tmp_path),
@@ -268,7 +247,6 @@ class TestRunStudyCRNAtTrialLevel:
 
     def test_crn_at_trial_level(self, tmp_path):
         catalog = _make_catalog()
-        template = _make_base_template()
         tuning_config = _make_smoke_tuning_config(n_trials=2, n_search_seeds=2)
 
         def fixed_policy_space(trial: optuna.Trial) -> OrderUpToPolicy:
@@ -278,7 +256,6 @@ class TestRunStudyCRNAtTrialLevel:
         run_study(
             fixed_policy_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_name="crn_test",
             output_dir=str(tmp_path),
@@ -306,13 +283,11 @@ class TestRunStudyWritesGitSha:
 
     def test_git_sha_is_valid(self, tmp_path):
         catalog = _make_catalog()
-        template = _make_base_template()
         tuning_config = _make_smoke_tuning_config(n_trials=1, n_search_seeds=1)
 
         run_study(
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_name="git_sha_test",
             output_dir=str(tmp_path),
@@ -369,13 +344,11 @@ class TestConfirmTopKSmoke:
     def holdout_result(self, tmp_path_factory):
         tmp_path = tmp_path_factory.mktemp("holdout_smoke")
         catalog = _make_catalog()
-        template = _make_base_template()
         tuning_config = _make_holdout_tuning_config()
 
         study = run_study(
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_name="holdout_smoke",
             output_dir=str(tmp_path),
@@ -386,7 +359,6 @@ class TestConfirmTopKSmoke:
             study,
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_dir=study_dir,
         )
@@ -442,13 +414,11 @@ class TestConfirmTopKSeedsDisjointFromSearch:
 
     def test_seeds_disjoint(self, tmp_path):
         catalog = _make_catalog()
-        template = _make_base_template()
         tuning_config = _make_holdout_tuning_config()
 
         study = run_study(
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_name="disjoint_test",
             output_dir=str(tmp_path),
@@ -459,7 +429,6 @@ class TestConfirmTopKSeedsDisjointFromSearch:
             study,
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_dir=study_dir,
         )
@@ -482,13 +451,11 @@ class TestConfirmTopKDefaultIsPublished:
         from src.tuning.evaluator import evaluate_policy_normalised
 
         catalog = _make_catalog()
-        template = _make_base_template()
         tuning_config = _make_holdout_tuning_config()
 
         study = run_study(
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_name="default_repro",
             output_dir=str(tmp_path),
@@ -499,7 +466,6 @@ class TestConfirmTopKDefaultIsPublished:
             study,
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_dir=study_dir,
         )
@@ -512,7 +478,6 @@ class TestConfirmTopKDefaultIsPublished:
             seed = tuning_config.holdout_seed_offset + i
             spec = sample_episode(
                 catalog=catalog,
-                base_template=template,
                 config=tuning_config,
                 episode_seed=seed,
             )
@@ -531,13 +496,11 @@ class TestConfirmTopKPairedCRN:
 
     def test_paired_crn_same_world_per_seed(self, tmp_path):
         catalog = _make_catalog()
-        template = _make_base_template()
         tuning_config = _make_holdout_tuning_config()
 
         study = run_study(
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_name="crn_paired",
             output_dir=str(tmp_path),
@@ -548,7 +511,6 @@ class TestConfirmTopKPairedCRN:
             study,
             _order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=tuning_config,
             study_dir=study_dir,
         )

@@ -204,7 +204,6 @@ def _mini_scenario() -> Scenario:
         market=_mini_market(),
         disruption=_mini_disruption(),
         item_lifecycle=_mini_lifecycle(),
-        stores=[],
         nodes=node_instances,
         edges=edges,
         n_steps=N_STEPS,

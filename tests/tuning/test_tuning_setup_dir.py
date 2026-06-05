@@ -253,36 +253,23 @@ class TestTuningEpisodeSpecGraphMode:
     def test_spec_scenario_is_graph_mode(self, tmp_path):
         """sample_episode returns a spec whose scenario is a graph (has nodes+edges)."""
         from src.tuning.episode import sample_episode
-        from src.sim.scenario import StoreTemplate
 
         catalog = self._make_catalog(10)
         config = self._make_config(K_active=3)
-        template = StoreTemplate(
-            id="t", region="US", capacity=200, init_balance=20000.0,
-            init_stock_pct=0.0, delivery_lag=3, holding_rate=0.01,
-            order_fee=50.0, init_active_count=3,
-        )
 
-        spec = sample_episode(catalog, template, config, episode_seed=42)
+        spec = sample_episode(catalog, config, episode_seed=42)
         # Graph-mode scenario has node_instances.
         assert spec.scenario.nodes is not None
         assert len(spec.scenario.nodes) > 0
-        assert spec.scenario.is_graph
 
     def test_spec_carries_capacity_and_balance(self, tmp_path):
         """TuningEpisodeSpec has capacity and balance fields (not buried in stores[0])."""
         from src.tuning.episode import sample_episode
-        from src.sim.scenario import StoreTemplate
 
         catalog = self._make_catalog(10)
         config = self._make_config(K_active=3)
-        template = StoreTemplate(
-            id="t", region="US", capacity=200, init_balance=20000.0,
-            init_stock_pct=0.0, delivery_lag=3, holding_rate=0.01,
-            order_fee=50.0, init_active_count=3,
-        )
 
-        spec = sample_episode(catalog, template, config, episode_seed=42)
+        spec = sample_episode(catalog, config, episode_seed=42)
         assert hasattr(spec, "capacity")
         assert hasattr(spec, "balance")
         assert spec.capacity > 0
@@ -291,17 +278,11 @@ class TestTuningEpisodeSpecGraphMode:
     def test_spec_active_subset_comes_from_catalog(self):
         """active_subset pids all come from the catalog."""
         from src.tuning.episode import sample_episode
-        from src.sim.scenario import StoreTemplate
 
         catalog = self._make_catalog(10)
         config = self._make_config(K_active=3)
-        template = StoreTemplate(
-            id="t", region="US", capacity=200, init_balance=20000.0,
-            init_stock_pct=0.0, delivery_lag=3, holding_rate=0.01,
-            order_fee=50.0, init_active_count=3,
-        )
 
-        spec = sample_episode(catalog, template, config, episode_seed=42)
+        spec = sample_episode(catalog, config, episode_seed=42)
         all_pids = {w.product_id for w in catalog}
         for pid in spec.active_subset:
             assert pid in all_pids
@@ -309,18 +290,12 @@ class TestTuningEpisodeSpecGraphMode:
     def test_scenario_runs_one_tick(self):
         """Graph scenario built by sample_episode runs through Runner for 1 tick."""
         from src.tuning.episode import sample_episode
-        from src.sim.scenario import StoreTemplate
         from src.sim.runner import build_world
 
         catalog = self._make_catalog(10)
         config = TuningConfig(K_active=3, episode_length=1, n_trials=1, n_search_seeds=1)
-        template = StoreTemplate(
-            id="t", region="US", capacity=200, init_balance=20000.0,
-            init_stock_pct=0.0, delivery_lag=3, holding_rate=0.01,
-            order_fee=50.0, init_active_count=3,
-        )
 
-        spec = sample_episode(catalog, template, config, episode_seed=7)
+        spec = sample_episode(catalog, config, episode_seed=7)
         sim = build_world(spec.scenario)
         sim.tick()  # must not raise
 
@@ -336,9 +311,7 @@ class TestTuningCRNDeterminism:
     def test_identical_specs_produce_identical_trajectories(self, tmp_path):
         """Same episode_seed → same world_seed → same sim trajectory."""
         from src.tuning.episode import sample_episode
-        from src.sim.scenario import StoreTemplate
         from src.sim.runner import Runner
-        from src.sim.distributions import Constant
 
         catalog_raw = [
             {
@@ -360,14 +333,9 @@ class TestTuningCRNDeterminism:
             n_trials=1,
             n_search_seeds=2,
         )
-        template = StoreTemplate(
-            id="t", region="US", capacity=200, init_balance=20000.0,
-            init_stock_pct=0.0, delivery_lag=3, holding_rate=0.01,
-            order_fee=50.0, init_active_count=3,
-        )
 
-        spec1 = sample_episode(catalog, template, config, episode_seed=99)
-        spec2 = sample_episode(catalog, template, config, episode_seed=99)
+        spec1 = sample_episode(catalog, config, episode_seed=99)
+        spec2 = sample_episode(catalog, config, episode_seed=99)
 
         assert spec1.active_subset == spec2.active_subset
         assert spec1.capacity == spec2.capacity
@@ -383,7 +351,7 @@ class TestTuningCRNDeterminism:
     def test_different_seeds_diverge(self):
         """Different episode seeds produce different capacity/balance draws."""
         from src.tuning.episode import sample_episode
-        from src.sim.scenario import StoreTemplate, load_catalog
+        from src.sim.scenario import load_catalog
 
         catalog = load_catalog([
             {
@@ -398,14 +366,9 @@ class TestTuningCRNDeterminism:
         ])
 
         config = TuningConfig(K_active=3, episode_length=5, n_trials=1, n_search_seeds=2)
-        template = StoreTemplate(
-            id="t", region="US", capacity=200, init_balance=20000.0,
-            init_stock_pct=0.0, delivery_lag=3, holding_rate=0.01,
-            order_fee=50.0, init_active_count=3,
-        )
 
         world_seeds = {
-            sample_episode(catalog, template, config, episode_seed=s).scenario.world_seed
+            sample_episode(catalog, config, episode_seed=s).scenario.world_seed
             for s in range(20)
         }
         assert len(world_seeds) > 1
@@ -433,24 +396,9 @@ class TestEvaluatePolicyGraphMode:
             for i in range(n)
         ])
 
-    def _make_template(self):
-        from src.sim.scenario import StoreTemplate
-        return StoreTemplate(
-            id="eval_test",
-            region="US",
-            capacity=200,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=5,
-        )
-
     def _make_specs(self, n: int = 2):
         from src.tuning.episode import sample_episode
         catalog = self._make_catalog()
-        template = self._make_template()
         config = TuningConfig(
             K_active=5,
             episode_length=5,
@@ -458,7 +406,7 @@ class TestEvaluatePolicyGraphMode:
             n_search_seeds=2,
         )
         return [
-            sample_episode(catalog, template, config, episode_seed=12_000_000 + i)
+            sample_episode(catalog, config, episode_seed=12_000_000 + i)
             for i in range(n)
         ]
 
@@ -517,7 +465,6 @@ class TestOrderUpToPolicyAnchorGraphMode:
     def test_order_up_to_policy_runs_without_error(self, tmp_path):
         """run_policy_episode with OrderUpToPolicy does not raise on graph spec."""
         from src.sim.policy import OrderUpToPolicy
-        from src.sim.scenario import StoreTemplate
         from src.tuning.episode import sample_episode
         from src.tuning.rollout import run_policy_episode
 
@@ -535,19 +482,8 @@ class TestOrderUpToPolicyAnchorGraphMode:
         ])
 
         config = TuningConfig(K_active=3, episode_length=10, n_trials=1, n_search_seeds=1)
-        template = StoreTemplate(
-            id="anchor_test",
-            region="US",
-            capacity=300,
-            init_balance=30_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
 
-        spec = sample_episode(catalog, template, config, episode_seed=0)
+        spec = sample_episode(catalog, config, episode_seed=0)
         metrics = run_policy_episode(OrderUpToPolicy(), spec)
         assert isinstance(metrics, dict)
         assert "net_profit" in metrics
@@ -555,7 +491,6 @@ class TestOrderUpToPolicyAnchorGraphMode:
     def test_order_up_to_policy_runs_on_setup_dir_catalog(self, tmp_path):
         """run_policy_episode on setup-dir catalog does not raise."""
         from src.sim.policy import OrderUpToPolicy
-        from src.sim.scenario import StoreTemplate
         from src.tuning.episode import load_catalog_and_market_from_setup, sample_episode
         from src.tuning.rollout import run_policy_episode
 
@@ -563,20 +498,8 @@ class TestOrderUpToPolicyAnchorGraphMode:
         catalog, market = load_catalog_and_market_from_setup(setup_dir)
 
         config = TuningConfig(K_active=3, episode_length=5, n_trials=1, n_search_seeds=1)
-        template = StoreTemplate(
-            id="anchor_test",
-            region="US",
-            capacity=300,
-            init_balance=30_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
 
-        spec = sample_episode(catalog, template, config, episode_seed=0,
-                              market_params=market)
+        spec = sample_episode(catalog, config, episode_seed=0, market_params=market)
         metrics = run_policy_episode(OrderUpToPolicy(), spec)
         assert isinstance(metrics, dict)
         assert "net_profit" in metrics
@@ -606,25 +529,9 @@ class TestBuildEvalSpecsWithSetupDir:
             setup_dir=str(setup_dir),
         )
 
-        # run_study should accept setup_dir in config and not crash
-        from src.sim.scenario import StoreTemplate
-        template = StoreTemplate(
-            id="study_test",
-            region="US",
-            capacity=200,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
-
-        # Note: run_study still takes catalog + base_template explicitly;
-        # the new path is that if config.setup_dir is set it can be used
-        # to auto-load them (via the CLI or the study orchestration).
-        # Here we test that run_study still works when catalog/template
-        # come from a setup dir loaded externally.
+        # Note: run_study loads catalog from setup_dir when config.setup_dir is set.
+        # Here we test that run_study also works when catalog is passed explicitly
+        # and market_params come from a setup dir loaded externally.
         from src.tuning.episode import load_catalog_and_market_from_setup
 
         catalog, market = load_catalog_and_market_from_setup(setup_dir)
@@ -632,7 +539,6 @@ class TestBuildEvalSpecsWithSetupDir:
         study = run_study(
             order_up_to_space,
             catalog=catalog,
-            base_template=template,
             tuning_config=config,
             study_name="setup_dir_smoke",
             output_dir=str(tmp_path / "out"),

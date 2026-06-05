@@ -45,14 +45,12 @@ from src.llm.schemas import (
     Taxonomy,
 )
 from src.llm.world_builder import WorldBuilder, allocate_skeletons
-from src.sim.world import World
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     MarketParams,
     Scenario,
-    StoreInstance,
 )
 from src.sim.distributions import Constant
 
@@ -222,31 +220,24 @@ def test_freshness_schema_accepted_by_openai_strict_mode(
 
 
 def test_full_builder_pipeline_against_live_openai(client: OpenAIClient) -> None:
-    """End-to-end smoke: ``WorldBuilder.build`` exercises all six LLM
-    calls (market, taxonomy, catalog, correlations, freshness, templates)
-    plus the deterministic skeleton sampler. Validates the assembled
-    ``World`` is internally consistent."""
+    """End-to-end smoke: ``WorldBuilder`` exercises all LLM calls
+    (market, taxonomy, catalog, correlations, freshness) plus the
+    deterministic skeleton sampler. Validates the assembled catalog
+    and market are internally consistent."""
     builder = WorldBuilder("boutique-grocer", client, max_retries=3)
-    world = builder.build(n_items=8)
+    market = builder.build_market_domain_params()
+    catalog = builder.sample_catalog(n=8)
 
-    assert isinstance(world, World)
-    assert isinstance(world.market, MarketParams)
+    assert isinstance(market, MarketParams)
 
     # Catalog is the right size and ids are stable.
-    assert len(world.catalog) == 8
-    assert [w.product_id for w in world.catalog] == [
+    assert len(catalog) == 8
+    assert [w.product_id for w in catalog] == [
         f"P{i:04d}" for i in range(8)
     ]
 
-    # Templates: at least one, ids unique, regions are a subset of the
-    # market's regions (the prompt tells the LLM to use those).
-    assert len(world.store_templates) >= 1
-    template_regions = {t.region for t in world.store_templates.values()}
-    assert template_regions.issubset(set(world.market.regions))
-
-    # init_freshness on each template is one of the closed-enum values.
-    for template in world.store_templates.values():
-        assert template.init_freshness in _ALLOWED_FRESHNESS_VALUES
+    # Market regions are populated.
+    assert len(market.regions) >= 1
 
     # Correlations stage: every related-product reference resolves to a
     # name in the catalog (sanitisation guarantees this) and is not a

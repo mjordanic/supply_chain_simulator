@@ -49,7 +49,7 @@ def example_run_log(example_scenario):
 
 
 def test_example_loads_valid_scenario(example_scenario):
-    assert example_scenario.is_graph
+    assert len(example_scenario.nodes) > 0
     assert len(example_scenario.catalog) >= 1
     assert len(example_scenario.nodes) == 3
     assert len(example_scenario.edges) == 2

@@ -29,7 +29,7 @@ from src.sim.policy import (
     IntermediatePolicy,
     StaticFactoryPolicy,
 )
-from src.sim.runner import build_graph_world
+from src.sim.runner import build_world as build_graph_world
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
@@ -167,7 +167,6 @@ def _build_chain_scenario(
         market=_minimal_market_params(),
         disruption=_minimal_disruption_params(),
         item_lifecycle=_minimal_lifecycle_params(),
-        stores=[],
         n_steps=n_steps,
         start_date=datetime(2024, 1, 1),
         world_seed=world_seed,

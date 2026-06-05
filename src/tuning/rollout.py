@@ -180,7 +180,6 @@ def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, flo
         market=scenario.market,
         disruption=scenario.disruption,
         item_lifecycle=scenario.item_lifecycle,
-        stores=scenario.stores,
         nodes=new_node_instances,
         edges=scenario.edges,
         n_steps=scenario.n_steps,

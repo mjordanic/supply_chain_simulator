@@ -29,14 +29,12 @@ from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
 from src.rl.train import (
     _args_to_config,
-    _build_synthetic_catalog,
     _checkpoint_dir,
-    _default_template,
     _parse_args,
     _save_checkpoint,
     main,
 )
-from src.sim.scenario import StoreTemplate, load_catalog
+from src.sim.scenario import load_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -134,39 +132,6 @@ class TestArgParsing:
         args = _parse_args(["--no-eval"])
         assert args.no_eval is True
 
-    def test_world_cache_path_passthrough(self):
-        """--world-cache-path is surfaced in args."""
-        args = _parse_args(["--world-cache-path", "/tmp/world.json"])
-        assert args.world_cache_path == "/tmp/world.json"
-
-
-# ---------------------------------------------------------------------------
-# Unit: synthetic catalog helper
-# ---------------------------------------------------------------------------
-
-
-class TestSyntheticCatalog:
-    def test_builds_k_catalog_products(self):
-        """Synthetic catalog has exactly K_catalog products."""
-        config = RLConfig(K_catalog=20)
-        catalog, tmpl = _build_synthetic_catalog(config)
-        assert len(catalog) == 20
-
-    def test_catalog_products_have_valid_ids(self):
-        """All Ware objects have P{i:04d} product_id format."""
-        config = RLConfig(K_catalog=10)
-        catalog, _ = _build_synthetic_catalog(config)
-        for i, ware in enumerate(catalog):
-            assert ware.product_id == f"P{i:04d}", f"Unexpected id: {ware.product_id}"
-
-    def test_default_template_fields_match_config(self):
-        """_default_template copies delivery_lag, holding_rate, order_fee from config."""
-        config = RLConfig(delivery_lag=5, holding_rate=0.02, order_fee=75.0)
-        tmpl = _default_template(config)
-        assert tmpl.delivery_lag == 5
-        assert tmpl.holding_rate == pytest.approx(0.02)
-        assert tmpl.order_fee == pytest.approx(75.0)
-
 
 # ---------------------------------------------------------------------------
 # Unit: checkpoint helpers
@@ -229,21 +194,10 @@ class TestVecEnvConstruction:
             for i in range(20)
         ]
         catalog = load_catalog(items)
-        template = StoreTemplate(
-            id="t",
-            region="US",
-            capacity=200,
-            init_balance=20000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=5,
-        )
         config = RLConfig(episode_length=5, K_active=5, K_catalog=20)
 
         def _factory():
-            return RLEnv(catalog=catalog, base_template=template, config=config)
+            return RLEnv(catalog=catalog, config=config)
 
         envs = gym.vector.SyncVectorEnv([_factory for _ in range(n_envs)])
         assert envs.num_envs == n_envs
@@ -269,21 +223,10 @@ class TestVecEnvConstruction:
             for i in range(20)
         ]
         catalog = load_catalog(items)
-        template = StoreTemplate(
-            id="t",
-            region="US",
-            capacity=200,
-            init_balance=20000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=5,
-        )
         config = RLConfig(episode_length=5, K_active=K, K_catalog=20)
 
         def _factory():
-            return RLEnv(catalog=catalog, base_template=template, config=config)
+            return RLEnv(catalog=catalog, config=config)
 
         envs = gym.vector.SyncVectorEnv([_factory for _ in range(n_envs)])
         obs, _ = envs.reset(seed=1)

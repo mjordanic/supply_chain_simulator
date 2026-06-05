@@ -171,7 +171,6 @@ def _make_graph_scenario(
         market=_constant_market(demand=demand),
         disruption=_no_disruption(),
         item_lifecycle=_no_lifecycle(),
-        stores=[],
         nodes=node_instances,
         edges=edges,
         n_steps=n_steps,
@@ -246,7 +245,6 @@ def _run_scenario(
     but only uses capacity/balance/delivery_lag/init_stock_pct from it.
     """
     if template is not None:
-        from src.sim.scenario import StoreTemplate
         capacity = int(template.capacity) if isinstance(template.capacity, (int, float)) else 5000
         balance = float(template.init_balance) if isinstance(template.init_balance, (int, float)) else 100_000.0
         delivery_lag = int(template.delivery_lag) if isinstance(template.delivery_lag, (int, float)) else DELIVERY_LAG
@@ -586,7 +584,6 @@ def _flagship_run(n_products: int = 10, demand: float = 5.0, n_steps: int = 180)
         market=market,
         disruption=_no_disruption(),
         item_lifecycle=_no_lifecycle(),
-        stores=[],
         nodes=node_instances,
         edges=edges,
         n_steps=n_steps,

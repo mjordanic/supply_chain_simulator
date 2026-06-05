@@ -86,23 +86,6 @@ class Policy(ABC):
         """Return an action dict for one simulation step."""
 
 
-class NoopPolicy(Policy):
-    """Returns an empty action dict; consumes no policy_rng draws.
-
-    Useful for determinism tests where we want to drive the runner
-    loop without making any decisions.
-
-    Supports both the legacy Store-engine interface (``decide(observation)``)
-    and the graph-engine IntermediateNode interface
-    (``decide(obs_intermediate, central_table)``).  The second argument is
-    accepted but ignored — the policy never orders anything in either mode.
-    """
-
-    def decide(self, observation: Mapping[str, Any], *args: Any) -> dict[str, Any]:
-        """Return ``{}`` — no orders, no prices, no catalog changes."""
-        return {}
-
-
 # ---------------------------------------------------------------------------
 # NodePolicy ABC family (multi-echelon graph engine)
 #
@@ -193,11 +176,10 @@ def _maybe_sample(value: Any, rng: Random) -> Any:
 
 
 class _HeuristicPolicyOld(Policy):
-    """Heuristic kitchen-sink demonstrator — retired in Phase 4 (issue 11).
+    """Heuristic kitchen-sink demonstrator — retired.
 
-    Kept as dead code to avoid a large diff. The public name
-    ``HeuristicPolicy`` is reassigned below to a tombstone class that
-    raises on construction.
+    Dead code retained to keep the diff size manageable. The class is no
+    longer exported or used anywhere in the production code.
 
     Original docstring follows:
 
@@ -741,30 +723,6 @@ class _HeuristicPolicyOld(Policy):
 
 
 # ---------------------------------------------------------------------------
-# Phase-4 tombstones: HeuristicPolicy and RLPolicy deleted
-# (issue 11-retire-legacy-store-engine)
-# ---------------------------------------------------------------------------
-
-class HeuristicPolicy(Policy):  # type: ignore[no-redef]
-    """Tombstone: HeuristicPolicy retired in Phase 4 (issue 11).
-
-    Raises ``TypeError`` on construction. Migrate legacy scenarios to
-    the graph engine: ``StaticFactoryPolicy``, ``DefaultDemandSinkPolicy``,
-    or ``OrderUpToPolicy``.
-    """
-
-    def __init__(self, *args, **kwargs):
-        raise TypeError(
-            "HeuristicPolicy has been retired in Phase 4 (issue 11). "
-            "Migrate the scenario to the graph engine and use "
-            "StaticFactoryPolicy / DefaultDemandSinkPolicy / OrderUpToPolicy."
-        )
-
-    def decide(self, observation):  # type: ignore[override]
-        raise TypeError("HeuristicPolicy has been retired.")
-
-
-# ---------------------------------------------------------------------------
 # RLIntermediatePolicy — graph-engine RL shim (issue 12)
 # ---------------------------------------------------------------------------
 
@@ -830,15 +788,12 @@ class RLIntermediatePolicy(IntermediatePolicy):
 __all__ = [
     "Policy",
     "NodePolicy",
-    "NoopPolicy",
-    "HeuristicPolicy",  # tombstone — raises on construction
     "TextbookReorderPolicy",
     # Phase-1 graph-engine concrete policies (issue 06)
     "StaticFactoryPolicy",
     "DefaultDemandSinkPolicy",
     "IntermediatePolicy",
     # Phase-2 textbook policy family re-rooted on MultiSupplierTextbookPolicy (issue 09)
-    # (OrderUpToPolicy etc. are defined in the Phase-2 section at the bottom of this file)
     "MultiSupplierTextbookPolicy",
     "OrderUpToPolicy",
     "ReorderPointPolicy",

@@ -131,7 +131,7 @@ def test_load_setup_returns_scenario(tmp_path):
     assert scenario.world_seed == 7
     assert len(scenario.nodes) == 3
     assert len(scenario.edges) == 2
-    assert not scenario.stores  # no legacy stores
+    assert len(scenario.nodes) > 0  # graph-mode: nodes present
 
 
 def test_load_setup_builds_valid_dag(tmp_path):

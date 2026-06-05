@@ -3,7 +3,7 @@
 - **Feature**: setup-files
 - **PRD**: [`PRD.md`](./PRD.md)
 - **Started**: 2026-06-05T12:27:27Z
-- **Last updated**: 2026-06-05T16:30:00Z
+- **Last updated**: 2026-06-05T17:30:00Z
 - **Parallelism cap**: 1 (in-place sequential)
 - **Integration branch**: `claude/eloquent-hopper-Mwefh`
 - **runner-model**: default
@@ -22,8 +22,8 @@
 | 03-topology-scaffolder | Topology scaffolder | 3 | committed | 03b86793453425db13b7abfe1f0eb16992e51f2f | 03b86793453425db13b7abfe1f0eb16992e51f2f | 2026-06-05T14:00:00Z | 2026-06-05T14:30:00Z | in-place mode; 885 tests pass, 13 skipped. New module: topology_scaffolder. CLI scaffold subcommand. 22 new tests. |
 | 04-llm-generator-writes-setup-files | LLM generator writes setup files (+ write_setup, dir-as-cache) | 3 | committed | 78c59bc2c8d2d5c7df3c6c8c22da13c73d23d5ab | 78c59bc2c8d2d5c7df3c6c8c22da13c73d23d5ab | 2026-06-05T14:30:00Z | 2026-06-05T15:30:00Z | in-place mode; 908 tests pass, 13 skipped. New: write_setup, write_catalog_and_market, load_or_build_setup, WorldBuilder.build_setup. 23 new tests. |
 | 05-rl-trains-against-setup-directory | RL trains against a setup directory | 3 | committed | 7e77cb2a5d8e12fe63d1e7cb5f68f8b9ea3f1a20 | 7e77cb2a5d8e12fe63d1e7cb5f68f8b9ea3f1a20 | 2026-06-05T15:30:00Z | 2026-06-05T16:30:00Z | in-place mode; 932 tests pass, 13 skipped. RLConfig.setup_dir field; load_catalog_and_market_from_setup; make_synthetic_catalog; 24 new tests. |
-| 06-tuning-optimises-against-setup-directory | Tuning optimises against a setup directory | 4 | pending | — | — | — | — | |
-| 07-remove-remaining-legacy | Remove remaining legacy: Store model, World, world_loaders, dead policy classes | 5 | pending | — | — | — | — | |
+| 06-tuning-optimises-against-setup-directory | Tuning optimises against a setup directory | 4 | committed | 3a64bf5a4cca31fb923f1d296112ad4622ce12e4 | 3a64bf5a4cca31fb923f1d296112ad4622ce12e4 | 2026-06-05T16:30:00Z | 2026-06-05T17:30:00Z | in-place mode; 958 tests pass, 13 skipped. TuningConfig.setup_dir; TuningEpisodeSpec with capacity/balance; graph-mode episode builder; load_catalog_and_market_from_setup; make_synthetic_catalog; 26 new tests. |
+| 07-remove-remaining-legacy | Remove remaining legacy: Store model, World, world_loaders, dead policy classes | 5 | committed | TBD | TBD | 2026-06-05T17:31:00Z | 2026-06-05T18:30:00Z | in-place mode; 816 tests pass, 10 skipped. Deleted StoreTemplate, StoreInstance, make_stores, World, world_loader.py (sim+tuning), NoopPolicy, HeuristicPolicy, Scenario.to_json/from_json/from_world/stores_df/is_graph/stores, WorldBuilder.build()/build_store_templates(), RLConfig.world_archetype/world_cache_path, TuningConfig.world_archetype/world_cache_path. |
 | 08-docs-and-convert-examples | Docs + convert example scenarios | 5 | pending | — | — | — | — | |
 
 ## Dependency graph
@@ -64,6 +64,10 @@
 - 2026-06-05T15:30:00Z — Wave-runner: 04-llm-generator-writes-setup-files committed as 78c59bc on claude/eloquent-hopper-Mwefh. 908 tests pass, 13 skipped.
 - 2026-06-05T15:30:00Z — Wave-runner: dispatching issue-implementer for 05-rl-trains-against-setup-directory (model=opus).
 - 2026-06-05T16:30:00Z — Wave-runner: Wave 3 complete. 05-rl-trains-against-setup-directory committed as 7e77cb2 on claude/eloquent-hopper-Mwefh. 932 tests pass, 13 skipped. New: RLConfig.setup_dir, load_catalog_and_market_from_setup, make_synthetic_catalog, 24 new tests.
+- 2026-06-05T16:30:00Z — Wave-runner: Wave 4 started; dispatching issue-implementer for 06-tuning-optimises-against-setup-directory (model=opus).
+- 2026-06-05T17:30:00Z — Wave-runner: Wave 4 complete. 06-tuning-optimises-against-setup-directory committed as 3a64bf5 on claude/eloquent-hopper-Mwefh. 958 tests pass, 13 skipped. New: TuningConfig.setup_dir, TuningEpisodeSpec with capacity/balance, graph-mode episode builder, load_catalog_and_market_from_setup, make_synthetic_catalog, CLI --setup-dir flag, 26 new tests.
+- 2026-06-05T17:31:00Z — Wave-runner: Wave 5 started; dispatching issue-implementer for 07-remove-remaining-legacy (model=opus).
+- 2026-06-05T18:30:00Z — Wave-runner: 07-remove-remaining-legacy committed on claude/eloquent-hopper-Mwefh. 816 tests pass, 10 skipped. All Store-model, World, world_loader, NoopPolicy/HeuristicPolicy, Scenario.to_json/from_json/stores/is_graph deleted. Fixtures regenerated.
 
 ## Outstanding follow-ups
 

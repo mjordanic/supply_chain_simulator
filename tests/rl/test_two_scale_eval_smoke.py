@@ -31,7 +31,7 @@ from src.rl.eval import (
     evaluate_two_scale,
     _bootstrap_ci,
 )
-from src.sim.scenario import StoreTemplate, load_catalog
+from src.sim.scenario import load_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -53,20 +53,6 @@ def _make_catalog(n: int = 15) -> list:
         for i in range(n)
     ]
     return load_catalog(items)
-
-
-def _make_base_template() -> StoreTemplate:
-    return StoreTemplate(
-        id="smoke_test",
-        region="US",
-        capacity=200,
-        init_balance=20_000.0,
-        init_stock_pct=0.0,
-        delivery_lag=3,
-        holding_rate=0.01,
-        order_fee=50.0,
-        init_active_count=5,
-    )
 
 
 def _make_short_config() -> RLConfig:
@@ -122,7 +108,6 @@ class TestBaselineVsBaselineNearZeroUplift:
     ):
         """Main smoke test: baseline policy substituted for RL → near-zero uplift."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_short_config()
 
         _install_baseline_override(config)
@@ -130,7 +115,6 @@ class TestBaselineVsBaselineNearZeroUplift:
             result = evaluate_two_scale(
                 checkpoint_path="",
                 catalog=catalog,
-                base_template=template,
                 config=config,
                 n_seeds=4,
             )
@@ -159,7 +143,6 @@ class TestTwoScaleEvalResultShape:
     def test_result_has_small_and_flagship(self):
         """TwoScaleEvalResult must have both 'small' and 'flagship' attributes."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_short_config()
 
         _install_baseline_override(config)
@@ -167,7 +150,6 @@ class TestTwoScaleEvalResultShape:
             result = evaluate_two_scale(
                 checkpoint_path="",
                 catalog=catalog,
-                base_template=template,
                 config=config,
                 n_seeds=4,
             )
@@ -181,7 +163,6 @@ class TestTwoScaleEvalResultShape:
     def test_per_seed_length_equals_n_seeds(self):
         """Each ScaleResult.per_seed must have exactly n_seeds entries."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_short_config()
         n_seeds = 4
 
@@ -190,7 +171,6 @@ class TestTwoScaleEvalResultShape:
             result = evaluate_two_scale(
                 checkpoint_path="",
                 catalog=catalog,
-                base_template=template,
                 config=config,
                 n_seeds=n_seeds,
             )
@@ -207,7 +187,6 @@ class TestTwoScaleEvalResultShape:
     def test_scale_result_fields_are_non_none(self):
         """All ScaleResult numeric fields must be non-None and finite."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_short_config()
 
         _install_baseline_override(config)
@@ -215,7 +194,6 @@ class TestTwoScaleEvalResultShape:
             result = evaluate_two_scale(
                 checkpoint_path="",
                 catalog=catalog,
-                base_template=template,
                 config=config,
                 n_seeds=4,
             )
@@ -238,7 +216,6 @@ class TestTwoScaleEvalResultShape:
     def test_per_seed_result_fields_are_finite(self):
         """Every PairedSeedResult must have finite numeric fields."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_short_config()
 
         _install_baseline_override(config)
@@ -246,7 +223,6 @@ class TestTwoScaleEvalResultShape:
             result = evaluate_two_scale(
                 checkpoint_path="",
                 catalog=catalog,
-                base_template=template,
                 config=config,
                 n_seeds=4,
             )
@@ -276,7 +252,6 @@ class TestConfigNotMutated:
     def test_config_unchanged_after_call(self):
         """The input config must be bit-identical before and after the call."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_short_config()
 
         # Capture the config's capacity_dist identity before the call.
@@ -288,7 +263,6 @@ class TestConfigNotMutated:
             evaluate_two_scale(
                 checkpoint_path="",
                 catalog=catalog,
-                base_template=template,
                 config=config,
                 n_seeds=2,
             )

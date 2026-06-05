@@ -25,11 +25,10 @@ from src.sim.graph import EdgeSpec
 from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
 from src.sim.policy import (
     DefaultDemandSinkPolicy,
-    NoopPolicy,
     OrderUpToPolicy,
     StaticFactoryPolicy,
 )
-from src.sim.runner import GraphRunner, Runner, build_graph_world
+from src.sim.runner import Runner, build_world as build_graph_world
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
@@ -186,7 +185,6 @@ def _build_2f2s_scenario(
             duration=Constant(1),
         ),
         item_lifecycle=_graph_lifecycle_params(),
-        stores=[],
         n_steps=n_steps,
         start_date=datetime(2024, 1, 1),
         world_seed=world_seed,
@@ -218,8 +216,8 @@ def test_g1_same_world_seed_identical_cash_trajectory():
     s1 = _build_2f2s_scenario(world_seed=42, n_steps=20)
     s2 = _build_2f2s_scenario(world_seed=42, n_steps=20)
 
-    log1 = GraphRunner(s1).run()
-    log2 = GraphRunner(s2).run()
+    log1 = Runner(s1).run()
+    log2 = Runner(s2).run()
 
     traj1 = _extract_cash_trajectory(log1)
     traj2 = _extract_cash_trajectory(log2)
@@ -301,8 +299,8 @@ def test_g4_different_world_seed_diverges():
     s1 = _build_2f2s_scenario(world_seed=1, n_steps=20)
     s2 = _build_2f2s_scenario(world_seed=9999, n_steps=20)
 
-    log1 = GraphRunner(s1).run()
-    log2 = GraphRunner(s2).run()
+    log1 = Runner(s1).run()
+    log2 = Runner(s2).run()
 
     traj1 = _extract_cash_trajectory(log1)
     traj2 = _extract_cash_trajectory(log2)

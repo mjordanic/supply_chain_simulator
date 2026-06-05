@@ -5,9 +5,6 @@ Demonstrates the full pipeline without needing ``OPENAI_API_KEY``.
 pre-built Pydantic payload per ``structured_completion`` call. This is
 the same test seam used by ``tests/llm/test_world_builder.py``.
 
-Phase-4 (issue 11): migrated to the graph engine. Uses ``world_to_graph``
-to synthesise a 3-node-per-store-template topology from the World artifact.
-
 Use it to:
 
 - inspect what each stage's payload looks like end-to-end
@@ -42,26 +39,30 @@ from src.llm.schemas import (
     CatalogItem,
     Correlations,
     FreshnessSet,
-    InitFreshness,
     ItemFreshness,
     ItemRelations,
     MarketDomain,
     RelatedRef,
     Seasonality,
-    StoreTemplateList,
-    StoreTemplateSpec,
     Taxonomy,
     TaxonomyCategory,
 )
 from src.llm.world_builder import WorldBuilder
 from src.sim.distributions import Constant
+from src.sim.graph import EdgeSpec
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import (
+    DefaultDemandSinkPolicy,
+    OrderUpToPolicy,
+    StaticFactoryPolicy,
+)
 from src.sim.runner import Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
+    NodeInstance,
     Scenario,
 )
-from src.sim.world import world_to_graph
 
 
 # Bound on the schema TypeVar so ``structured_completion`` is statically
@@ -72,8 +73,8 @@ T = TypeVar("T", bound=BaseModel)
 class CannedClient:
     """Implements ``LLMClient`` Protocol with a fixed response queue.
 
-    Order matches ``WorldBuilder.build``: market -> taxonomy -> catalog ->
-    correlations -> freshness -> templates. Each ``structured_completion``
+    Order matches ``WorldBuilder`` catalog pipeline: market -> taxonomy ->
+    catalog -> correlations -> freshness. Each ``structured_completion``
     call pops the head.
     """
 
@@ -208,57 +209,89 @@ _FRESHNESS = FreshnessSet(
 )
 
 
-# 6. Store templates: a "flagship" (bigger capacity / balance) + a "standard".
-_TEMPLATES = StoreTemplateList(
-    templates=[
-        StoreTemplateSpec(
-            id="flagship",
-            region="US",
-            capacity=500.0,
-            init_balance=20_000.0,
-            init_stock_pct=0.5,
-            delivery_lag=1.0,
-            holding_rate=0.01,
-            order_fee=20.0,
-            init_active_count=6,
-            init_freshness=InitFreshness.BASELINE,
-        ),
-        StoreTemplateSpec(
-            id="standard",
-            region="US",
-            capacity=200.0,
-            init_balance=10_000.0,
-            init_stock_pct=0.4,
-            delivery_lag=2.0,
-            holding_rate=0.005,
-            order_fee=10.0,
-            init_active_count=4,
-            init_freshness=InitFreshness.BASELINE,
-        ),
-    ]
-)
-
-
-# Wire the canned client into the WorldBuilder and run the same pipeline
-# the production scenario uses — no special-case code path.
+# Wire the canned client into the WorldBuilder and run the catalog pipeline.
 _client = CannedClient(
-    [_MARKET, _TAXONOMY, _CATALOG, _CORRELATIONS, _FRESHNESS, _TEMPLATES]
+    [_MARKET, _TAXONOMY, _CATALOG, _CORRELATIONS, _FRESHNESS]
 )
 _builder = WorldBuilder(archetype="fashion_retail", client=_client)
-_world = _builder.build(n_items=len(_CATALOG.items))
+_market_params = _builder.build_market_domain_params()
+_wares = _builder.sample_catalog(n=len(_CATALOG.items))
+
+# Product IDs assigned by load_catalog (P0000..P0005).
+_pids = [w.product_id for w in _wares]
+_pid_set = set(_pids)
 
 
-# Synthesise graph topology from the World artifact.
-_topology = world_to_graph(_world, sink_density=1.0)
+# Synthesise a minimal 3-node topology: one factory, one shop, one sink.
+# Each factory produces one product; the shop carries all products.
+_factory = FactoryNode(
+    id="factory-1",
+    region="US",
+    init_seed=1,
+    produces_product_id=_pids[0],
+    unit_cost=_wares[0].unit_cost,
+    capacity_per_tick=50,
+    inventory=200,
+    list_price=_wares[0].unit_cost,
+    cash=0.0,
+)
+_factory.policy = StaticFactoryPolicy(
+    capacity_per_tick=50,
+    unit_cost=_wares[0].unit_cost,
+    policy_seed=10,
+)
+
+_shop = IntermediateNode(
+    id="shop-1",
+    region="US",
+    init_seed=2,
+    carried_products=_pid_set,
+    capacity=500,
+    tags=["shop"],
+    inventory={pid: 20 for pid in _pids},
+    pending={},
+    list_prices={w.product_id: w.base_price for w in _wares},
+    min_order_imposed={pid: 0 for pid in _pids},
+    cash=20_000.0,
+)
+_shop.policy = OrderUpToPolicy(
+    cover_horizon_ticks=14,
+    safety_lead_pct_of_lag=1 / 3,
+    delivery_lag=2,
+    unit_cost=_wares[0].unit_cost,
+    list_price_out=_wares[0].base_price,
+    policy_seed=20,
+)
+
+_sink = DemandSinkNode(
+    id="sink-1",
+    region="US",
+    init_seed=3,
+    product_id=_pids[0],
+    demand_dist=Constant(5),
+    income_rate=300.0,
+    cash=5_000.0,
+)
+_sink.policy = DefaultDemandSinkPolicy(policy_seed=30)
+
+_nodes = [
+    NodeInstance(node=_factory, init_seed=1),
+    NodeInstance(node=_shop, init_seed=2),
+    NodeInstance(node=_sink, init_seed=3),
+]
+_edges = [
+    EdgeSpec(supplier_id="factory-1", buyer_id="shop-1", default_lead_time=2),
+    EdgeSpec(supplier_id="shop-1", buyer_id="sink-1", default_lead_time=1),
+]
 
 
 scenario = Scenario(
-    catalog=_world.catalog,
-    market=_world.market,
+    catalog=_wares,
+    market=_market_params,
     disruption=DisruptionParams(
         event_prob=0.05,
         types=["natural_disaster", "economic_crisis"],
-        regions=_world.market.regions,
+        regions=_market_params.regions,
         severity=Constant(0.01),
         duration=Constant(3),
     ),
@@ -270,9 +303,8 @@ scenario = Scenario(
             for s in ["introduction", "growth", "maturity", "decline", "dead"]
         },
     ),
-    stores=[],
-    nodes=_topology["node_instances"],
-    edges=_topology["edges"],
+    nodes=_nodes,
+    edges=_edges,
     n_steps=50,
     start_date=datetime(2024, 1, 1),
     world_seed=42,
@@ -285,11 +317,10 @@ def main() -> None:
     run_log = Runner(scenario).run()
     output = _PROJECT_ROOT / "data" / "example_llm_world_offline"
     DataExporter(scenario, run_log).export_all(str(output))
-    print(f"Catalog ({len(_world.catalog)} items):")
-    for w in _world.catalog:
+    print(f"Catalog ({len(_wares)} items):")
+    for w in _wares:
         print(f"  {w.product_id}  {w.category:<14}  {w.name}")
-    print(f"Templates: {list(_world.store_templates.keys())}")
-    print(f"Regions: {_world.market.regions}")
+    print(f"Regions: {_market_params.regions}")
     print(f"Wrote run artifacts to {output}")
 
 

@@ -67,16 +67,22 @@ class DataExporter:
         self.save_overview_plot(output_folder)
 
     def save_scenario_json(self, output_folder: str) -> str:
-        """Write ``scenario.json`` via ``Scenario.to_json``. Returns the path."""
+        """Write ``scenario.json`` with basic scenario metadata. Returns the path."""
         # ``config/`` sub-directory keeps config separate from raw run data.
         folder = os.path.join(output_folder, "config")
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, "scenario.json")
+        sc = self.scenario
+        payload = {
+            "world_seed": sc.world_seed,
+            "n_steps": sc.n_steps,
+            "start_date": str(sc.start_date),
+            "n_catalog": len(sc.catalog),
+            "n_nodes": len(sc.nodes),
+            "n_edges": len(sc.edges),
+        }
         with open(path, "w") as f:
-            # ``Scenario.to_json`` already omits policies — they're
-            # Python objects, not JSON-serialisable, and policy choice
-            # is wired up at experiment-authoring time anyway.
-            f.write(self.scenario.to_json())
+            json.dump(payload, f, indent=2)
         return path
 
     def save_run_log_json(self, output_folder: str) -> str:
@@ -139,29 +145,18 @@ class DataExporter:
         return path
 
     def save_stores_parquet(self, output_folder: str) -> str:
-        """Write the static store/node table as ``stores.parquet``.
+        """Write the static node table as ``stores.parquet``.
 
-        Phase 4 (issue 11): for graph-mode scenarios (``is_graph == True``)
-        the node roster is exported instead of the legacy store list.  For
-        legacy store-mode scenarios the old ``stores_df()`` path is used.
+        Exports the graph-mode node roster via ``Scenario.nodes_df()``.
         """
         folder = os.path.join(output_folder, "data")
         os.makedirs(folder, exist_ok=True)
 
-        if self.scenario.is_graph:
-            # Graph-mode: export ``nodes_df()`` with a ``policy_type`` column.
-            nodes_df = self.scenario.nodes_df().rename(
-                columns={"policy_class": "policy_type"}
-            )
-            path = os.path.join(folder, "stores.parquet")
-            nodes_df.to_parquet(path)
-        else:
-            # Legacy store-mode: the old shape.
-            stores_df = self.scenario.stores_df().rename(
-                columns={"policy_class": "policy_type"}
-            )
-            path = os.path.join(folder, "stores.parquet")
-            stores_df.to_parquet(path)
+        nodes_df = self.scenario.nodes_df().rename(
+            columns={"policy_class": "policy_type"}
+        )
+        path = os.path.join(folder, "stores.parquet")
+        nodes_df.to_parquet(path)
         return path
 
     def save_timeseries_parquet(self, output_folder: str) -> str:
@@ -239,14 +234,7 @@ class DataExporter:
         return path
 
     def save_nodes_parquet(self, output_folder: str) -> str:
-        """Write the node static table as ``nodes.parquet`` (setup-dir runs).
-
-        Replaces ``stores.parquet`` for graph-mode scenarios loaded from a
-        setup directory.  For legacy store-mode scenarios this is a no-op
-        (returns empty path) — the old ``save_stores_parquet`` handles them.
-        """
-        if not self.scenario.is_graph:
-            return ""
+        """Write the node static table as ``nodes.parquet``."""
         folder = os.path.join(output_folder, "data")
         os.makedirs(folder, exist_ok=True)
         nodes_df = self.scenario.nodes_df().rename(

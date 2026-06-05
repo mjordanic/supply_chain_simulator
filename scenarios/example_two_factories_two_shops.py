@@ -50,7 +50,7 @@ from src.sim.policy import (
     OrderUpToPolicy,
     StaticFactoryPolicy,
 )
-from src.sim.runner import GraphRunner
+from src.sim.runner import Runner as GraphRunner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
@@ -276,7 +276,6 @@ def _build_scenario() -> Scenario:
         market=market,
         disruption=disruption,
         item_lifecycle=lifecycle,
-        stores=[],
         n_steps=N_STEPS,
         start_date=datetime(2024, 1, 1),
         world_seed=WORLD_SEED,

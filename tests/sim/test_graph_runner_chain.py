@@ -25,7 +25,7 @@ from src.sim.event_engine import EventEngine
 from src.sim.graph import EdgeSpec
 from src.sim.market import Market
 from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
-from src.sim.runner import GraphRunner, GraphSimulation, build_graph_world
+from src.sim.runner import Runner as GraphRunner, Simulation as GraphSimulation, build_world as build_graph_world
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
@@ -167,7 +167,6 @@ def _build_chain_scenario(n_steps: int = 50, world_seed: int = 42) -> Scenario:
         market=_minimal_market_params(),
         disruption=_minimal_disruption_params(),
         item_lifecycle=_minimal_lifecycle_params(),
-        stores=[],  # no legacy stores
         n_steps=n_steps,
         start_date=datetime(2024, 1, 1),
         world_seed=world_seed,

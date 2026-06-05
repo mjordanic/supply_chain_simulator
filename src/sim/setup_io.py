@@ -651,7 +651,6 @@ def load_setup(setup_dir: str | Path) -> Any:
         market=market_params,
         disruption=disruption_params,
         item_lifecycle=item_lifecycle,
-        stores=[],  # no legacy stores in setup-dir scenarios
         nodes=node_instances,
         edges=edges,
         n_steps=n_steps,

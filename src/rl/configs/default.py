@@ -55,12 +55,12 @@ class RLConfig:
 
     - **Episode shape** — basic sizing parameters for one episode.
     - **Episode randomisation** — distributions sampled fresh each reset.
-    - **Simulator knobs** — passed verbatim to StoreTemplate / Scenario.
+    - **Simulator knobs** — delivery_lag, holding_rate, order_fee.
     - **PPO hyperparameters** — CleanRL-compatible knobs.
     - **Training driver** — vec-env count and step budget.
     - **Eval** — cadence, seed count, and offset.
     - **Output** — TensorBoard log dir, checkpoint dir, experiment name.
-    - **World** — archetype label and optional cache path.
+    - **World** — optional setup directory path.
     """
 
     # ------------------------------------------------------------------
@@ -203,14 +203,7 @@ class RLConfig:
     # ------------------------------------------------------------------
     # World
     # ------------------------------------------------------------------
-    world_archetype: str = "rl_train"
-    """Archetype label passed to the world builder / cache loader."""
-
-    world_cache_path: Optional[str] = None
-    """Optional explicit path to a cached ``world.json``; overrides auto-lookup."""
-
     setup_dir: Optional[str] = None
     """Optional path to a setup directory (catalog.csv + setup.yaml).
-    When set, the RL stack loads catalog + market from this directory
-    instead of using world_loader / world.json.
-    Takes priority over world_cache_path and world_archetype when set."""
+    When set, the RL stack loads catalog + market from this directory.
+    When unset, a synthetic catalog is used (no LLM calls required)."""

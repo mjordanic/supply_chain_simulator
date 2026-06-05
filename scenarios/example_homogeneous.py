@@ -251,7 +251,6 @@ scenario = Scenario(
     market=_MARKET,
     disruption=_DISRUPTION,
     item_lifecycle=_LIFECYCLE,
-    stores=[],
     nodes=_ALL_NODES,
     edges=_ALL_EDGES,
     n_steps=50,

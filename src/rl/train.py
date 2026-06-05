@@ -11,16 +11,16 @@ Quick smoke run (no world cache needed — uses a synthetic catalog)::
 
     uv run python -m src.rl.train --total-env-steps 5000 --n-envs 2
 
-Full run against a cached LLM-built world::
+Full run against a setup directory::
 
     uv run python -m src.rl.train \\
         --total-env-steps 1000000 \\
         --experiment-name my_run \\
-        --world-cache-path data/worlds/rl_train/world.json
+        --setup-dir setups/my_scenario/
 
 Architecture
 ------------
-1. Load (or synthesise) the product catalog and a base ``StoreTemplate``.
+1. Load (or synthesise) the product catalog and market params.
 2. Build a ``gymnasium.vector.SyncVectorEnv`` of ``n_envs`` ``RLEnv``
    instances — each env runs the full simulator, so envs are independent.
 3. Build a ``SummaryWriter`` at ``runs/<experiment_name>/``.
@@ -50,9 +50,8 @@ from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
 from src.rl.eval import build_eval_seeds, evaluate
 from src.rl.episode_sampler import load_catalog_and_market_from_setup, make_synthetic_catalog
-from src.sim.scenario import DisruptionParams, MarketParams, StoreTemplate
+from src.sim.scenario import DisruptionParams, MarketParams
 from src.sim.policy import OrderUpToPolicy
-from src.sim.world_loader import load_world as _sim_load_world
 
 
 # ---------------------------------------------------------------------------
@@ -62,19 +61,13 @@ from src.sim.world_loader import load_world as _sim_load_world
 
 def _load_world_catalog_and_template(
     config: RLConfig,
-) -> tuple[list[Any], StoreTemplate, MarketParams | None, DisruptionParams | None]:
-    """Return ``(catalog, base_template, market_params, disruption_params)``.
+) -> tuple[list[Any], MarketParams | None, DisruptionParams | None]:
+    """Return ``(catalog, market_params, disruption_params)``.
 
     Resolution order:
-    1. If ``config.setup_dir`` is set and exists: load catalog + market from
-       the setup directory (no world_loader, no StoreTemplate needed).
-    2. Otherwise: delegate to ``src.sim.world_loader.load_world`` for the
-       legacy three-tier resolution (explicit cache_path → archetype
-       auto-lookup → synthetic fallback).
-
-    The returned ``base_template`` is a minimal StoreTemplate consistent
-    with ``config`` — it is only used to pass delivery_lag/holding_rate/
-    order_fee into sample_episode until those are fully injected from config.
+    1. If ``config.setup_dir`` is set: load catalog + market from the setup
+       directory.
+    2. Otherwise: build a synthetic catalog (no LLM required).
     """
     if config.setup_dir is not None:
         catalog, market = load_catalog_and_market_from_setup(config.setup_dir)
@@ -83,67 +76,14 @@ def _load_world_catalog_and_template(
             f"from setup directory: {config.setup_dir}",
             file=sys.stderr,
         )
-        base_template = _default_template(config)
-        return catalog, base_template, market, None
+        return catalog, market, None
 
-    return _sim_load_world(
-        archetype=config.world_archetype,
-        cache_path=config.world_cache_path,
-        delivery_lag=config.delivery_lag,
-        holding_rate=config.holding_rate,
-        order_fee=config.order_fee,
-        K_active=config.K_active,
-        synthetic_fallback=True,
-        synthetic_catalog_size=config.K_catalog,
+    catalog = make_synthetic_catalog(config.K_catalog)
+    print(
+        f"[train] Synthetic catalog: {config.K_catalog} products.",
+        file=sys.stderr,
     )
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatibility shims (tests import these by name)
-# ---------------------------------------------------------------------------
-# These helpers were refactored into src.sim.world_loader; the thin wrappers
-# below preserve the public names so existing test imports continue to work.
-
-
-def _default_template(config: RLConfig) -> StoreTemplate:
-    """Return a minimal StoreTemplate consistent with ``config``.
-
-    Kept for backward-compatibility with tests that import this name.
-    """
-    return StoreTemplate(
-        id="rl_train_default",
-        region="US",
-        capacity=200,
-        init_balance=20000.0,
-        init_stock_pct=0.0,
-        delivery_lag=config.delivery_lag,
-        holding_rate=config.holding_rate,
-        order_fee=config.order_fee,
-        init_active_count=config.K_active,
-    )
-
-
-def _build_synthetic_catalog(
-    config: RLConfig,
-) -> tuple[list[Any], StoreTemplate]:
-    """Build a K_catalog-item synthetic catalog (no LLM) for CI / smoke runs.
-
-    Kept for backward-compatibility with tests that import this name.
-    Returns (catalog, base_template) — note the old 4-tuple signature
-    returned (catalog, tmpl, None, None); callers that depend on the 4-tuple
-    will continue to fail as they did before (pre-existing test failures).
-    """
-    catalog, base_template, _, _ = _sim_load_world(
-        archetype="synthetic",
-        cache_path=None,
-        delivery_lag=config.delivery_lag,
-        holding_rate=config.holding_rate,
-        order_fee=config.order_fee,
-        K_active=config.K_active,
-        synthetic_fallback=True,
-        synthetic_catalog_size=config.K_catalog,
-    )
-    return catalog, base_template
+    return catalog, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +116,6 @@ def _save_checkpoint(
 
 def _make_eval_fn(
     catalog: list[Any],
-    base_template: StoreTemplate,
     config: RLConfig,
     writer: SummaryWriter,
     device: torch.device,
@@ -195,7 +134,6 @@ def _make_eval_fn(
     # Build eval specs once — they are deterministic so we cache them.
     eval_specs = build_eval_seeds(
         catalog,
-        base_template,
         config,
         market_params=market_params,
         disruption_params=disruption_params,
@@ -272,19 +210,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # World / catalog.
     parser.add_argument(
-        "--world-cache-path",
+        "--setup-dir",
         type=str,
         default=None,
-        help=(
-            "Explicit path to a cached world.json. "
-            "When omitted, auto-lookup and synthetic fallback are used."
-        ),
-    )
-    parser.add_argument(
-        "--world-archetype",
-        type=str,
-        default="rl_train",
-        help="Archetype label for the world-builder cache auto-lookup.",
+        help="Path to a setup directory (catalog.csv + setup.yaml).",
     )
 
     # Episode / env knobs.
@@ -347,8 +276,7 @@ def _args_to_config(args: argparse.Namespace) -> RLConfig:
         tb_log_dir=args.tb_log_dir,
         checkpoint_dir=args.checkpoint_dir,
         experiment_name=args.experiment_name,
-        world_archetype=args.world_archetype,
-        world_cache_path=args.world_cache_path,
+        setup_dir=args.setup_dir,
     )
 
 
@@ -366,9 +294,9 @@ def main(argv: list[str] | None = None) -> None:
     print(f"[train] device={device}", file=sys.stderr)
 
     # ------------------------------------------------------------------
-    # 1. Load catalog and base template.
+    # 1. Load catalog (and optional market params from setup dir).
     # ------------------------------------------------------------------
-    catalog, base_template, market_params, disruption_params = (
+    catalog, market_params, disruption_params = (
         _load_world_catalog_and_template(config)
     )
 
@@ -378,7 +306,6 @@ def main(argv: list[str] | None = None) -> None:
     def _env_factory():
         return RLEnv(
             catalog=catalog,
-            base_template=base_template,
             config=config,
             market_params=market_params,
             disruption_params=disruption_params,
@@ -408,7 +335,6 @@ def main(argv: list[str] | None = None) -> None:
         try:
             eval_fn = _make_eval_fn(
                 catalog,
-                base_template,
                 config,
                 writer,
                 device,

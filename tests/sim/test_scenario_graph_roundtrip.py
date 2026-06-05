@@ -1,11 +1,8 @@
-"""Tests for Scenario graph extension: nodes/edges round-trip, is_graph, NodeInstance.
+"""Tests for Scenario graph extension: NodeInstance, nodes_df, edges_df, make_nodes.
 
 Key contracts verified:
-- Scenario with nodes/edges survives to_dict/from_dict round-trip
-- NodeInstance.policy is intentionally omitted from JSON (mirrors StoreInstance)
-- is_graph property: True when nodes list is non-empty, False for legacy stores-only
+- NodeInstance.to_dict() and from_dict() preserve fields (policy omitted)
 - nodes_df() and edges_df() return DataFrames with correct shape
-- Existing StoreInstance/stores path is unchanged
 """
 
 from __future__ import annotations
@@ -25,8 +22,6 @@ from src.sim.scenario import (
     MarketParams,
     NodeInstance,
     Scenario,
-    StoreInstance,
-    StoreTemplate,
     make_nodes,
 )
 
@@ -168,7 +163,6 @@ def _build_graph_scenario(*, with_policy: bool = False) -> Scenario:
         market=_minimal_market(),
         disruption=_minimal_disruption(),
         item_lifecycle=_minimal_lifecycle(),
-        stores=[],
         nodes=nodes,
         edges=edges,
         n_steps=10,
@@ -243,7 +237,7 @@ class TestNodeInstance:
         assert d["init_seed"] == 42
 
     def test_node_instance_from_dict_policy_is_none(self):
-        """NodeInstance.from_dict always returns policy=None (mirrors StoreInstance)."""
+        """NodeInstance.from_dict always returns policy=None."""
         factory = FactoryNode(
             id="f", region="US", init_seed=1,
             produces_product_id="P0000", unit_cost=5.0,
@@ -253,164 +247,6 @@ class TestNodeInstance:
         d = ni.to_dict()
         ni2 = NodeInstance.from_dict(d)
         assert ni2.policy is None
-
-
-# ---------------------------------------------------------------------------
-# Scenario.is_graph property
-# ---------------------------------------------------------------------------
-
-
-class TestIsGraph:
-    def test_is_graph_true_when_nodes_present(self):
-        scenario = _build_graph_scenario()
-        assert scenario.is_graph is True
-
-    def test_is_graph_false_when_only_stores(self, make_scenario):
-        """Legacy stores-only scenario has is_graph == False."""
-        template = StoreTemplate(
-            id="t", region="US",
-            capacity=1000, init_balance=10000,
-            init_stock_pct=0.2, delivery_lag=3,
-            holding_rate=0.005, order_fee=100,
-            init_active_count=2,
-        )
-        scenario = make_scenario(
-            stores=[StoreInstance(template=template, init_seed=1)],
-            n_steps=5, world_seed=1,
-        )
-        assert scenario.is_graph is False
-
-    def test_is_graph_false_when_nodes_empty(self, make_scenario):
-        """Scenario with empty nodes list has is_graph == False."""
-        template = StoreTemplate(
-            id="t", region="US",
-            capacity=1000, init_balance=10000,
-            init_stock_pct=0.2, delivery_lag=3,
-            holding_rate=0.005, order_fee=100,
-            init_active_count=2,
-        )
-        scenario = make_scenario(
-            stores=[StoreInstance(template=template, init_seed=1)],
-            n_steps=5, world_seed=1,
-        )
-        assert scenario.is_graph is False
-
-
-# ---------------------------------------------------------------------------
-# Scenario graph round-trip (to_dict / from_dict)
-# ---------------------------------------------------------------------------
-
-
-class TestScenarioGraphRoundtrip:
-    def test_roundtrip_preserves_node_count(self):
-        scenario = _build_graph_scenario()
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        assert len(restored.nodes) == len(scenario.nodes)
-
-    def test_roundtrip_preserves_edge_count(self):
-        scenario = _build_graph_scenario()
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        assert len(restored.edges) == len(scenario.edges)
-
-    def test_roundtrip_node_ids_preserved(self):
-        scenario = _build_graph_scenario()
-        original_ids = [ni.node.id for ni in scenario.nodes]
-        restored = Scenario.from_dict(scenario.to_dict())
-        restored_ids = [ni.node.id for ni in restored.nodes]
-        assert original_ids == restored_ids
-
-    def test_roundtrip_node_types_preserved(self):
-        scenario = _build_graph_scenario()
-        original_types = [type(ni.node).__name__ for ni in scenario.nodes]
-        restored = Scenario.from_dict(scenario.to_dict())
-        restored_types = [type(ni.node).__name__ for ni in restored.nodes]
-        assert original_types == restored_types
-
-    def test_roundtrip_factory_node_fields(self):
-        scenario = _build_graph_scenario()
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        original_factory = scenario.nodes[0].node
-        restored_factory = restored.nodes[0].node
-        assert isinstance(restored_factory, FactoryNode)
-        assert restored_factory.id == original_factory.id
-        assert restored_factory.region == original_factory.region
-        assert restored_factory.produces_product_id == original_factory.produces_product_id
-        assert restored_factory.unit_cost == original_factory.unit_cost
-        assert restored_factory.inventory == original_factory.inventory
-        assert restored_factory.list_price == original_factory.list_price
-
-    def test_roundtrip_intermediate_node_fields(self):
-        scenario = _build_graph_scenario()
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        original = scenario.nodes[1].node
-        restored_node = restored.nodes[1].node
-        assert isinstance(restored_node, IntermediateNode)
-        assert restored_node.id == original.id
-        assert restored_node.carried_products == original.carried_products
-        assert restored_node.tags == original.tags
-        assert restored_node.inventory == original.inventory
-        assert restored_node.list_prices == original.list_prices
-        assert restored_node.min_order_imposed == original.min_order_imposed
-
-    def test_roundtrip_sink_node_fields(self):
-        scenario = _build_graph_scenario()
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        original = scenario.nodes[2].node
-        restored_node = restored.nodes[2].node
-        assert isinstance(restored_node, DemandSinkNode)
-        assert restored_node.id == original.id
-        assert restored_node.product_id == original.product_id
-        assert restored_node.income_rate == original.income_rate
-        assert restored_node.cash == original.cash
-        assert restored_node.activation_tick == original.activation_tick
-
-    def test_roundtrip_policy_omitted(self):
-        """After round-trip, all NodeInstance.policy values are None."""
-        scenario = _build_graph_scenario(with_policy=True)
-        # Confirm we actually had policies before serialisation
-        assert scenario.nodes[0].policy is not None
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        for ni in restored.nodes:
-            assert ni.policy is None, f"Expected policy=None on {ni.node.id}, got {ni.policy!r}"
-
-    def test_roundtrip_edge_supplier_buyer(self):
-        scenario = _build_graph_scenario()
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        original_edges = [(e.supplier_id, e.buyer_id) for e in scenario.edges]
-        restored_edges = [(e.supplier_id, e.buyer_id) for e in restored.edges]
-        assert original_edges == restored_edges
-
-    def test_roundtrip_edge_lead_times(self):
-        scenario = _build_graph_scenario()
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        original_lts = [e.default_lead_time for e in scenario.edges]
-        restored_lts = [e.default_lead_time for e in restored.edges]
-        assert original_lts == restored_lts
-
-    def test_json_roundtrip(self):
-        """Full JSON string round-trip (to_json / from_json)."""
-        scenario = _build_graph_scenario()
-        json_str = scenario.to_json()
-        restored = Scenario.from_json(json_str)
-        assert len(restored.nodes) == 3
-        assert len(restored.edges) == 2
-        assert restored.is_graph is True
-
-    def test_roundtrip_stores_unchanged(self):
-        """Existing stores field survives round-trip unaffected."""
-        scenario = _build_graph_scenario()
-        assert scenario.stores == []
-        d = scenario.to_dict()
-        restored = Scenario.from_dict(d)
-        assert restored.stores == []
 
 
 # ---------------------------------------------------------------------------

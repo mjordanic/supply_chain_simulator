@@ -197,7 +197,6 @@ def _build_tuning_graph_scenario(
         item_lifecycle=(
             lifecycle_params if lifecycle_params is not None else default_lifecycle_params()
         ),
-        stores=[],  # graph-mode scenario: no legacy stores
         nodes=node_instances,
         edges=edge_specs,
         n_steps=episode_length,
@@ -213,7 +212,6 @@ def _build_tuning_graph_scenario(
 
 def sample_episode(
     catalog: list[Ware],
-    base_template: Any,
     config: "TuningConfig",
     episode_seed: int,
     *,
@@ -228,18 +226,14 @@ def sample_episode(
     ----------
     catalog:
         The full product universe (length >= ``config.K_active``).
-    base_template:
-        A ``StoreTemplate`` carrying non-episodic knobs (region, delivery
-        lag, holding rate, order fee). Episodic fields (capacity, balance)
-        are overridden by this sampler from ``config``.
     config:
         ``TuningConfig`` instance; ``K_active``, ``capacity_dist``,
         ``balance_dist``, ``delivery_lag``, ``holding_rate``, ``order_fee``,
         and ``episode_length`` are consumed here.
     episode_seed:
         Single integer seed. Any two calls with the same seed and the same
-        ``(catalog, base_template, config)`` produce identical
-        ``TuningEpisodeSpec`` objects — the function is pure.
+        ``(catalog, config)`` produce identical ``TuningEpisodeSpec``
+        objects — the function is pure.
     market_params, disruption_params, lifecycle_params:
         Optional overrides; fall back to sensible defaults when ``None``.
     start_date:
@@ -287,10 +281,6 @@ def sample_episode(
     )
 
     # --- build the graph-mode Scenario ---
-    delivery_lag = getattr(base_template, "delivery_lag", config.delivery_lag)
-    holding_rate = getattr(base_template, "holding_rate", config.holding_rate)
-    order_fee = getattr(base_template, "order_fee", config.order_fee)
-
     scenario = _build_tuning_graph_scenario(
         catalog=catalog,
         active_subset=active_subset,
@@ -298,9 +288,9 @@ def sample_episode(
         balance=balance,
         world_seed=world_seed,
         episode_length=config.episode_length,
-        delivery_lag=delivery_lag,
-        holding_rate=holding_rate,
-        order_fee=order_fee,
+        delivery_lag=config.delivery_lag,
+        holding_rate=config.holding_rate,
+        order_fee=config.order_fee,
         init_seed=assortment_seed,
         init_stock_pct=init_stock_pct,
         market_params=market_params,

@@ -139,7 +139,6 @@ def _make_scenario():
             init_stage="maturity",
             default_stage_change_probs={s: 0.0 for s in stages},
         ),
-        stores=[],
         n_steps=3,
         start_date=datetime(2024, 1, 1),
         world_seed=1,

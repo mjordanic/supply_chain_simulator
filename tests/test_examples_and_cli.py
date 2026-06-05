@@ -56,7 +56,7 @@ def test_homogeneous_exposes_scenario_symbol(homogeneous_module):
 def test_homogeneous_scenario_uses_graph_engine(homogeneous_module):
     """Homogeneous example must be a graph-mode scenario with multiple nodes."""
     scenario = homogeneous_module.scenario
-    assert scenario.is_graph, "homogeneous example must be a graph-mode scenario"
+    assert len(scenario.nodes) > 0, "homogeneous example must be a graph-mode scenario"
     assert len(scenario.nodes) >= 2, "homogeneous example must have at least 2 nodes"
     assert len(scenario.edges) >= 1, "homogeneous example must have at least 1 edge"
 
@@ -93,7 +93,7 @@ def test_paired_exposes_scenario_symbol(paired_module):
 def test_paired_scenario_uses_graph_engine(paired_module):
     """Paired example must be a graph-mode scenario."""
     scenario = paired_module.scenario
-    assert scenario.is_graph, "paired example must be a graph-mode scenario"
+    assert len(scenario.nodes) > 0, "paired example must be a graph-mode scenario"
     # Must have an even number of shops for A/B pairing.
     shops = [ni for ni in scenario.nodes if isinstance(ni.node, IntermediateNode)]
     assert len(shops) >= 2

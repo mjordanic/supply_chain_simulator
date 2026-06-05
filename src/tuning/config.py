@@ -21,33 +21,6 @@ from typing import Optional
 from src.sim.distributions import Distribution
 
 
-# ---------------------------------------------------------------------------
-# Default distributions — toggle ONE block at a time.
-# ---------------------------------------------------------------------------
-
-# --- Sports cars (sports_cars_100) ---------------------------------
-# def _default_capacity_dist() -> Distribution:
-#     """``LogUniform(50, 500)`` — sports car flagship store scale."""
-#     from src.sim.distributions import LogUniform
-
-#     return LogUniform(50, 500)
-
-
-# def _default_balance_dist() -> Distribution:
-#     """``LogUniform(1_000_000, 100_000_000)`` — sports car opening balance scale."""
-#     from src.sim.distributions import LogUniform
-
-#     return LogUniform(1_000_000, 100_000_000)
-
-
-# def _default_init_stock_pct_dist() -> Distribution:
-#     """``Uniform(0.2, 1.0)`` — per-episode starting inventory fraction of capacity."""
-#     from src.sim.distributions import Uniform
-
-#     return Uniform(0.2, 1.0)
-
-
-# --- Fashion retail (fashion_retail_250) ---------------------------
 def _default_capacity_dist() -> Distribution:
     """``LogUniform(100, 10_000)`` — per-episode capacity distribution.
 
@@ -129,20 +102,10 @@ class TuningConfig:
     # ------------------------------------------------------------------
     # World
     # ------------------------------------------------------------------
-    # --- Sports cars ---
-    # world_archetype: str = "sports_cars_100"
-    # --- Fashion retail ---
-    world_archetype: str = "fashion_retail_250"
-    """Archetype label resolved against ``data/worlds/<archetype>/world.json``."""
-
-    world_cache_path: Optional[str] = None
-    """Optional explicit path to a cached ``world.json``; overrides auto-lookup."""
-
     setup_dir: Optional[str] = None
     """Optional path to a setup directory (catalog.csv + setup.yaml).
-    When set, the tuning stack loads catalog + market from this directory
-    instead of using world_loader / world.json.
-    Takes priority over world_cache_path and world_archetype when set."""
+    When set, the tuning stack loads catalog + market from this directory.
+    When unset, a synthetic catalog is used (no LLM calls required)."""
 
 
 __all__ = ["TuningConfig"]

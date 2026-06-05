@@ -83,7 +83,6 @@ wrapping OrderUpToPolicy) per seed."""
 
 def build_eval_seeds(
     catalog: list[Ware],
-    base_template: Any,
     config: RLConfig,
     n_seeds: int | None = None,
     *,
@@ -102,8 +101,6 @@ def build_eval_seeds(
     ----------
     catalog:
         Full product universe; must have at least ``config.K_active`` items.
-    base_template:
-        Template carrying non-episodic knobs (region, delivery lag, …).
     config:
         ``RLConfig`` instance.
     n_seeds:
@@ -124,7 +121,6 @@ def build_eval_seeds(
         seed = config.eval_seed_offset + i
         spec = sample_episode(
             catalog=catalog,
-            base_template=base_template,
             config=config,
             episode_seed=seed,
             market_params=market_params,
@@ -527,7 +523,6 @@ def evaluate_two_scale(
     checkpoint_path: str,
     *,
     catalog: list[Ware],
-    base_template: Any,
     config: RLConfig,
     n_seeds: int = 32,
     seed_offset: int | None = None,
@@ -546,7 +541,7 @@ def evaluate_two_scale(
     checkpoint_path:
         Path to a PyTorch checkpoint file (``*.pt``).  Pass ``""`` when
         the ``_rl_policy_fn_override`` attribute is set (e.g. in smoke tests).
-    catalog, base_template, config, n_seeds, seed_offset:
+    catalog, config, n_seeds, seed_offset:
         See class docstring.
     """
     from src.sim.distributions import Constant, Uniform
@@ -588,7 +583,6 @@ def evaluate_two_scale(
         rl_policy_fn=rl_policy_fn,
         baseline_factory=baseline_factory,
         catalog=catalog,
-        base_template=base_template,
         config=small_config,
         n_seeds=n_seeds,
         base_seed=seed_offset + _SMALL_SCALE_OFFSET,
@@ -598,7 +592,6 @@ def evaluate_two_scale(
         rl_policy_fn=rl_policy_fn,
         baseline_factory=baseline_factory,
         catalog=catalog,
-        base_template=base_template,
         config=flagship_config,
         n_seeds=n_seeds,
         base_seed=seed_offset + _FLAGSHIP_SCALE_OFFSET,
@@ -631,7 +624,6 @@ def _run_scale_eval(
     rl_policy_fn: PolicyFn,
     baseline_factory: BaselineFactory,
     catalog: list[Ware],
-    base_template: Any,
     config: RLConfig,
     n_seeds: int,
     base_seed: int,
@@ -643,7 +635,6 @@ def _run_scale_eval(
         seed = base_seed + i
         spec = sample_episode(
             catalog=catalog,
-            base_template=base_template,
             config=config,
             episode_seed=seed,
         )
@@ -879,40 +870,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    from src.sim.scenario import StoreTemplate, load_catalog
+    from src.rl.episode_sampler import make_synthetic_catalog
 
-    _cli_catalog = load_catalog(
-        [
-            {
-                "name": f"Product {i}",
-                "category": "General",
-                "related_products": [],
-                "base_price": 10.0 + i,
-                "unit_cost": 4.0 + i * 0.3,
-                "seasonality": "all_season",
-            }
-            for i in range(20)
-        ]
-    )
-    _cli_template = StoreTemplate(
-        id="cli_eval",
-        region="US",
-        capacity=200,
-        init_balance=20_000.0,
-        init_stock_pct=0.0,
-        delivery_lag=3,
-        holding_rate=0.01,
-        order_fee=50.0,
-        init_active_count=5,
-    )
+    _cli_catalog = make_synthetic_catalog(20)
 
-    _cli_config = RLConfig(world_archetype=args.world)
+    _cli_config = RLConfig()
 
     print(f"Loading checkpoint: {args.checkpoint}")
     _result = evaluate_two_scale(
         checkpoint_path=args.checkpoint,
         catalog=_cli_catalog,
-        base_template=_cli_template,
         config=_cli_config,
         n_seeds=args.n_seeds,
         seed_offset=args.seed_offset,

@@ -20,7 +20,7 @@ from src.rl.configs.default import RLConfig
 from src.rl.eval import build_eval_seeds, evaluate
 from src.rl.episode_sampler import sample_episode
 from src.sim.policy import OrderUpToPolicy
-from src.sim.scenario import StoreTemplate, load_catalog
+from src.sim.scenario import load_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -42,20 +42,6 @@ def _make_catalog(n: int = 15) -> list:
         for i in range(n)
     ]
     return load_catalog(items)
-
-
-def _make_base_template() -> StoreTemplate:
-    return StoreTemplate(
-        id="eval_test",
-        region="US",
-        capacity=200,
-        init_balance=20_000.0,
-        init_stock_pct=0.0,
-        delivery_lag=3,
-        holding_rate=0.01,
-        order_fee=50.0,
-        init_active_count=5,
-    )
 
 
 def _make_config(episode_length: int = 5, n_eval_seeds: int = 4) -> RLConfig:
@@ -90,10 +76,9 @@ class TestReturnedDictFormat:
     def test_keys_are_eval_prefixed(self):
         """All returned keys must start with 'eval/'."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(n_eval_seeds=2)
 
-        specs = build_eval_seeds(catalog, template, config, n_seeds=2)
+        specs = build_eval_seeds(catalog, config, n_seeds=2)
 
         def zero_policy(obs):
             return np.zeros(10, dtype=np.float32)
@@ -105,10 +90,9 @@ class TestReturnedDictFormat:
     def test_values_are_floats(self):
         """All values in the returned dict must be Python floats."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(n_eval_seeds=2)
 
-        specs = build_eval_seeds(catalog, template, config, n_seeds=2)
+        specs = build_eval_seeds(catalog, config, n_seeds=2)
 
         def zero_policy(obs):
             return np.zeros(10, dtype=np.float32)
@@ -122,9 +106,8 @@ class TestReturnedDictFormat:
     def test_required_keys_present(self):
         """The result must contain the core eval keys."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(n_eval_seeds=2)
-        specs = build_eval_seeds(catalog, template, config, n_seeds=2)
+        specs = build_eval_seeds(catalog, config, n_seeds=2)
 
         def zero_policy(obs):
             return np.zeros(10, dtype=np.float32)
@@ -153,11 +136,10 @@ class TestCRNSelfEval:
     def test_baseline_vs_itself_zero_uplift(self):
         """CRN self-eval: baseline vs baseline yields paired_uplift == 0.0."""
         catalog = _make_catalog()
-        template = _make_base_template()
         # Use a short episode to keep the test fast.
         config = _make_config(episode_length=5, n_eval_seeds=4)
 
-        specs = build_eval_seeds(catalog, template, config, n_seeds=4)
+        specs = build_eval_seeds(catalog, config, n_seeds=4)
 
         # The RL policy_fn here runs the *same* baseline logic as the
         # baseline factory — but through the RL encode/decode path.
@@ -193,10 +175,9 @@ class TestCRNSelfEval:
     def test_baseline_self_eval_paired_difference_zero(self):
         """Running the baseline against itself gives paired_uplift = 0."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(episode_length=5, n_eval_seeds=4)
 
-        specs = build_eval_seeds(catalog, template, config, n_seeds=4)
+        specs = build_eval_seeds(catalog, config, n_seeds=4)
         from src.rl.eval import _run_baseline
 
         for spec in specs:
@@ -215,10 +196,9 @@ class TestCRNSelfEval:
         twice via _run_baseline and checking paired uplift is 0.
         """
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(episode_length=5, n_eval_seeds=4)
 
-        specs = build_eval_seeds(catalog, template, config, n_seeds=4)
+        specs = build_eval_seeds(catalog, config, n_seeds=4)
 
         from src.rl.eval import _run_baseline
 
@@ -243,11 +223,10 @@ class TestRandomVsBaseline:
     def test_random_vs_baseline_nonzero_uplift(self):
         """Running a random policy against baseline produces non-zero uplift."""
         catalog = _make_catalog()
-        template = _make_base_template()
         # Use a slightly longer episode to get a meaningful signal.
         config = _make_config(episode_length=10, n_eval_seeds=4)
 
-        specs = build_eval_seeds(catalog, template, config, n_seeds=4)
+        specs = build_eval_seeds(catalog, config, n_seeds=4)
 
         # Stateless random policy (action independent of obs to avoid
         # seeding complexity in this test).
@@ -283,10 +262,9 @@ class TestRandomVsBaseline:
     def test_random_vs_baseline_different_from_baseline_vs_baseline(self):
         """Random policy result differs from self-eval result."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(episode_length=8, n_eval_seeds=3)
 
-        specs = build_eval_seeds(catalog, template, config, n_seeds=3)
+        specs = build_eval_seeds(catalog, config, n_seeds=3)
 
         def zero_policy(obs: np.ndarray) -> np.ndarray:
             return np.zeros(config.K_active * 2, dtype=np.float32)
@@ -312,7 +290,6 @@ class TestEvalSeedDisjointness:
     def test_build_eval_seeds_uses_offset_range(self):
         """build_eval_seeds generates seeds in [eval_seed_offset, eval_seed_offset + n)."""
         catalog = _make_catalog()
-        template = _make_base_template()
         offset = 10_000_000
         n = 8
         config = _make_config(n_eval_seeds=n)
@@ -323,7 +300,7 @@ class TestEvalSeedDisjointness:
             eval_seed_offset=offset,
         )
 
-        specs = build_eval_seeds(catalog, template, config_with_offset, n_seeds=n)
+        specs = build_eval_seeds(catalog, config_with_offset, n_seeds=n)
         assert len(specs) == n
 
         # Each spec's world_seed must be derived from a seed in the eval range.
@@ -341,7 +318,6 @@ class TestEvalSeedDisjointness:
     def test_eval_seeds_disjoint_from_training_range(self):
         """Eval specs must not share world_seeds with training specs."""
         catalog = _make_catalog()
-        template = _make_base_template()
         offset = 10_000_000
         n_eval = 8
         n_train = 100
@@ -353,11 +329,11 @@ class TestEvalSeedDisjointness:
             eval_seed_offset=offset,
         )
 
-        eval_specs = build_eval_seeds(catalog, template, config, n_seeds=n_eval)
+        eval_specs = build_eval_seeds(catalog, config, n_seeds=n_eval)
         eval_world_seeds = {s.scenario.world_seed for s in eval_specs}
 
         train_specs = [
-            sample_episode(catalog, template, config, episode_seed=s)
+            sample_episode(catalog, config, episode_seed=s)
             for s in range(n_train)
         ]
         train_world_seeds = {s.scenario.world_seed for s in train_specs}
@@ -370,30 +346,27 @@ class TestEvalSeedDisjointness:
     def test_build_eval_seeds_count_matches_n_seeds(self):
         """build_eval_seeds returns exactly n_seeds specs."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(n_eval_seeds=6)
 
         for n in [1, 4, 6, 10]:
-            specs = build_eval_seeds(catalog, template, config, n_seeds=n)
+            specs = build_eval_seeds(catalog, config, n_seeds=n)
             assert len(specs) == n, f"Expected {n} specs, got {len(specs)}"
 
     def test_build_eval_seeds_default_uses_config_n_eval_seeds(self):
         """build_eval_seeds with n_seeds=None uses config.n_eval_seeds."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(n_eval_seeds=5)
 
-        specs = build_eval_seeds(catalog, template, config)
+        specs = build_eval_seeds(catalog, config)
         assert len(specs) == config.n_eval_seeds
 
     def test_build_eval_seeds_deterministic(self):
         """Calling build_eval_seeds twice returns identical specs."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(n_eval_seeds=4)
 
-        specs1 = build_eval_seeds(catalog, template, config, n_seeds=4)
-        specs2 = build_eval_seeds(catalog, template, config, n_seeds=4)
+        specs1 = build_eval_seeds(catalog, config, n_seeds=4)
+        specs2 = build_eval_seeds(catalog, config, n_seeds=4)
 
         assert len(specs1) == len(specs2)
         for i, (s1, s2) in enumerate(zip(specs1, specs2)):
@@ -411,9 +384,8 @@ class TestEvaluateFiniteOutput:
     def test_all_output_values_finite(self):
         """Every value in the result dict must be a finite float."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(episode_length=5, n_eval_seeds=3)
-        specs = build_eval_seeds(catalog, template, config, n_seeds=3)
+        specs = build_eval_seeds(catalog, config, n_seeds=3)
 
         def zero_policy(obs: np.ndarray) -> np.ndarray:
             return np.zeros(config.K_active * 2, dtype=np.float32)
@@ -426,9 +398,8 @@ class TestEvaluateFiniteOutput:
     def test_win_rate_in_unit_interval(self):
         """win_rate must be in [0, 1]."""
         catalog = _make_catalog()
-        template = _make_base_template()
         config = _make_config(episode_length=5, n_eval_seeds=4)
-        specs = build_eval_seeds(catalog, template, config, n_seeds=4)
+        specs = build_eval_seeds(catalog, config, n_seeds=4)
 
         def zero_policy(obs: np.ndarray) -> np.ndarray:
             return np.zeros(config.K_active * 2, dtype=np.float32)

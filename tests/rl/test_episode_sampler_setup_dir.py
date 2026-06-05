@@ -230,23 +230,11 @@ class TestSampleEpisodeWithSetupDir:
         setup_dir = _write_minimal_setup_dir(tmp_path, n_products=10)
         catalog, market = load_catalog_and_market_from_setup(setup_dir)
 
-        from src.sim.scenario import StoreTemplate
-        template = StoreTemplate(
-            id="test",
-            region="US",
-            capacity=200,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
         config = self._make_config(K_active=3)
-        spec = sample_episode(catalog, template, config, episode_seed=42)
+        spec = sample_episode(catalog, config, episode_seed=42)
 
         assert len(spec.active_subset) == 3
-        assert spec.scenario.is_graph
+        assert len(spec.scenario.nodes) > 0
         # All active pids come from the catalog
         all_pids = {w.product_id for w in catalog}
         for pid in spec.active_subset:
@@ -257,25 +245,13 @@ class TestSampleEpisodeWithSetupDir:
         setup_dir = _write_minimal_setup_dir(tmp_path, n_products=10)
         catalog, market = load_catalog_and_market_from_setup(setup_dir)
 
-        from src.sim.scenario import StoreTemplate
-        template = StoreTemplate(
-            id="test",
-            region="US",
-            capacity=200,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
         config = RLConfig(
             K_active=3,
             episode_length=1,
             capacity_dist=Uniform(150, 400),
             balance_dist=Uniform(15_000, 40_000),
         )
-        spec = sample_episode(catalog, template, config, episode_seed=7)
+        spec = sample_episode(catalog, config, episode_seed=7)
         sim = build_world(spec.scenario)
         sim.tick()  # must not raise
 
@@ -301,22 +277,10 @@ class TestCRNDeterminism:
         setup_dir = _write_minimal_setup_dir(tmp_path, n_products=10)
         catalog, _ = load_catalog_and_market_from_setup(setup_dir)
 
-        from src.sim.scenario import StoreTemplate
-        template = StoreTemplate(
-            id="test",
-            region="US",
-            capacity=200,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
         config = self._make_config()
 
-        spec1 = sample_episode(catalog, template, config, episode_seed=99)
-        spec2 = sample_episode(catalog, template, config, episode_seed=99)
+        spec1 = sample_episode(catalog, config, episode_seed=99)
+        spec2 = sample_episode(catalog, config, episode_seed=99)
 
         # Structural equality.
         assert spec1.active_subset == spec2.active_subset
@@ -339,22 +303,10 @@ class TestCRNDeterminism:
         setup_dir = _write_minimal_setup_dir(tmp_path, n_products=10)
         catalog, _ = load_catalog_and_market_from_setup(setup_dir)
 
-        from src.sim.scenario import StoreTemplate
-        template = StoreTemplate(
-            id="test",
-            region="US",
-            capacity=300,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
         config = self._make_config()
 
         world_seeds = {
-            sample_episode(catalog, template, config, episode_seed=s).world_seed
+            sample_episode(catalog, config, episode_seed=s).world_seed
             for s in range(20)
         }
         assert len(world_seeds) > 1, "All seeds produced the same world_seed"
@@ -370,34 +322,19 @@ class TestOrderUpToPolicyAnchor:
 
     def test_order_up_to_policy_runs_without_error(self, tmp_path):
         """Running OrderUpToPolicy against a setup-dir episode does not raise."""
-        from src.sim.policy import OrderUpToPolicy
-        from src.sim.scenario import StoreTemplate
-
         setup_dir = _write_minimal_setup_dir(tmp_path, n_products=10)
         catalog, market = load_catalog_and_market_from_setup(setup_dir)
 
-        template = StoreTemplate(
-            id="test",
-            region="US",
-            capacity=300,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
         config = RLConfig(
             K_active=3,
             episode_length=10,
             capacity_dist=Constant(300),
             balance_dist=Constant(20_000.0),
         )
-        spec = sample_episode(catalog, template, config, episode_seed=0)
+        spec = sample_episode(catalog, config, episode_seed=0)
         sim = build_world(spec.scenario)
 
-        # Tick through the episode — OrderUpToPolicy is already wired into
-        # the graph by sample_episode, so no additional wiring needed.
+        # Tick through the episode.
         for _ in range(10):
             sim.tick()  # must not raise
 
@@ -405,23 +342,11 @@ class TestOrderUpToPolicyAnchor:
         """evaluate() with OrderUpToPolicy baseline completes on setup-dir catalog."""
         from src.rl.eval import build_eval_seeds, evaluate
         from src.sim.policy import OrderUpToPolicy
-        from src.sim.scenario import StoreTemplate
         import numpy as np
 
         setup_dir = _write_minimal_setup_dir(tmp_path, n_products=10)
         catalog, _ = load_catalog_and_market_from_setup(setup_dir)
 
-        template = StoreTemplate(
-            id="test",
-            region="US",
-            capacity=200,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=3,
-            holding_rate=0.01,
-            order_fee=50.0,
-            init_active_count=3,
-        )
         config = RLConfig(
             episode_length=5,
             K_active=3,
@@ -431,7 +356,7 @@ class TestOrderUpToPolicyAnchor:
             balance_dist=Constant(20_000.0),
         )
 
-        specs = build_eval_seeds(catalog, template, config, n_seeds=3)
+        specs = build_eval_seeds(catalog, config, n_seeds=3)
 
         def zero_policy(obs: "np.ndarray") -> "np.ndarray":
             return np.zeros(config.K_active * 2, dtype=np.float32)
@@ -473,17 +398,17 @@ class TestRLConfigSetupDir:
             K_active=3,
         )
 
-        catalog, base_template, market, disruption = _load_world_catalog_and_template(config)
+        catalog, market, disruption = _load_world_catalog_and_template(config)
 
         assert len(catalog) == 8
         assert market is not None
         assert disruption is None  # setup-dir path returns None for disruption
 
     def test_load_world_catalog_and_template_legacy_path_when_no_setup_dir(self):
-        """_load_world_catalog_and_template falls back to legacy when setup_dir is None."""
+        """_load_world_catalog_and_template falls back to synthetic catalog when setup_dir is None."""
         from src.rl.train import _load_world_catalog_and_template
 
         config = RLConfig(setup_dir=None, K_catalog=10, K_active=3)
-        # Should not raise — falls through to world_loader synthetic fallback.
-        catalog, base_template, market, disruption = _load_world_catalog_and_template(config)
+        # Should not raise — falls through to synthetic catalog fallback.
+        catalog, market, disruption = _load_world_catalog_and_template(config)
         assert len(catalog) > 0

@@ -28,20 +28,16 @@ from src.llm.schemas import (
     CatalogItem,
     Correlations,
     FreshnessSet,
-    InitFreshness,
     ItemFreshness,
     ItemRelations,
     MarketDomain,
     RelatedRef,
     Seasonality,
-    StoreTemplateList,
-    StoreTemplateSpec,
     Taxonomy,
     TaxonomyCategory,
 )
 from src.llm.world_builder import WorldBuilder, allocate_skeletons
-from src.sim.world import World
-from src.sim.scenario import MarketParams, StoreTemplate
+from src.sim.scenario import MarketParams
 
 
 class MockClient:
@@ -91,35 +87,6 @@ def _market_response(regions=("US",)) -> MarketDomain:
     )
 
 
-def _templates_response() -> StoreTemplateList:
-    return StoreTemplateList(
-        templates=[
-            StoreTemplateSpec(
-                id="flagship",
-                region="US",
-                capacity=500.0,
-                init_balance=20000.0,
-                init_stock_pct=0.5,
-                delivery_lag=1.0,
-                holding_rate=0.01,
-                order_fee=20.0,
-                init_active_count=3,
-                init_freshness=InitFreshness.FRESH,
-            ),
-            StoreTemplateSpec(
-                id="standard",
-                region="US",
-                capacity=200.0,
-                init_balance=10000.0,
-                init_stock_pct=0.4,
-                delivery_lag=2.0,
-                holding_rate=0.005,
-                order_fee=10.0,
-                init_active_count=2,
-                init_freshness=InitFreshness.BASELINE,
-            ),
-        ]
-    )
 
 
 def _taxonomy_response() -> Taxonomy:
@@ -549,45 +516,6 @@ def test_sample_catalog_drops_unknown_freshness_entries() -> None:
     assert wares[2].freshness_decay == 20.0
 
 
-def test_build_store_templates_returns_dict_keyed_by_id() -> None:
-    market = _market_response()
-    client = MockClient([market, _templates_response()])
-    builder = WorldBuilder("luxury", client)
-    builder.build_market_domain_params()
-    out = builder.build_store_templates()
-    assert set(out.keys()) == {"flagship", "standard"}
-    assert all(isinstance(v, StoreTemplate) for v in out.values())
-    assert out["flagship"].capacity == 500.0
-
-
-def test_build_store_templates_preserves_init_freshness() -> None:
-    """``init_freshness`` is still per-template; rest of the roster comes
-    from the random sampler at store-construction time."""
-    market = _market_response()
-    client = MockClient([market, _templates_response()])
-    builder = WorldBuilder("luxury", client)
-    builder.build_market_domain_params()
-    out = builder.build_store_templates()
-    assert out["flagship"].init_freshness == "fresh"
-    assert out["standard"].init_freshness == "baseline"
-    # No LLM-authored roster anymore — the template falls back to None so
-    # ``init_store_state`` does the random sample at construction time.
-    assert out["flagship"].init_active_products is None
-    assert out["standard"].init_active_products is None
-
-
-def test_build_store_templates_does_not_require_catalog() -> None:
-    """The store-templates stage is independent of the catalog stage now
-    that ``init_active_products`` is no longer authored. ``regions``
-    comes from the market stage; everything else is self-contained."""
-    market = _market_response()
-    client = MockClient([market, _templates_response()])
-    builder = WorldBuilder("luxury", client)
-    builder.build_market_domain_params()
-    out = builder.build_store_templates()
-    assert set(out.keys()) == {"flagship", "standard"}
-
-
 def test_build_market_domain_params_merges_handset_defaults() -> None:
     market = _market_response()
     client = MockClient([market])
@@ -613,34 +541,31 @@ def test_build_market_domain_params_merges_handset_defaults() -> None:
 
 
 def test_build_end_to_end_against_canned_responses_no_retries() -> None:
+    """End-to-end: market + catalog pipeline (no store-template stage)."""
     market = _market_response(regions=("US",))
     taxonomy = _taxonomy_response()
     skeletons = allocate_skeletons(8, taxonomy)
     catalog = _catalog_response(skeletons)
     correlations = _empty_correlations(catalog)
     freshness = _full_freshness(catalog)
-    templates = _templates_response()
     client = MockClient(
-        [market, taxonomy, catalog, correlations, freshness, templates]
+        [market, taxonomy, catalog, correlations, freshness]
     )
     builder = WorldBuilder("luxury", client)
 
-    world = builder.build(n_items=8)
+    market_params = builder.build_market_domain_params()
+    wares = builder.sample_catalog(8)
 
-    assert isinstance(world, World)
-    assert isinstance(world.market, MarketParams)
-    assert len(world.catalog) == 8
-    assert set(world.store_templates.keys()) == {"flagship", "standard"}
-    # Exactly six LLM calls — no retries triggered.
-    assert len(client.calls) == 6
-    # Build order: market → taxonomy → catalog → correlations → freshness
-    # → templates.
+    assert isinstance(market_params, MarketParams)
+    assert len(wares) == 8
+    # Exactly five LLM calls — no retries triggered.
+    assert len(client.calls) == 5
+    # Build order: market → taxonomy → catalog → correlations → freshness.
     assert client.calls[0]["schema"] is MarketDomain
     assert client.calls[1]["schema"] is Taxonomy
     assert client.calls[2]["schema"] is Catalog
     assert client.calls[3]["schema"] is Correlations
     assert client.calls[4]["schema"] is FreshnessSet
-    assert client.calls[5]["schema"] is StoreTemplateList
 
 
 def test_validation_failure_retries_with_error_in_next_prompt() -> None:
@@ -675,73 +600,6 @@ def test_sample_catalog_rejects_non_positive_n() -> None:
     builder = WorldBuilder("luxury", client)
     with pytest.raises(ValueError):
         builder.sample_catalog(0)
-
-
-def test_world_artifact_round_trips_through_scenario_json() -> None:
-    """The W from WorldBuilder must be persistable via Scenario.to_json/from_json."""
-    from datetime import datetime
-
-    from src.sim.scenario import (
-        DisruptionParams,
-        ItemLifecycleParams,
-        Scenario,
-        StoreInstance,
-    )
-    from src.sim.distributions import Constant
-
-    market = _market_response()
-    taxonomy = _taxonomy_response()
-    skeletons = allocate_skeletons(5, taxonomy)
-    catalog = _catalog_response(skeletons)
-    correlations = _empty_correlations(catalog)
-    freshness = _full_freshness(catalog)
-    templates = _templates_response()
-    client = MockClient(
-        [market, taxonomy, catalog, correlations, freshness, templates]
-    )
-    builder = WorldBuilder("luxury", client)
-    world = builder.build(n_items=5)
-
-    scenario = Scenario(
-        catalog=world.catalog,
-        market=world.market,
-        disruption=DisruptionParams(
-            event_prob=0.05,
-            types=["x"],
-            regions=["US"],
-            severity=Constant(1.0),
-            duration=Constant(3),
-        ),
-        item_lifecycle=ItemLifecycleParams(
-            stages=["growth"],
-            init_stage="growth",
-            default_stage_change_probs={"growth": 0.0},
-        ),
-        stores=[
-            StoreInstance(template=world.store_templates["standard"], init_seed=1)
-        ],
-        n_steps=10,
-        start_date=datetime(2024, 1, 1),
-        world_seed=42,
-    )
-    encoded = scenario.to_json()
-    decoded = Scenario.from_json(encoded)
-    assert len(decoded.catalog) == 5
-    assert decoded.market.price_elasticity == -1.5
-    assert decoded.stores[0].template.id == "standard"
-    # Per-template fields survive round-trip.
-    assert decoded.stores[0].template.init_freshness == "baseline"
-    # Roster falls back to the random sampler at construction time, so the
-    # template carries no explicit list.
-    assert decoded.stores[0].template.init_active_products is None
-    # Per-Ware lifecycle / stock-share are no longer authored, so they
-    # fall back to ``ItemLifecycleParams`` defaults.
-    assert decoded.catalog[0].init_stage is None
-    assert decoded.catalog[0].init_stock_share is None
-    # Freshness is now authored; ``_full_freshness`` paints every Ware
-    # with the same curve. Round-trip preserves the override.
-    assert decoded.catalog[0].freshness_alpha == 0.2
-    assert decoded.catalog[0].freshness_decay == 30.0
 
 
 # ---------------------------------------------------------------------------

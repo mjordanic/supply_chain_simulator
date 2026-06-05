@@ -1,9 +1,4 @@
-"""Shared fixtures for the new ``Scenario``-shaped test suite.
-
-The old ``MINI_*`` dict fixtures (mirrors of the deleted six-section config
-system) are gone; the rest of the tiered tests in ``tests/sim/`` author
-``Scenario`` instances against this builder.
-"""
+"""Shared fixtures for the ``Scenario``-shaped test suite."""
 
 from __future__ import annotations
 
@@ -12,14 +7,12 @@ from typing import Any, Callable
 
 import pytest
 
-from src.sim.distributions import Constant, Normal, Uniform
+from src.sim.distributions import Constant, Normal
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
     MarketParams,
     Scenario,
-    StoreInstance,
-    StoreTemplate,
     Ware,
     load_catalog,
 )
@@ -75,20 +68,6 @@ def _default_item_lifecycle() -> ItemLifecycleParams:
         stages=stages,
         init_stage="maturity",
         default_stage_change_probs={s: 0.0 for s in stages},
-    )
-
-
-def _default_template() -> StoreTemplate:
-    return StoreTemplate(
-        id="small",
-        region="US",
-        capacity=Uniform(800, 1200),
-        init_balance=10000,
-        init_stock_pct=0.2,
-        delivery_lag=3,
-        holding_rate=0.005,
-        order_fee=100,
-        init_active_count=2,
     )
 
 
@@ -153,21 +132,17 @@ def pytest_collection_modifyitems(
 def make_scenario() -> Callable[..., Scenario]:
     """Tiny ``Scenario`` builder.
 
-    Override any field by keyword. Defaults: 3-Ware mini catalog, 2 stores
-    each carrying ``policy=None``, 10 steps, ``world_seed=12345``.
+    Override any field by keyword. Defaults: 3-Ware mini catalog,
+    no nodes/edges (graph topology must be added by the caller),
+    10 steps, ``world_seed=12345``.
     """
 
     def _build(**overrides: Any) -> Scenario:
-        template = overrides.pop("template", _default_template())
         defaults: dict[str, Any] = {
             "catalog": _default_catalog(),
             "market": _default_market(),
             "disruption": _default_disruption(),
             "item_lifecycle": _default_item_lifecycle(),
-            "stores": [
-                StoreInstance(template=template, init_seed=1, policy=None),
-                StoreInstance(template=template, init_seed=2, policy=None),
-            ],
             "n_steps": 10,
             "start_date": datetime(2024, 1, 1),
             "world_seed": 12345,

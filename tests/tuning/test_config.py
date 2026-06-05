@@ -21,7 +21,6 @@ class TestTuningConfigDefaults:
         assert cfg.holdout_seed_offset == 13_000_000
         assert cfg.sampler_seed == 42
         assert cfg.top_k_for_holdout == 5
-        assert cfg.world_archetype == "fashion_retail_250"
 
     def test_tuning_config_field_types(self):
         cfg = TuningConfig()
@@ -34,7 +33,6 @@ class TestTuningConfigDefaults:
         assert isinstance(cfg.holdout_seed_offset, int)
         assert isinstance(cfg.sampler_seed, int)
         assert isinstance(cfg.top_k_for_holdout, int)
-        assert isinstance(cfg.world_archetype, str)
 
     def test_tuning_config_is_frozen(self):
         cfg = TuningConfig()

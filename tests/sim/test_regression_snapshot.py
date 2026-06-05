@@ -236,7 +236,6 @@ def _canonical_scenario() -> Scenario:
         market=_canonical_market(),
         disruption=_canonical_disruption(),
         item_lifecycle=_canonical_lifecycle(),
-        stores=[],
         n_steps=N_STEPS,
         start_date=datetime(2024, 3, 1),
         world_seed=WORLD_SEED,

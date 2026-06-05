@@ -1,8 +1,4 @@
-"""Graph-engine runner — the sole simulation engine post-Phase-4.
-
-This module provides the graph-based simulation engine. The legacy
-Store-engine classes (``Simulation``, ``Runner``, ``build_world``) have
-been retired; these names now refer exclusively to the graph engine.
+"""Graph-engine runner — the sole simulation engine.
 
 Public surface
 --------------
@@ -15,11 +11,6 @@ Public surface
 - ``TickResult``
   Frozen data carrier (kept for import compatibility; graph engine
   does not return TickResult from tick() — the value is ``None``).
-
-Renamed aliases kept for scenario-authoring compatibility:
-- ``GraphSimulation`` → ``Simulation``
-- ``GraphRunner``     → ``Runner``
-- ``build_graph_world`` → ``build_world``
 
 Tick structure (ADR 0014):
   tick_world → publish_offers → for p in 1..max_level: shuffle buyers →
@@ -667,10 +658,10 @@ def build_world(
     from src.sim.episode_sampler import _derive_seed
     from src.sim.graph import EdgeSpec, build_graph, compute_levels
 
-    if not scenario.is_graph:
+    if not scenario.nodes:
         raise ValueError(
-            "build_world requires a graph-mode scenario "
-            "(scenario.is_graph must be True)"
+            "build_world requires a graph-mode scenario with at least one node "
+            "(scenario.nodes must be non-empty)"
         )
 
     # Seeding (ADR 0016): world_rng from world_seed; allocation_rng from the
@@ -873,27 +864,9 @@ class Runner:
         }
 
 
-# ---------------------------------------------------------------------------
-# Backward-compatibility aliases (kept for existing scenario imports)
-# ---------------------------------------------------------------------------
-
-#: Alias for scenarios that import ``GraphSimulation`` directly.
-GraphSimulation = Simulation
-
-#: Alias for scenarios that import ``GraphRunner`` directly.
-GraphRunner = Runner
-
-#: Alias for scenarios that import ``build_graph_world`` directly.
-build_graph_world = build_world
-
-
 __all__ = [
     "Runner",
     "Simulation",
     "TickResult",
     "build_world",
-    # Backward-compatibility aliases
-    "GraphSimulation",
-    "GraphRunner",
-    "build_graph_world",
 ]

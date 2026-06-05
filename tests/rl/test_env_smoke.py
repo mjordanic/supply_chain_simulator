@@ -17,7 +17,7 @@ import pytest
 from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
 from src.sim.policy import RLIntermediatePolicy
-from src.sim.scenario import StoreTemplate, load_catalog
+from src.sim.scenario import load_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -41,20 +41,6 @@ def _make_catalog(n: int = 20) -> list:
     return load_catalog(items)
 
 
-def _make_base_template() -> StoreTemplate:
-    return StoreTemplate(
-        id="rl_smoke_test",
-        region="US",
-        capacity=200,
-        init_balance=20000.0,
-        init_stock_pct=0.0,
-        delivery_lag=3,
-        holding_rate=0.01,
-        order_fee=50.0,
-        init_active_count=5,
-    )
-
-
 def _make_config(episode_length: int = 10) -> RLConfig:
     """Short episode for fast tests."""
     from src.sim.distributions import Uniform
@@ -69,7 +55,6 @@ def _make_config(episode_length: int = 10) -> RLConfig:
 def _make_env(episode_length: int = 10) -> RLEnv:
     return RLEnv(
         catalog=_make_catalog(20),
-        base_template=_make_base_template(),
         config=_make_config(episode_length),
     )
 
@@ -144,7 +129,7 @@ class TestObservationSpace:
     def test_observation_space_shape_matches_config(self):
         from src.rl.encoders import observation_dim, action_dim
         config = _make_config()
-        env = RLEnv(catalog=_make_catalog(20), base_template=_make_base_template(), config=config)
+        env = RLEnv(catalog=_make_catalog(20), config=config)
         assert env.observation_space.shape == (observation_dim(config.K_active),)
         assert env.action_space.shape == (action_dim(config.K_active),)
 
@@ -165,7 +150,6 @@ class TestFullEpisode:
         from src.sim.distributions import Uniform
         env = RLEnv(
             catalog=_make_catalog(20),
-            base_template=_make_base_template(),
             config=RLConfig(episode_length=30, K_active=5,
                             capacity_dist=Uniform(150, 400),
                             balance_dist=Uniform(15_000, 40_000)),
@@ -181,7 +165,6 @@ class TestFullEpisode:
         episode_length = 15
         env = RLEnv(
             catalog=_make_catalog(20),
-            base_template=_make_base_template(),
             config=_make_config(episode_length=episode_length),
         )
         env.reset(seed=99)
@@ -217,11 +200,10 @@ class TestDeterminism:
     def test_same_seed_two_envs_identical_first_obs(self):
         """Two RLEnv instances reset with the same seed produce identical obs."""
         catalog = _make_catalog(20)
-        template = _make_base_template()
         config = _make_config(episode_length=10)
 
-        env1 = RLEnv(catalog=catalog, base_template=template, config=config)
-        env2 = RLEnv(catalog=catalog, base_template=template, config=config)
+        env1 = RLEnv(catalog=catalog, config=config)
+        env2 = RLEnv(catalog=catalog, config=config)
 
         obs1, _ = env1.reset(seed=123)
         obs2, _ = env2.reset(seed=123)
@@ -238,11 +220,10 @@ class TestDeterminism:
     def test_full_episode_trajectory_determinism(self):
         """Two envs with same seed and same actions produce identical observations."""
         catalog = _make_catalog(20)
-        template = _make_base_template()
         config = _make_config(episode_length=5)
 
-        env1 = RLEnv(catalog=catalog, base_template=template, config=config)
-        env2 = RLEnv(catalog=catalog, base_template=template, config=config)
+        env1 = RLEnv(catalog=catalog, config=config)
+        env2 = RLEnv(catalog=catalog, config=config)
 
         from random import Random
         rng = Random(555)

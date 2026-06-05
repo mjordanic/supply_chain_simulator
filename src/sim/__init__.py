@@ -30,7 +30,6 @@ Key modules:
 - ``distributions``   — ``Constant`` / ``Uniform`` / ``Normal`` /
                         ``Choice`` lazy sample objects.
 - ``data_exporter``   — parquet + JSON + PNG writer for a finished run.
-- ``world``           — ``World`` LLM artifact + ``world_to_graph`` helper.
 
 The package intentionally has no top-level ``__init__`` exports so
 that import side-effects stay scoped to the module you actually use.

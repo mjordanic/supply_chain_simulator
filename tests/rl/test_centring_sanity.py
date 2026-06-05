@@ -65,22 +65,6 @@ def _make_catalog(n: int = 15) -> list:
     return load_catalog(items)
 
 
-def _make_base_template():
-    from src.sim.scenario import StoreTemplate
-
-    return StoreTemplate(
-        id="centring_test",
-        region="US",
-        capacity=500,
-        init_balance=50_000.0,
-        init_stock_pct=0.0,
-        delivery_lag=3,
-        holding_rate=0.01,
-        order_fee=50.0,
-        init_active_count=5,
-    )
-
-
 def _make_config() -> RLConfig:
     """Config with pinned Constant distributions for episode reproducibility."""
     return RLConfig(
@@ -112,9 +96,8 @@ class TestCentringZeroAction:
         price_raw = 0 → multiplier = 0.5 + (0 + 1)*0.5 = 1.0 → price = MSRP.
         """
         catalog = _make_catalog(n=15)
-        template = _make_base_template()
         config = _make_config()
-        spec = sample_episode(catalog, template, config, episode_seed=7)
+        spec = sample_episode(catalog, config, episode_seed=7)
 
         active_pids = list(spec.active_subset)
         K = config.K_active
@@ -184,9 +167,8 @@ class TestCentringZeroAction:
         We override the node's inventory to zero to test the cold-start decoder math.
         """
         catalog = _make_catalog(n=15)
-        template = _make_base_template()
         config = _make_config()
-        spec = sample_episode(catalog, template, config, episode_seed=7)
+        spec = sample_episode(catalog, config, episode_seed=7)
 
         active_pids = list(spec.active_subset)
         K = config.K_active
@@ -244,9 +226,8 @@ class TestCentringZeroAction:
         effective_rate and position as the textbook formula, the results agree.
         """
         catalog = _make_catalog(n=15)
-        template = _make_base_template()
         config = _make_config()
-        spec = sample_episode(catalog, template, config, episode_seed=7)
+        spec = sample_episode(catalog, config, episode_seed=7)
 
         active_pids = list(spec.active_subset)
         K = config.K_active
@@ -346,14 +327,13 @@ class TestCentringZeroAction:
         cash trajectories (world-level CRN guarantee).
         """
         catalog = _make_catalog(n=15)
-        template = _make_base_template()
         config = RLConfig(
             K_active=5,
             episode_length=10,
             capacity_dist=Constant(500),
             balance_dist=Constant(50_000),
         )
-        spec = sample_episode(catalog, template, config, episode_seed=7)
+        spec = sample_episode(catalog, config, episode_seed=7)
 
         K = config.K_active
         slot_perm = spec.slot_permutation
@@ -364,7 +344,7 @@ class TestCentringZeroAction:
 
         def _run(episode_seed: int):
             # Fresh spec each time so node objects aren't shared/mutated.
-            s = sample_episode(catalog, template, config, episode_seed=episode_seed)
+            s = sample_episode(catalog, config, episode_seed=episode_seed)
             rl_policy = RLIntermediatePolicy()
             sim = build_world(s.scenario, policy_overrides={"S": rl_policy})
             node_s = sim.nodes["S"]

@@ -6,19 +6,11 @@ catalog, typed parameter bags (``MarketParams`` / ``DisruptionParams`` /
 that define the graph topology, ``n_steps``, ``start_date``, and
 ``world_seed``.
 
-Phase 4 (issue 11): the legacy ``stores``-based path has been retired.
-``Scenario.stores``, ``StoreInstance``, ``StoreTemplate``, and
-``make_stores`` remain in this module for backward compatibility with
-the RL/tuning layer (which will be migrated in issues 12–13), but the
-graph engine (``Runner`` / ``Simulation`` / ``build_world``) requires
-``scenario.is_graph == True`` and ignores ``stores``.
-
 This module also hosts authoring helpers:
 
 - ``load_catalog(items)`` — build ``[Ware]`` with stable ``P{i:04d}`` ids.
 - ``make_nodes(triples)`` — turn ``(node, init_seed, policy)`` triples
   into a ``[NodeInstance]`` roster.
-- ``make_stores(triples)`` — **(deprecated)** legacy roster builder.
 - ``load_scenario_from_path(path)`` — import a Python module and return
   its top-level ``scenario`` symbol, preserving live Policy instances
   (used by ``main.py``).
@@ -27,18 +19,12 @@ This module also hosts authoring helpers:
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from collections import namedtuple
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
-
-if TYPE_CHECKING:
-    # ``World`` is in ``src.sim.world``; no import cycle. Kept under
-    # TYPE_CHECKING so the type annotation works without eager import.
-    from src.sim.world import World
+from typing import Any, Iterable, Mapping
 
 from src.sim.distributions import (
     Distribution,
@@ -176,134 +162,6 @@ def _ware_from_dict(d: Mapping[str, Any]) -> Ware:
     )
 
 
-# StoreTemplate fields whose runtime type is "scalar OR Distribution". Listed
-# explicitly so a typo in a serialised field name fails loudly rather than
-# silently materialising as a generic dict.
-_TEMPLATE_FIELDS = (
-    "id",
-    "region",
-    "capacity",
-    "init_balance",
-    "init_stock_pct",
-    "delivery_lag",
-    "holding_rate",
-    "order_fee",
-    "init_active_count",
-)
-
-
-@dataclass(frozen=True)
-class StoreTemplate:
-    """Reusable store profile.
-
-    Stochastic fields hold ``Distribution`` instances and are sampled at
-    ``Store`` construction time using the per-instance ``init_seed``. Holding
-    distributions on the template lets two stores constructed from the same
-    ``(template, init_seed)`` start bit-identical regardless of attached
-    policy (issue 03 enforces this end-to-end).
-
-    ``init_active_products`` (issue 06) is an optional explicit roster of
-    product ids to activate at step 0. When set, it overrides the random
-    ``init_rng.sample(catalog, init_active_count)`` fallback so a "fashion
-    specialist" template can declare its starting SKUs literally. ``None``
-    (default) preserves the random-sample behaviour for catalogs that
-    don't author an explicit list.
-
-    ``init_freshness`` (issue 07) selects between two step-0 freshness
-    regimes for the initial active SKUs. ``"baseline"`` (default) is an
-    established store: ``Store.freshness_multiplier(pid, 0) == 1`` for
-    every initial active SKU — they skip the hype window. ``"fresh"`` is
-    a grand-opening: ``activation_tick[pid] = 0`` for every initial
-    active SKU so they enter at full hype (multiplier ``1 + α``).
-    """
-
-    # Short label for the template (used in run logs / store parquet).
-    id: str
-    # Region key — must appear in ``MarketParams.regions``.
-    region: str
-    # Total inventory capacity. Scalar or Distribution.
-    capacity: int | float | Distribution
-    # Opening cash balance.
-    init_balance: int | float | Distribution
-    # Fraction of capacity initially stocked (in [0, 1]).
-    init_stock_pct: float | Distribution
-    # Default delivery lead time.
-    delivery_lag: int | float | Distribution
-    # Per-step holding cost rate.
-    holding_rate: float | Distribution
-    # Fixed fee per non-zero order.
-    order_fee: int | float | Distribution
-    # Count of initial active SKUs (ignored when ``init_active_products`` set).
-    init_active_count: int | float | Distribution
-    # Optional explicit step-0 roster — overrides the random sample.
-    init_active_products: list[str] | None = None
-    # Step-0 freshness regime: established ("baseline") vs grand-opening ("fresh").
-    init_freshness: Literal["baseline", "fresh"] = "baseline"
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialise every field via ``_serialize`` (Distributions → tagged dicts)."""
-        return {f.name: _serialize(getattr(self, f.name)) for f in fields(self)}
-
-    @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> "StoreTemplate":
-        """Inverse of ``to_dict``; validates required fields and ``init_freshness``."""
-        # Surface missing required fields as a single sorted error.
-        missing = set(_TEMPLATE_FIELDS) - set(d)
-        if missing:
-            raise ValueError(
-                f"StoreTemplate.from_dict: missing fields {sorted(missing)}"
-            )
-        kwargs: dict[str, Any] = {k: _deserialize(d[k]) for k in _TEMPLATE_FIELDS}
-        # Optional roster — pass through if present and non-null.
-        if "init_active_products" in d and d["init_active_products"] is not None:
-            kwargs["init_active_products"] = list(d["init_active_products"])
-        # Optional freshness mode with closed-enum validation.
-        if "init_freshness" in d and d["init_freshness"] is not None:
-            mode = d["init_freshness"]
-            if mode not in ("baseline", "fresh"):
-                raise ValueError(
-                    f"StoreTemplate.from_dict: init_freshness must be "
-                    f"'baseline' or 'fresh', got {mode!r}"
-                )
-            kwargs["init_freshness"] = mode
-        return cls(**kwargs)
-
-
-@dataclass
-class StoreInstance:
-    """One store entry in a ``Scenario``.
-
-    The ``init_seed`` deterministically drives initial active-SKU selection
-    and stock allocation. ``policy`` is intentionally *not* serialised by
-    ``Scenario.to_json``: scenarios authored by the LLM are world artifacts,
-    while policies are wired up in the experiment script.
-    """
-
-    # Reusable specification — multiple instances may share a template.
-    template: StoreTemplate
-    # Per-instance RNG seed; bit-identity contract: two instances with
-    # the same ``(template, init_seed)`` start step 0 identical.
-    init_seed: int
-    # Decision-making brain — not serialised (re-attached on load).
-    policy: Any | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """JSON-friendly form. Note: ``policy`` is intentionally omitted."""
-        return {
-            "template": self.template.to_dict(),
-            "init_seed": self.init_seed,
-        }
-
-    @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> "StoreInstance":
-        """Rebuild a ``StoreInstance`` from JSON; ``policy`` always returns ``None``."""
-        return cls(
-            template=StoreTemplate.from_dict(d["template"]),
-            init_seed=d["init_seed"],
-            policy=None,
-        )
-
-
 def _node_to_dict(node: Any) -> dict[str, Any]:
     """Serialise a Node subclass to a JSON-friendly dict tagged with ``node_type``."""
     from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
@@ -430,9 +288,8 @@ class NodeInstance:
     """One node entry in a graph ``Scenario``.
 
     The ``init_seed`` deterministically drives step-0 state. ``policy``
-    is intentionally *not* serialised by ``Scenario.to_json``: scenarios
-    authored by the LLM are world artifacts, while policies are wired up
-    in the experiment script. This mirrors ``StoreInstance``.
+    is intentionally not serialised: scenarios authored by the LLM are
+    world artifacts, while policies are wired up in the experiment script.
     """
 
     # The node template.
@@ -605,9 +462,6 @@ class ItemLifecycleParams:
 
 
 # Required top-level keys for ``Scenario.from_dict`` validation.
-# Phase 4 (issue 11): ``stores`` is no longer required — graph-mode
-# scenarios do not include it.  ``nodes`` / ``edges`` are likewise
-# optional (they default to empty lists for legacy store-mode scenarios).
 _SCENARIO_REQUIRED = (
     "catalog",
     "market",
@@ -621,13 +475,11 @@ _SCENARIO_REQUIRED = (
 
 @dataclass
 class Scenario:
-    """Flat declarative description of one experiment.
+    """Flat declarative description of one experiment (graph-mode).
 
-    Supports both legacy ``stores``-based scenarios and new graph-based
-    scenarios via ``nodes`` + ``edges``. The ``is_graph`` property
-    distinguishes the two modes. In Phase 0 / Phase 1 both fields are
-    optional; in Phase 4 ``nodes``/``edges`` become required and
-    ``stores`` is retired.
+    Every scenario is a node-edge graph: ``nodes`` + ``edges`` define the
+    topology and ``catalog`` / ``market`` / ``disruption`` / ``item_lifecycle``
+    provide the shared world parameters.
     """
 
     # The full product catalog.
@@ -638,70 +490,16 @@ class Scenario:
     disruption: DisruptionParams
     # Lifecycle / freshness defaults.
     item_lifecycle: ItemLifecycleParams
-    # Per-store roster (legacy; instances may share templates and policies).
-    stores: list[StoreInstance]
     # Number of ticks to run.
     n_steps: int
     # Wall-clock starting date.
     start_date: datetime
     # Seed for ``world_rng`` (deterministic world trajectory).
     world_seed: int
-    # Graph-mode node roster (new; optional in Phase 0 / Phase 1).
+    # Graph-mode node roster.
     nodes: list[NodeInstance] = field(default_factory=list)
-    # Graph-mode edge list (new; optional in Phase 0 / Phase 1).
+    # Graph-mode edge list.
     edges: list[Any] = field(default_factory=list)  # list[EdgeSpec]
-
-    @property
-    def is_graph(self) -> bool:
-        """``True`` when this scenario has graph-mode nodes defined."""
-        return len(self.nodes) > 0
-
-    def to_dict(self) -> dict[str, Any]:
-        """JSON-friendly dict (policies omitted on each store/node instance)."""
-        d: dict[str, Any] = {
-            "catalog": [_ware_to_dict(w) for w in self.catalog],
-            "market": self.market.to_dict(),
-            "disruption": self.disruption.to_dict(),
-            "item_lifecycle": self.item_lifecycle.to_dict(),
-            "n_steps": self.n_steps,
-            "start_date": self.start_date.isoformat(),
-            "world_seed": self.world_seed,
-        }
-        # Only include stores / graph fields when they are non-empty, so
-        # graph-mode scenarios don't carry an empty ``stores`` key and
-        # legacy-mode scenarios don't carry empty ``nodes`` / ``edges``.
-        if self.stores:
-            d["stores"] = [s.to_dict() for s in self.stores]
-        if self.nodes:
-            d["nodes"] = [ni.to_dict() for ni in self.nodes]
-        if self.edges:
-            d["edges"] = [_edge_to_dict(e) for e in self.edges]
-        return d
-
-    def to_json(self) -> str:
-        """Compact JSON string. Round-trip via ``Scenario.from_json``."""
-        return json.dumps(self.to_dict())
-
-    @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> "Scenario":
-        """Validate required keys then rebuild the full ``Scenario``."""
-        missing = set(_SCENARIO_REQUIRED) - set(d)
-        if missing:
-            raise ValueError(f"Scenario.from_dict: missing keys {sorted(missing)}")
-        return cls(
-            catalog=[_ware_from_dict(w) for w in d["catalog"]],
-            market=MarketParams.from_dict(d["market"]),
-            disruption=DisruptionParams.from_dict(d["disruption"]),
-            item_lifecycle=ItemLifecycleParams.from_dict(d["item_lifecycle"]),
-            # Phase 4 (issue 11): ``stores`` is optional — graph-mode
-            # scenarios do not include it; legacy scenarios still do.
-            stores=[StoreInstance.from_dict(s) for s in d.get("stores", [])],
-            n_steps=d["n_steps"],
-            start_date=datetime.fromisoformat(d["start_date"]),
-            world_seed=d["world_seed"],
-            nodes=[NodeInstance.from_dict(n) for n in d.get("nodes", [])],
-            edges=[_edge_from_dict(e) for e in d.get("edges", [])],
-        )
 
     def catalog_df(self) -> Any:
         """One-row-per-Ware DataFrame; used by ``DataExporter`` + notebooks."""
@@ -725,31 +523,6 @@ class Scenario:
                 "related_products": list(w.related_products),
             }
             for w in self.catalog
-        ]
-        return pd.DataFrame(rows)
-
-    def stores_df(self) -> Any:
-        """One-row-per-StoreInstance DataFrame.
-
-        ``policy_class`` is filled in from live ``Policy`` instances;
-        scenarios reconstructed via ``from_json`` show ``None`` because
-        policies are intentionally not serialised.
-        """
-        import pandas as pd
-
-        rows = [
-            {
-                "store_id": i,
-                "template_id": instance.template.id,
-                "region": instance.template.region,
-                "init_seed": instance.init_seed,
-                "policy_class": (
-                    type(instance.policy).__name__
-                    if instance.policy is not None
-                    else None
-                ),
-            }
-            for i, instance in enumerate(self.stores)
         ]
         return pd.DataFrame(rows)
 
@@ -791,12 +564,7 @@ class Scenario:
         )
 
     def summary_df(self) -> Any:
-        """Single-row top-level summary (counts, seed, start date).
-
-        Graph-mode scenarios report the node-roster size (``n_nodes`` plus a
-        per-node-type count, e.g. ``n_IntermediateNode``) instead of the legacy
-        ``n_stores`` field, which would always be 0 for graph scenarios.
-        """
+        """Single-row top-level summary (counts, seed, start date)."""
         import pandas as pd
         from collections import Counter
 
@@ -805,14 +573,11 @@ class Scenario:
             "start_date": self.start_date,
             "world_seed": self.world_seed,
             "n_products": len(self.catalog),
+            "n_nodes": len(self.nodes),
         }
-        if self.is_graph:
-            row["n_nodes"] = len(self.nodes)
-            type_counts = Counter(type(ni.node).__name__ for ni in self.nodes)
-            for node_type, count in sorted(type_counts.items()):
-                row[f"n_{node_type}"] = count
-        else:
-            row["n_stores"] = len(self.stores)
+        type_counts = Counter(type(ni.node).__name__ for ni in self.nodes)
+        for node_type, count in sorted(type_counts.items()):
+            row[f"n_{node_type}"] = count
         return pd.DataFrame([row])
 
     def nodes_df(self) -> Any:
@@ -854,77 +619,6 @@ class Scenario:
         ]
         return pd.DataFrame(rows)
 
-    @classmethod
-    def from_world(
-        cls,
-        world: "World",
-        *,
-        disruption: "DisruptionParams",
-        item_lifecycle: "ItemLifecycleParams",
-        stores: "list[StoreInstance] | None" = None,
-        nodes: "list[NodeInstance] | None" = None,
-        edges: "list[Any] | None" = None,
-        n_steps: int,
-        start_date: datetime,
-        world_seed: int,
-    ) -> "Scenario":
-        """Build a ``Scenario`` from an LLM-generated ``World`` + author-supplied pieces.
-
-        ``World`` provides the catalog and market; the caller fills in
-        disruption parameters, lifecycle defaults, the per-store roster
-        (legacy) or graph topology (Phase 4+), and the seeds.
-
-        Phase 4 (issue 11): ``stores`` is deprecated and optional; pass
-        ``nodes`` + ``edges`` instead for graph-mode scenarios.
-        """
-        return cls(
-            catalog=world.catalog,
-            market=world.market,
-            disruption=disruption,
-            item_lifecycle=item_lifecycle,
-            stores=stores if stores is not None else [],
-            nodes=nodes if nodes is not None else [],
-            edges=edges if edges is not None else [],
-            n_steps=n_steps,
-            start_date=start_date,
-            world_seed=world_seed,
-        )
-
-    @classmethod
-    def from_json(cls, s: str) -> "Scenario":
-        """Parse a JSON string into a ``Scenario`` (policies always ``None``)."""
-        try:
-            payload = json.loads(s)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Scenario.from_json: malformed JSON ({e})") from e
-        if not isinstance(payload, dict):
-            raise ValueError(
-                "Scenario.from_json: top-level JSON must be an object"
-            )
-        return cls.from_dict(payload)
-
-
-def make_stores(
-    triples: Iterable[tuple[StoreTemplate, int, Any]],
-) -> list[StoreInstance]:
-    """Build a roster from a literal list of ``(template, init_seed, policy)``.
-
-    The triple list *is* the roster. CRN comparisons are expressed by
-    repeating ``(template, init_seed)`` with different policies; robustness
-    sweeps by varying ``init_seed``; mixed rosters by writing the literal
-    list. There is no regime abstraction above this — k-way comparisons,
-    paired runs, and singletons are all the same shape.
-    """
-    # Materialise so we can validate non-emptiness and iterate twice
-    # (the comprehension below).
-    triples = list(triples)
-    if not triples:
-        raise ValueError("make_stores: triples must be non-empty")
-    return [
-        StoreInstance(template=template, init_seed=init_seed, policy=policy)
-        for template, init_seed, policy in triples
-    ]
-
 
 def make_nodes(
     triples: Iterable[tuple[Any, int, Any]],
@@ -947,10 +641,7 @@ def load_scenario_from_path(path: str | Path) -> "Scenario":
     """Import ``path`` as a Python module and return its ``scenario`` symbol.
 
     The returned ``Scenario`` has live ``Policy`` instances on each
-    ``StoreInstance`` (as authored in the script).  Use this instead of
-    ``Scenario.from_json`` when you need policies attached — e.g. in
-    notebooks or the CLI — because ``from_json`` is for historical-run
-    inspection and always returns ``policy=None``.
+    ``NodeInstance`` (as authored in the script).
 
     Raises:
         FileNotFoundError: if ``path`` does not exist.

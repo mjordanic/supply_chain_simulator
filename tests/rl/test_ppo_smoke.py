@@ -27,7 +27,7 @@ from torch.utils.tensorboard import SummaryWriter
 from src.rl.agents.ppo import Actor, Critic, train_ppo
 from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
-from src.sim.scenario import StoreTemplate, load_catalog
+from src.sim.scenario import load_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -51,28 +51,13 @@ def _make_catalog(n: int = 20) -> list:
     return load_catalog(items)
 
 
-def _make_base_template() -> StoreTemplate:
-    return StoreTemplate(
-        id="ppo_smoke",
-        region="US",
-        capacity=200,
-        init_balance=20000.0,
-        init_stock_pct=0.0,
-        delivery_lag=3,
-        holding_rate=0.01,
-        order_fee=50.0,
-        init_active_count=5,
-    )
-
-
 def _make_env_factory(episode_length: int = 10):
     """Return a zero-arg callable that produces a fresh RLEnv."""
     catalog = _make_catalog(20)
-    template = _make_base_template()
     config = RLConfig(episode_length=episode_length, K_active=5)
 
     def _factory():
-        return RLEnv(catalog=catalog, base_template=template, config=config)
+        return RLEnv(catalog=catalog, config=config)
 
     return _factory
 

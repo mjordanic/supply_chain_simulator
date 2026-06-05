@@ -158,7 +158,6 @@ def _canonical_scenario() -> Scenario:
         market=market,
         disruption=disruption,
         item_lifecycle=lifecycle,
-        stores=[],
         nodes=node_instances,
         edges=edges,
         n_steps=30,

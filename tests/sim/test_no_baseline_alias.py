@@ -1,7 +1,6 @@
-"""Smoke test: ``from src.sim.policy import BaselinePolicy`` must raise ImportError.
+"""Smoke test: dead policy aliases must not be exposed by ``src.sim.policy``.
 
-This is the auditable proof that the hard-break property holds after the
-rename ``BaselinePolicy`` → ``HeuristicPolicy`` (issue 02).
+Pins the hard-break property for names that were removed or renamed.
 """
 
 from __future__ import annotations
@@ -23,6 +22,11 @@ def test_baseline_policy_not_importable():
     assert not hasattr(src.sim.policy, "BaselinePolicy")
 
 
-def test_heuristic_policy_is_importable():
-    """``HeuristicPolicy`` is the successor and must be importable."""
-    assert src.sim.policy.HeuristicPolicy is not None
+def test_heuristic_policy_not_importable():
+    """``HeuristicPolicy`` was removed in issue 07 — it must not be importable."""
+    assert not hasattr(src.sim.policy, "HeuristicPolicy")
+
+
+def test_noop_policy_not_importable():
+    """``NoopPolicy`` was removed in issue 07 — it must not be importable."""
+    assert not hasattr(src.sim.policy, "NoopPolicy")

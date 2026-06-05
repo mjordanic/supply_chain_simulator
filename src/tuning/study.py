@@ -44,9 +44,9 @@ from typing import Any, Callable
 import optuna
 
 from src.sim.policy import Policy
-from src.sim.scenario import StoreTemplate, Ware
+from src.sim.scenario import Ware
 from src.tuning.config import TuningConfig
-from src.tuning.episode import TuningEpisodeSpec, load_catalog_and_market_from_setup, sample_episode
+from src.tuning.episode import TuningEpisodeSpec, sample_episode
 from src.tuning.evaluator import evaluate_policy_normalised
 from src.tuning.search_spaces import (
     order_up_to_space,
@@ -54,7 +54,6 @@ from src.tuning.search_spaces import (
     periodic_reorder_space,
     reorder_point_space,
 )
-from src.tuning.world_loader import load_world
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +63,6 @@ from src.tuning.world_loader import load_world
 
 def _build_eval_specs(
     catalog: list[Ware],
-    base_template: StoreTemplate,
     tuning_config: TuningConfig,
     seed_offset: int,
     n_seeds: int,
@@ -80,7 +78,6 @@ def _build_eval_specs(
     for i in range(n_seeds):
         spec = sample_episode(
             catalog=catalog,
-            base_template=base_template,
             config=tuning_config,
             episode_seed=seed_offset + i,
             market_params=market_params,
@@ -184,7 +181,6 @@ def run_study(
     policy_space: Callable[[optuna.Trial], Policy],
     *,
     catalog: list[Ware],
-    base_template: StoreTemplate,
     tuning_config: TuningConfig,
     study_name: str,
     output_dir: str = "runs/tuning",
@@ -199,8 +195,6 @@ def run_study(
         Trial-callback factory: ``f(trial) -> Policy``. Called once per trial.
     catalog:
         Full product universe passed to ``sample_episode``.
-    base_template:
-        Non-episodic ``StoreTemplate`` knobs (region, delivery lag, …).
     tuning_config:
         Immutable study configuration; see ``TuningConfig`` for all fields.
     study_name:
@@ -224,7 +218,6 @@ def run_study(
     # ------------------------------------------------------------------
     eval_specs = _build_eval_specs(
         catalog,
-        base_template,
         tuning_config,
         seed_offset=tuning_config.seed_offset,
         n_seeds=tuning_config.n_search_seeds,
@@ -376,7 +369,6 @@ def run_study(
         "finished_at": finished_at,
         "git_sha": _get_git_sha(),
         "policy_class_name": _introspect_policy_class_name(policy_space),
-        "world_archetype": tuning_config.world_archetype,
     }
 
     with open(os.path.join(study_dir, "study.json"), "w", encoding="utf-8") as fh:
@@ -438,7 +430,6 @@ def confirm_top_k(
     policy_space: Callable[["optuna.Trial"], Policy],
     *,
     catalog: list[Ware],
-    base_template: StoreTemplate,
     tuning_config: TuningConfig,
     study_dir: str,
     market_params: Any = None,
@@ -468,7 +459,6 @@ def confirm_top_k(
     # ------------------------------------------------------------------
     holdout_specs = _build_eval_specs(
         catalog,
-        base_template,
         tuning_config,
         seed_offset=tuning_config.holdout_seed_offset,
         n_seeds=tuning_config.n_holdout_seeds,
@@ -685,16 +675,6 @@ def _cli_main(argv: list[str] | None = None) -> None:
     )
 
     parser.add_argument(
-        "--world",
-        default=_defaults.world_archetype,
-        metavar="ARCHETYPE",
-        help=(
-            f"World archetype (default: {_defaults.world_archetype}). "
-            f"Resolved against data/worlds/<archetype>/world.json."
-        ),
-    )
-
-    parser.add_argument(
         "--setup-dir",
         default=None,
         metavar="PATH",
@@ -729,39 +709,29 @@ def _cli_main(argv: list[str] | None = None) -> None:
         seed_offset=args.seed_offset,
         sampler_seed=args.sampler_seed,
         top_k_for_holdout=args.top_k,
-        world_archetype=args.world,
         setup_dir=args.setup_dir,
     )
 
     if tuning_config.setup_dir is not None:
+        from src.tuning.episode import load_catalog_and_market_from_setup
         catalog, market_params = load_catalog_and_market_from_setup(tuning_config.setup_dir)
         disruption_params = None
-        # Build a minimal StoreTemplate consistent with the config.
-        base_template = StoreTemplate(
-            id="tuning_setup_dir",
-            region="US",
-            capacity=200,
-            init_balance=20_000.0,
-            init_stock_pct=0.0,
-            delivery_lag=tuning_config.delivery_lag,
-            holding_rate=tuning_config.holding_rate,
-            order_fee=tuning_config.order_fee,
-            init_active_count=tuning_config.K_active,
-        )
         print(
             f"[tuning] Loaded catalog ({len(catalog)} products) + market "
             f"from setup directory: {tuning_config.setup_dir}",
             file=sys.stderr,
         )
     else:
-        catalog, base_template, market_params, disruption_params = load_world(tuning_config)
+        from src.tuning.episode import make_synthetic_catalog
+        catalog = make_synthetic_catalog(tuning_config.K_catalog)
+        market_params = None
+        disruption_params = None
 
     policy_space = _POLICY_DISPATCH[args.policy]
 
     print(
         f"[tuning] Starting study '{args.study_name}' | policy={args.policy} "
         f"| trials={tuning_config.n_trials} | search_seeds={tuning_config.n_search_seeds} "
-        f"| world={tuning_config.world_archetype} "
         f"| output={args.output_dir}/{args.study_name}",
         file=sys.stderr,
     )
@@ -769,7 +739,6 @@ def _cli_main(argv: list[str] | None = None) -> None:
     study = run_study(
         policy_space,
         catalog=catalog,
-        base_template=base_template,
         tuning_config=tuning_config,
         study_name=args.study_name,
         output_dir=args.output_dir,
@@ -784,7 +753,6 @@ def _cli_main(argv: list[str] | None = None) -> None:
             study,
             policy_space,
             catalog=catalog,
-            base_template=base_template,
             tuning_config=tuning_config,
             study_dir=study_dir,
             market_params=market_params,

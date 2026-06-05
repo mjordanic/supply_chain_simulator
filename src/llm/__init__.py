@@ -1,11 +1,11 @@
 """LLM world-builder pipeline.
 
-This sub-package generates a runnable ``World(catalog, market,
-store_templates)`` from a single archetype string (``"fashion_retail"``,
-``"grocery"``, …). It is the "give me a thematically coherent
-catalog/market without hand-coding one" entry point — the rest of the
-scenario (policies, disruption, lifecycle, seeds) is still authored by
-the human/script.
+This sub-package generates a catalog + market from a single archetype
+string (``"fashion_retail"``, ``"grocery"``, …) and persists them as
+``catalog.csv`` + ``setup.yaml``. It is the "give me a thematically
+coherent catalog/market without hand-coding one" entry point — topology,
+policies, disruption, and run parameters are still authored by the
+human/script.
 
 Exposes:
 
@@ -14,8 +14,7 @@ Exposes:
   structured-output completion per call.
 - Pydantic schemas for every structured-output payload (Taxonomy,
   Catalog, Correlations, FreshnessSet, StoreTemplateList, MarketDomain).
-- ``World`` / ``WorldBuilder`` — the artifact + the orchestrator that
-  produces it.
+- ``WorldBuilder`` — orchestrates LLM stages and writes setup directories.
 
 The OpenAI client is imported eagerly here so plain ``from src.llm
 import OpenAIClient`` works without diving into the sub-module.
@@ -41,7 +40,7 @@ from src.llm.schemas import (
     TaxonomyCategory,
 )
 # Top-level pipeline.
-from src.llm.world_builder import World, WorldBuilder
+from src.llm.world_builder import WorldBuilder
 
 __all__ = [
     "LLMClient",
@@ -60,6 +59,5 @@ __all__ = [
     "StoreTemplateSpec",
     "Taxonomy",
     "TaxonomyCategory",
-    "World",
     "WorldBuilder",
 ]

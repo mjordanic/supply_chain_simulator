@@ -1,17 +1,16 @@
 """``WorldBuilder``: LLM-driven world generator.
 
 Given a single archetype string (``"fashion_retail"``, ``"grocery"``,
-…), ``WorldBuilder.build(n_items)`` returns a runnable
-``World(catalog, market, store_templates)`` artifact. The result is
-deliberately *partial* — disruption parameters, item-lifecycle
-parameters, policies, and seeds remain author-supplied — because that
-slice is what stays domain-agnostic.
+…), ``WorldBuilder.build_setup(n_items, setup_dir)`` generates a
+catalog + market and persists them as ``catalog.csv`` + ``setup.yaml``
+in the given directory. Topology, policies, disruption, and run
+parameters are the modeller's domain.
 
 Pipeline (each stage is cached per-builder instance):
 
 1. ``build_market_domain_params()`` — one LLM call producing the
    domain-meaningful slice; ``MarketParams`` is assembled by merging the
-   slice with hand-set math defaults. Sets ``regions`` for downstream.
+   slice with hand-set math defaults.
 2. ``build_taxonomy()`` — one LLM call, returns ``Taxonomy``.
 3. ``sample_catalog(n)`` — four sub-steps. A deterministic Python
    skeleton allocator distributes ``n`` slots across taxonomy
@@ -26,15 +25,10 @@ Pipeline (each stage is cached per-builder instance):
    items the LLM didn't author for freshness keep ``Ware`` defaults of
    ``None`` so ``ItemRegistry`` falls back to ``ItemLifecycleParams``
    defaults.
-4. ``build_store_templates()`` — one LLM call, returns
-   ``dict[str, StoreTemplate]``. The starting roster is sampled at
-   store-construction time from ``init_active_count`` so this prompt no
-   longer depends on the catalog.
 
-Total LLM calls for ``build(n_items)``:
-``2 + ceil(n/correlations_chunk_size) + ceil(n/freshness_chunk_size) + 1``
-(market, taxonomy, catalog, chunked correlations, chunked freshness,
-templates).
+Total LLM calls for ``build_setup(n_items, setup_dir)``:
+``2 + ceil(n/correlations_chunk_size) + ceil(n/freshness_chunk_size)``
+(market, taxonomy, catalog, chunked correlations, chunked freshness).
 
 Schema-failure retry feeds the previous validation error back into the
 next prompt (see ``llm.prompts._with_retry``).
@@ -43,8 +37,6 @@ next prompt (see ``llm.prompts._with_retry``).
 from __future__ import annotations
 
 import logging
-import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -62,7 +54,6 @@ from src.llm.prompts import (
     correlations_prompt,
     freshness_prompt,
     market_domain_prompt,
-    store_templates_prompt,
     taxonomy_prompt,
 )
 from src.llm.schemas import (
@@ -70,23 +61,16 @@ from src.llm.schemas import (
     Correlations,
     FreshnessSet,
     MarketDomain,
-    StoreTemplateList,
     Taxonomy,
 )
 from src.sim.distributions import Constant, Normal, Uniform
 from src.sim.scenario import (
     MarketParams,
-    StoreTemplate,
     Ware,
     _ware_from_dict,
     _ware_to_dict,
     load_catalog,
 )
-
-# ``World`` now lives in ``src.sim.world``.  Re-exported here so that
-# any existing ``from src.llm.world_builder import World`` keeps working
-# as a transitional safety net during the migration period.
-from src.sim.world import World as World  # noqa: F401
 
 
 # Bumped manually when the builder/output shape changes; written into
@@ -300,14 +284,10 @@ class WorldBuilder:
         self.correlations_chunk_size = correlations_chunk_size
         self.freshness_chunk_size = freshness_chunk_size
         # Per-stage caches. ``None`` ⇒ "not yet built"; subsequent calls
-        # reuse the cached result so ``build()`` is idempotent.
+        # reuse the cached result so ``build_setup()`` is idempotent.
         self._taxonomy: Taxonomy | None = None
         self._catalog: list[Ware] | None = None
-        self._templates: dict[str, StoreTemplate] | None = None
         self._market: MarketParams | None = None
-        # Region list resolved by the market call; consumed by the
-        # store-templates prompt.
-        self._regions: list[str] | None = None
 
     def build_taxonomy(self) -> Taxonomy:
         """Return (and cache) the LLM-authored ``Taxonomy``."""
@@ -429,42 +409,6 @@ class WorldBuilder:
         self._catalog = wares
         return wares
 
-    def build_store_templates(self) -> dict[str, StoreTemplate]:
-        """One LLM call producing the store-templates payload.
-
-        The starting roster is sampled at store-construction time from
-        ``init_active_count`` so this prompt is independent of the catalog
-        stage. ``init_freshness`` is still authored per template.
-        """
-        if self._templates is not None:
-            return self._templates
-        # Ensure regions are resolved (drives the prompt's geography list).
-        regions = self._regions_from_market()
-
-        payload = self._call_with_retry(
-            schema=StoreTemplateList,
-            prompt_builder=lambda err: store_templates_prompt(
-                self.archetype, regions, err
-            ),
-        )
-        # Materialise the dict keyed by template id.
-        templates: dict[str, StoreTemplate] = {}
-        for spec in payload.templates:
-            templates[spec.id] = StoreTemplate(
-                id=spec.id,
-                region=spec.region,
-                capacity=spec.capacity,
-                init_balance=spec.init_balance,
-                init_stock_pct=spec.init_stock_pct,
-                delivery_lag=spec.delivery_lag,
-                holding_rate=spec.holding_rate,
-                order_fee=spec.order_fee,
-                init_active_count=spec.init_active_count,
-                init_freshness=spec.init_freshness.value,
-            )
-        self._templates = templates
-        return templates
-
     def build_market_domain_params(self) -> MarketParams:
         """One LLM call producing the domain slice; merged with math defaults."""
         if self._market is not None:
@@ -489,8 +433,6 @@ class WorldBuilder:
         merged["init_demand"] = init_default
         merged["init_supply"] = init_default
         self._market = MarketParams(**merged)
-        # Cache regions for the templates prompt.
-        self._regions = list(domain.regions)
         return self._market
 
     def build_setup(
@@ -556,41 +498,6 @@ class WorldBuilder:
         write_catalog_and_market(catalog, market, setup_dir)
         return catalog, market
 
-    def build(self, n_items: int) -> World:
-        """Run all stages and return the merged ``World``.
-
-        Order: ``build_market_domain_params`` (sets regions) →
-        ``sample_catalog`` (which internally builds taxonomy +
-        correlations + freshness) → ``build_store_templates``.
-        Cached results are reused on re-entry, so a second ``build``
-        call won't re-hit the API.
-        """
-        market = self.build_market_domain_params()
-        catalog = self.sample_catalog(n_items)
-        templates = self.build_store_templates()
-        # Provenance block, written into ``world.json`` on first save.
-        meta: dict[str, Any] = {
-            "archetype": self.archetype,
-            "n_items": n_items,
-            "model": getattr(self.client, "model", None),
-            "builder_version": BUILDER_VERSION,
-            "built_at": datetime.now(timezone.utc).isoformat(),
-        }
-        return World(catalog=catalog, market=market, store_templates=templates, meta=meta)
-
-    def _regions_from_market(self) -> list[str]:
-        """Best-effort regions list for the store-templates prompt.
-
-        Calls ``build_market_domain_params`` if regions are not yet
-        available, so callers can invoke ``build_store_templates`` first
-        without it failing.
-        """
-        if self._regions is not None:
-            return list(self._regions)
-        self.build_market_domain_params()
-        assert self._regions is not None
-        return list(self._regions)
-
     def _call_with_retry(
         self,
         *,
@@ -654,61 +561,8 @@ class WorldBuilder:
         ) from last_exc
 
 
-class LLMBuildAbortedError(Exception):
-    """Raised when a ``load_or_build_world`` call is aborted by the user or the environment."""
-
-
-def load_or_build_world(
-    name: str,
-    build_fn: Callable[[], "World"],
-    *,
-    base_dir: str | Path = "data/worlds",
-    force_rebuild: bool = False,
-    auto_confirm: bool = False,
-) -> "World":
-    """Return a cached ``World`` or build one with user consent.
-
-    Looks for ``<base_dir>/<name>/world.json``. Returns it immediately on a
-    cache hit (unless ``force_rebuild=True``). On a cache miss (or rebuild),
-    prints a two-line warning to stderr and, unless ``auto_confirm=True``,
-    prompts the user before invoking ``build_fn``.
-    """
-    # Conventional cache path: ``<base_dir>/<name>/world.json``.
-    path = Path(base_dir) / name / "world.json"
-    if path.exists() and not force_rebuild:
-        return World.from_json(path)
-
-    # Cache miss / forced rebuild — let the operator confirm so a
-    # surprise OpenAI bill never happens silently.
-    print(f"World cache not found or rebuild forced: {path}", file=sys.stderr)
-    print("Building requires 5+ OpenAI calls.", file=sys.stderr)
-
-    if not auto_confirm:
-        try:
-            response = input("  Press Enter to proceed, anything else to abort: ")
-        except (KeyboardInterrupt, EOFError) as exc:
-            # ``EOFError`` happens in non-interactive contexts
-            # (CI / piped invocation). Surface that fact in the
-            # exception type so callers can handle it.
-            raise LLMBuildAbortedError(
-                f"Build aborted due to {type(exc).__name__}; "
-                "use auto_confirm=True for non-interactive runs."
-            ) from exc
-        if response.strip():
-            # Any non-empty response is treated as "no".
-            raise LLMBuildAbortedError(f"Build aborted by user: {response!r}")
-
-    # Authorised build. Persist to disk so subsequent runs hit cache.
-    world = build_fn()
-    world.to_json(path)
-    return world
-
-
 __all__ = [
     "BUILDER_VERSION",
-    "LLMBuildAbortedError",
-    "World",
     "WorldBuilder",
     "allocate_skeletons",
-    "load_or_build_world",
 ]

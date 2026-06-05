@@ -13,11 +13,29 @@ from __future__ import annotations
 import pytest
 
 from src.sim.distributions import Constant
-from src.sim.policy import NoopPolicy, OrderUpToPolicy
-from src.sim.scenario import StoreTemplate, load_catalog
+from src.sim.policy import OrderUpToPolicy
+from src.sim.scenario import load_catalog
 from src.tuning.config import TuningConfig
 from src.tuning.episode import sample_episode
 from src.tuning.evaluator import evaluate_policy_normalised
+
+
+# ---------------------------------------------------------------------------
+# Minimal no-op policy for dimensionless tests (NoopPolicy was deleted)
+# ---------------------------------------------------------------------------
+
+
+class _NoopPolicy:
+    """A policy that places zero orders — used only for normalisation tests."""
+
+    def __init__(self) -> None:
+        pass
+
+    def decide(self, observation: dict, node: object) -> dict:
+        return {"order": {}, "list_price": {}, "min_order_imposed": {}}
+
+    def reset(self) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -41,27 +59,10 @@ def _make_catalog(n: int = 15) -> list:
     )
 
 
-def _make_base_template(
-    capacity: int = 200,
-    init_balance: float = 20_000.0,
-) -> StoreTemplate:
-    return StoreTemplate(
-        id="tuning_eval_test",
-        region="US",
-        capacity=capacity,
-        init_balance=init_balance,
-        init_stock_pct=0.0,
-        delivery_lag=3,
-        holding_rate=0.01,
-        order_fee=50.0,
-        init_active_count=5,
-    )
-
-
 def _make_short_config(episode_length: int = 5) -> TuningConfig:
     """Return a TuningConfig with a very short episode for fast tests.
 
-    init_stock_pct pinned to 0.0 so NoopPolicy yields zero profit (used by
+    init_stock_pct pinned to 0.0 so _NoopPolicy yields zero profit (used by
     the dimensionless-normalisation tests below).
     """
     return TuningConfig(
@@ -75,10 +76,9 @@ def _make_short_config(episode_length: int = 5) -> TuningConfig:
 
 def _make_specs(n: int = 2, seed_offset: int = 12_000_000, episode_length: int = 5):
     catalog = _make_catalog()
-    template = _make_base_template()
     config = _make_short_config(episode_length=episode_length)
     return [
-        sample_episode(catalog, template, config, episode_seed=seed_offset + i)
+        sample_episode(catalog, config, episode_seed=seed_offset + i)
         for i in range(n)
     ]
 
@@ -178,8 +178,8 @@ class TestEvaluatePolicyNormalisedCrnDeterminism:
 
     def test_crn_determinism_noop_policy(self):
         specs = _make_specs(n=2)
-        result1 = evaluate_policy_normalised(lambda: NoopPolicy(), specs)
-        result2 = evaluate_policy_normalised(lambda: NoopPolicy(), specs)
+        result1 = evaluate_policy_normalised(lambda: _NoopPolicy(), specs)
+        result2 = evaluate_policy_normalised(lambda: _NoopPolicy(), specs)
 
         assert result1["per_seed_net_profit"] == result2["per_seed_net_profit"]
         assert result1["mean_normalised_return"] == result2["mean_normalised_return"]
@@ -189,21 +189,31 @@ class TestNormalisationIsDimensionless:
     """Per-seed normalised return is approximately equal between two specs at 10×
     capacity/balance when using a no-op policy.
 
-    With init_stock_pct=0.0 a NoopPolicy yields net_profit ≈ 0 → normalised return
+    With init_stock_pct=0.0 a _NoopPolicy yields net_profit ≈ 0 → normalised return
     ≈ 0 on both scales. Confirms the normalisation cancels scale.
     """
 
     def test_normalisation_is_dimensionless_noop(self):
         catalog = _make_catalog()
-        config = _make_short_config(episode_length=5)
-        template_small = _make_base_template(capacity=200, init_balance=20_000.0)
-        template_large = _make_base_template(capacity=2000, init_balance=200_000.0)
+        from src.sim.distributions import Constant as _Constant
+        config_small = TuningConfig(
+            episode_length=5, K_active=5, n_trials=1, n_search_seeds=2,
+            init_stock_pct_dist=_Constant(0.0),
+            capacity_dist=_Constant(200),
+            balance_dist=_Constant(20_000.0),
+        )
+        config_large = TuningConfig(
+            episode_length=5, K_active=5, n_trials=1, n_search_seeds=2,
+            init_stock_pct_dist=_Constant(0.0),
+            capacity_dist=_Constant(2000),
+            balance_dist=_Constant(200_000.0),
+        )
 
-        spec_small = sample_episode(catalog, template_small, config, episode_seed=12_000_000)
-        spec_large = sample_episode(catalog, template_large, config, episode_seed=12_000_001)
+        spec_small = sample_episode(catalog, config_small, episode_seed=12_000_000)
+        spec_large = sample_episode(catalog, config_large, episode_seed=12_000_001)
 
-        result_small = evaluate_policy_normalised(lambda: NoopPolicy(), [spec_small])
-        result_large = evaluate_policy_normalised(lambda: NoopPolicy(), [spec_large])
+        result_small = evaluate_policy_normalised(lambda: _NoopPolicy(), [spec_small])
+        result_large = evaluate_policy_normalised(lambda: _NoopPolicy(), [spec_large])
 
         norm_small = result_small["per_seed_net_profit"][0] / max(
             1e-9, result_small["per_seed_initial_cash"][0]
@@ -217,15 +227,25 @@ class TestNormalisationIsDimensionless:
 
     def test_normalisation_is_dimensionless_noop_two_seeds(self):
         catalog = _make_catalog()
-        config = _make_short_config(episode_length=5)
-        template_small = _make_base_template(capacity=100, init_balance=10_000.0)
-        template_large = _make_base_template(capacity=1000, init_balance=100_000.0)
+        from src.sim.distributions import Constant as _Constant
+        config_small = TuningConfig(
+            episode_length=5, K_active=5, n_trials=1, n_search_seeds=2,
+            init_stock_pct_dist=_Constant(0.0),
+            capacity_dist=_Constant(100),
+            balance_dist=_Constant(10_000.0),
+        )
+        config_large = TuningConfig(
+            episode_length=5, K_active=5, n_trials=1, n_search_seeds=2,
+            init_stock_pct_dist=_Constant(0.0),
+            capacity_dist=_Constant(1000),
+            balance_dist=_Constant(100_000.0),
+        )
 
-        spec_small = sample_episode(catalog, template_small, config, episode_seed=12_000_200)
-        spec_large = sample_episode(catalog, template_large, config, episode_seed=12_000_201)
+        spec_small = sample_episode(catalog, config_small, episode_seed=12_000_200)
+        spec_large = sample_episode(catalog, config_large, episode_seed=12_000_201)
 
-        result_small = evaluate_policy_normalised(lambda: NoopPolicy(), [spec_small])
-        result_large = evaluate_policy_normalised(lambda: NoopPolicy(), [spec_large])
+        result_small = evaluate_policy_normalised(lambda: _NoopPolicy(), [spec_small])
+        result_large = evaluate_policy_normalised(lambda: _NoopPolicy(), [spec_large])
 
         norm_small = result_small["per_seed_net_profit"][0] / max(
             1e-9, result_small["per_seed_initial_cash"][0]
