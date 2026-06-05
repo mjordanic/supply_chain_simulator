@@ -257,6 +257,17 @@ def _sanitise_freshness(
     }
 
 
+def _load_catalog_csv(catalog_path: "Path") -> "list[Any]":
+    """Load a catalog.csv file into a list of Ware namedtuples.
+
+    Thin wrapper around ``setup_io._parse_catalog`` so WorldBuilder can
+    reload catalog from a cached setup directory without importing the
+    full load_setup pipeline.
+    """
+    from src.sim.setup_io import _parse_catalog
+    return _parse_catalog(catalog_path)
+
+
 class WorldBuilder:
     """Orchestrate the LLM stages plus deterministic skeleton sampling.
 
@@ -481,6 +492,69 @@ class WorldBuilder:
         # Cache regions for the templates prompt.
         self._regions = list(domain.regions)
         return self._market
+
+    def build_setup(
+        self,
+        n_items: int,
+        setup_dir: "str | Path",
+        *,
+        force_rebuild: bool = False,
+    ) -> tuple["list[Any]", "Any"]:
+        """Build and persist catalog + market to a setup directory (dir-as-cache).
+
+        If ``setup_dir/catalog.csv`` already exists (and ``force_rebuild``
+        is False), loads and returns the existing catalog + market without
+        making any LLM calls.  Otherwise runs the LLM market + catalog
+        stages and writes ``catalog.csv`` and the ``market:`` block of
+        ``setup.yaml`` to ``setup_dir``.
+
+        Topology, policies, disruption, and run parameters are intentionally
+        NOT written — those are the modeller's domain, not the generator's.
+
+        Parameters
+        ----------
+        n_items:
+            Number of catalog items to generate on a cache miss.
+        setup_dir:
+            Target directory.  Used as both the cache key and write target.
+        force_rebuild:
+            Ignore an existing setup directory and always call the LLM.
+
+        Returns
+        -------
+        (catalog, market) — list[Ware], MarketParams
+        """
+        from pathlib import Path as _Path
+
+        from src.sim.setup_io import write_catalog_and_market
+
+        setup_dir = _Path(setup_dir)
+        catalog_path = setup_dir / "catalog.csv"
+
+        if not force_rebuild and catalog_path.is_file():
+            # Cache hit: load catalog from CSV and market from setup.yaml.
+            catalog = _load_catalog_csv(catalog_path)
+            yaml_path = setup_dir / "setup.yaml"
+            if yaml_path.is_file():
+                import yaml as _yaml
+                with yaml_path.open(encoding="utf-8") as f:
+                    doc = _yaml.safe_load(f) or {}
+                if "market" in doc:
+                    from src.sim.setup_io import _parse_market
+                    market = _parse_market(doc["market"], "setup.yaml.market")
+                else:
+                    # Fall through to generate market (catalog is cached but market block missing).
+                    market = self.build_market_domain_params()
+            else:
+                market = self.build_market_domain_params()
+            self._catalog = catalog
+            return catalog, market
+
+        # Cache miss: run LLM pipeline and persist data only.
+        market = self.build_market_domain_params()
+        catalog = self.sample_catalog(n_items)
+        write_catalog_and_market(catalog, market, setup_dir)
+        return catalog, market
 
     def build(self, n_items: int) -> World:
         """Run all stages and return the merged ``World``.

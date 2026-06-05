@@ -742,3 +742,88 @@ def test_world_artifact_round_trips_through_scenario_json() -> None:
     # with the same curve. Round-trip preserves the override.
     assert decoded.catalog[0].freshness_alpha == 0.2
     assert decoded.catalog[0].freshness_decay == 30.0
+
+
+# ---------------------------------------------------------------------------
+# WorldBuilder.build_setup — dir-as-cache
+# ---------------------------------------------------------------------------
+
+
+def _build_setup_responses() -> tuple[list, "Catalog"]:
+    """Return the minimal MockClient responses for build_setup (market + catalog)."""
+    market = _market_response()
+    taxonomy = _taxonomy_response()
+    skeletons = allocate_skeletons(3, taxonomy)
+    catalog = _catalog_response(skeletons)
+    correlations = _empty_correlations(catalog)
+    freshness = _full_freshness(catalog)
+    responses = [market, taxonomy, catalog, correlations, freshness]
+    return responses, catalog
+
+
+def test_build_setup_writes_catalog_csv(tmp_path):
+    """build_setup writes catalog.csv to the target directory."""
+    responses, _ = _build_setup_responses()
+    client = MockClient(responses)
+    builder = WorldBuilder("luxury", client)
+
+    setup_dir = tmp_path / "my_setup"
+    catalog, market = builder.build_setup(n_items=3, setup_dir=setup_dir)
+
+    assert (setup_dir / "catalog.csv").is_file()
+    assert len(catalog) == 3
+
+
+def test_build_setup_writes_market_block_only(tmp_path):
+    """build_setup writes market: to setup.yaml but NOT nodes, edges, or run."""
+    import yaml
+
+    responses, _ = _build_setup_responses()
+    client = MockClient(responses)
+    builder = WorldBuilder("luxury", client)
+
+    setup_dir = tmp_path / "data_only"
+    builder.build_setup(n_items=3, setup_dir=setup_dir)
+
+    doc = yaml.safe_load((setup_dir / "setup.yaml").read_text())
+    assert "market" in doc
+    assert "nodes" not in doc
+    assert "edges" not in doc
+    assert "run" not in doc
+
+
+def test_build_setup_cache_hit_skips_llm(tmp_path):
+    """build_setup on a cache hit (catalog.csv present) makes zero LLM calls."""
+    responses, catalog_resp = _build_setup_responses()
+    client = MockClient(responses)
+    builder = WorldBuilder("luxury", client)
+
+    setup_dir = tmp_path / "cached"
+    # First call: builds and writes
+    builder.build_setup(n_items=3, setup_dir=setup_dir)
+    first_call_count = len(client.calls)
+
+    # Second call: cache hit — must not call LLM
+    fresh_client = MockClient([])  # empty — would error on any call
+    builder2 = WorldBuilder("luxury", fresh_client)
+    catalog2, market2 = builder2.build_setup(n_items=3, setup_dir=setup_dir)
+
+    assert len(fresh_client.calls) == 0  # no LLM calls on cache hit
+    assert len(catalog2) == 3
+
+
+def test_build_setup_force_rebuild_calls_llm_again(tmp_path):
+    """force_rebuild=True causes the LLM to be called even when cache exists."""
+    responses1, _ = _build_setup_responses()
+    client1 = MockClient(responses1)
+    builder1 = WorldBuilder("luxury", client1)
+    setup_dir = tmp_path / "rebuild"
+    builder1.build_setup(n_items=3, setup_dir=setup_dir)
+
+    responses2, _ = _build_setup_responses()
+    client2 = MockClient(responses2)
+    builder2 = WorldBuilder("luxury", client2)
+    builder2.build_setup(n_items=3, setup_dir=setup_dir, force_rebuild=True)
+
+    # LLM was called again (market + catalog pipeline)
+    assert len(client2.calls) > 0

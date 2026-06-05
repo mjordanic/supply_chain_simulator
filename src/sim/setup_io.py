@@ -660,4 +660,380 @@ def load_setup(setup_dir: str | Path) -> Any:
     )
 
 
-__all__ = ["load_setup", "_derive_node_seed"]
+# ---------------------------------------------------------------------------
+# Distribution serialisation helpers (kind-tagged YAML form)
+# ---------------------------------------------------------------------------
+
+def _dist_to_yaml(value: Any) -> Any:
+    """Convert a Distribution (or scalar) to the YAML {kind: ...} tagged form.
+
+    Scalars (int/float/bool) are passed through unchanged.
+    Distribution instances are converted to the {kind: ...} form that
+    ``_parse_distribution`` expects when re-reading setup.yaml.
+
+    The existing ``Distribution.to_dict()`` uses a ``{type: ...}`` key which
+    is the JSON round-trip format used by ``Scenario.to_json``.  The YAML
+    on-disk format uses ``{kind: ...}`` instead (same values, different key)
+    to keep the hand-authored YAML readable.
+    """
+    from src.sim.distributions import (
+        Choice, Constant, Distribution, LogUniform, Normal, Uniform,
+    )
+
+    if not isinstance(value, Distribution):
+        return value
+    d = value.to_dict()  # {type: ..., ...rest}
+    out = {k: v for k, v in d.items() if k != "type"}
+    out["kind"] = d["type"]  # rename type → kind
+    return out
+
+
+def _write_market_block(market: Any) -> dict:
+    """Serialize a MarketParams instance to a plain-dict YAML block."""
+    from dataclasses import fields
+
+    out: dict = {}
+    for f in fields(market):
+        val = getattr(market, f.name)
+        if f.name == "stage_multipliers":
+            out[f.name] = {k: _dist_to_yaml(v) for k, v in val.items()}
+        elif f.name == "cross_factor_range":
+            out[f.name] = list(val)
+        elif f.name == "season_months":
+            out[f.name] = dict(val)
+        elif f.name == "regions":
+            out[f.name] = list(val)
+        else:
+            out[f.name] = _dist_to_yaml(val)
+    return out
+
+
+def _write_disruption_block(disruption: Any) -> dict:
+    """Serialize a DisruptionParams instance to a plain-dict YAML block."""
+    from dataclasses import fields
+
+    out: dict = {}
+    for f in fields(disruption):
+        val = getattr(disruption, f.name)
+        if f.name in ("types", "regions"):
+            out[f.name] = list(val)
+        else:
+            out[f.name] = _dist_to_yaml(val)
+    return out
+
+
+def _write_node_block(node_instance: Any) -> dict:
+    """Serialize a NodeInstance to a plain-dict suitable for setup.yaml nodes list."""
+    from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+
+    node = node_instance.node
+    d: dict = {
+        "id": node.id,
+        "region": node.region,
+    }
+    if isinstance(node, FactoryNode):
+        d["type"] = "factory"
+        d["produces_product_id"] = node.produces_product_id
+        d["unit_cost"] = float(node.unit_cost)
+        d["capacity_per_tick"] = _dist_to_yaml(node.capacity_per_tick)
+        d["inventory"] = int(node.inventory)
+        d["list_price"] = float(node.list_price)
+        d["cash"] = float(node.cash)
+    elif isinstance(node, IntermediateNode):
+        d["type"] = "intermediate"
+        d["carried_products"] = sorted(node.carried_products)
+        d["capacity"] = _dist_to_yaml(node.capacity)
+        d["tags"] = list(node.tags)
+        d["inventory"] = {k: int(v) for k, v in node.inventory.items()}
+        d["list_prices"] = {k: float(v) for k, v in node.list_prices.items()}
+        d["min_order_imposed"] = {k: int(v) for k, v in node.min_order_imposed.items()}
+        d["cash"] = float(node.cash)
+    elif isinstance(node, DemandSinkNode):
+        d["type"] = "demand_sink"
+        d["product_id"] = node.product_id
+        d["demand_dist"] = _dist_to_yaml(node.demand_dist)
+        d["income_rate"] = float(node.income_rate)
+        d["cash"] = float(node.cash)
+    else:
+        raise TypeError(f"_write_node_block: unknown node type {type(node).__name__!r}")
+
+    # Attach policy if present (name + params only — no injected facts)
+    if node_instance.policy is not None:
+        policy = node_instance.policy
+        policy_name = _policy_name_from_instance(policy)
+        if policy_name is not None:
+            policy_params = _policy_params(policy)
+            d["policy"] = {"name": policy_name, "params": policy_params}
+
+    return d
+
+
+def _policy_name_from_instance(policy: Any) -> "str | None":
+    """Look up the registry name for a live policy instance.
+
+    Returns ``None`` when the policy is not in the registry (shouldn't
+    happen in normal operation; treated as 'omit policy block').
+    """
+    from src.sim.policy_registry import _REGISTRY
+
+    cls = type(policy)
+    for name, registered_cls in _REGISTRY.items():
+        if cls is registered_cls:
+            return name
+    return None
+
+
+def _policy_params(policy: Any) -> dict:
+    """Extract the true hyperparameters from a live policy (exclude injected facts).
+
+    We inspect the policy's constructor signature to find params that are
+    not injected facts (delivery_lag, unit_cost, capacity_per_tick,
+    supplier_id, policy_seed).  Only params that differ from their
+    constructor default (or have no default) are included — keeps the YAML
+    minimal and matching what the user would hand-author.
+    """
+    import inspect
+
+    INJECTED = frozenset(
+        {"policy_seed", "delivery_lag", "unit_cost", "capacity_per_tick", "supplier_id"}
+    )
+    sig = inspect.signature(type(policy).__init__)
+    out: dict = {}
+    for name, param in sig.parameters.items():
+        if name in ("self", "policy_seed") or name in INJECTED:
+            continue
+        # Only include params that have a live value on the object
+        if hasattr(policy, name):
+            out[name] = getattr(policy, name)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# write_setup — inverse of load_setup
+# ---------------------------------------------------------------------------
+
+def write_setup(scenario: Any, setup_dir: "str | Path") -> None:
+    """Write a Scenario to a setup directory (catalog.csv + setup.yaml).
+
+    This is the inverse of ``load_setup``.  The round-trip must be lossless:
+    ``load_setup(write_setup(scenario, dir)) == scenario`` for all data
+    including policies (reconstructable because ``{name, params}`` is
+    serialised).
+
+    Parameters
+    ----------
+    scenario:
+        A fully populated ``Scenario`` with ``nodes``, ``edges``, and all
+        required fields.
+    setup_dir:
+        Directory to write into.  Created (including parents) if it does
+        not exist.
+
+    Raises
+    ------
+    ValueError
+        If the scenario has no nodes (can't reconstruct a valid setup).
+    """
+    import csv
+
+    import yaml
+
+    setup_dir = Path(setup_dir)
+    setup_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- catalog.csv ---------------------------------------------------------
+    catalog_path = setup_dir / "catalog.csv"
+    fieldnames = [
+        "product_id", "name", "category", "base_price", "unit_cost",
+        "seasonality", "related_products", "init_stock_share",
+    ]
+    with catalog_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for ware in scenario.catalog:
+            # related_products: list of (pid, weight) → "pid:weight;pid:weight"
+            related = ";".join(
+                f"{pid}:{weight}" for pid, weight in ware.related_products
+            ) if ware.related_products else ""
+            writer.writerow({
+                "product_id": ware.product_id,
+                "name": ware.name,
+                "category": ware.category,
+                "base_price": ware.base_price,
+                "unit_cost": ware.unit_cost,
+                "seasonality": ware.seasonality,
+                "related_products": related,
+                "init_stock_share": ware.init_stock_share if ware.init_stock_share is not None else 1.0,
+            })
+
+    # --- setup.yaml ----------------------------------------------------------
+    yaml_path = setup_dir / "setup.yaml"
+    doc: dict = {}
+
+    # run block
+    doc["run"] = {
+        "n_steps": scenario.n_steps,
+        "start_date": scenario.start_date.date().isoformat(),
+        "world_seed": scenario.world_seed,
+    }
+
+    # market block
+    doc["market"] = _write_market_block(scenario.market)
+
+    # disruption block
+    doc["disruption"] = _write_disruption_block(scenario.disruption)
+
+    # nodes block
+    doc["nodes"] = [_write_node_block(ni) for ni in scenario.nodes]
+
+    # edges block
+    doc["edges"] = [
+        {
+            "supplier": e.supplier_id,
+            "buyer": e.buyer_id,
+            "lead_time": e.default_lead_time,
+            **(
+                {"per_product_lead_time": dict(e.per_product_lead_time)}
+                if e.per_product_lead_time
+                else {}
+            ),
+        }
+        for e in scenario.edges
+    ]
+
+    with yaml_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
+
+
+# ---------------------------------------------------------------------------
+# load_or_build_setup — dir-as-cache for the LLM generator
+# ---------------------------------------------------------------------------
+
+def load_or_build_setup(
+    setup_dir: "str | Path",
+    build_fn: "Any",
+    *,
+    force_rebuild: bool = False,
+) -> Any:
+    """Return a ``Scenario`` from a setup directory, building it if absent.
+
+    If ``setup_dir`` already contains ``catalog.csv`` and ``setup.yaml``
+    (and ``force_rebuild`` is False), this loads the existing files without
+    calling ``build_fn``.
+
+    Otherwise, calls ``build_fn() -> Scenario`` (which may hit the LLM),
+    writes the result to ``setup_dir`` via ``write_setup``, and returns it.
+
+    ``build_fn`` should produce a partial Scenario (catalog + market filled;
+    nodes/edges/policies may be empty).  The returned Scenario is whatever
+    ``build_fn`` or ``load_setup`` gives back.
+
+    Parameters
+    ----------
+    setup_dir:
+        Target directory.  Used as both the cache key and the write target.
+    build_fn:
+        Zero-argument callable returning a ``Scenario``.  Only called on a
+        cache miss or when ``force_rebuild=True``.
+    force_rebuild:
+        If True, ignore an existing setup directory and always call ``build_fn``.
+
+    Returns
+    -------
+    ``Scenario``
+    """
+    setup_dir = Path(setup_dir)
+    catalog_path = setup_dir / "catalog.csv"
+    yaml_path = setup_dir / "setup.yaml"
+
+    if not force_rebuild and catalog_path.is_file() and yaml_path.is_file():
+        return load_setup(setup_dir)
+
+    # Cache miss or force rebuild: invoke the generator.
+    scenario = build_fn()
+    write_setup(scenario, setup_dir)
+    return scenario
+
+
+# ---------------------------------------------------------------------------
+# write_catalog_and_market — LLM generator output (data only, no topology)
+# ---------------------------------------------------------------------------
+
+def write_catalog_and_market(
+    catalog: "list[Any]",
+    market: Any,
+    setup_dir: "str | Path",
+) -> None:
+    """Write catalog.csv and the market: block of setup.yaml.
+
+    This is what the LLM generator writes: only data (catalog + market).
+    It never writes nodes, edges, policies, or topology — those are the
+    modeller's domain.
+
+    If ``setup.yaml`` already exists, only the ``market:`` key is updated
+    (all other keys are left intact).  If it does not exist, a new
+    ``setup.yaml`` is created with only the ``market:`` block.
+
+    Parameters
+    ----------
+    catalog:
+        List of ``Ware`` namedtuples.
+    market:
+        A ``MarketParams`` instance.
+    setup_dir:
+        Target directory.  Created (including parents) if it does not exist.
+    """
+    import csv
+
+    import yaml
+
+    setup_dir = Path(setup_dir)
+    setup_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- catalog.csv --------------------------------------------------------
+    catalog_path = setup_dir / "catalog.csv"
+    fieldnames = [
+        "product_id", "name", "category", "base_price", "unit_cost",
+        "seasonality", "related_products", "init_stock_share",
+    ]
+    with catalog_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for ware in catalog:
+            related = ";".join(
+                f"{pid}:{weight}" for pid, weight in ware.related_products
+            ) if ware.related_products else ""
+            writer.writerow({
+                "product_id": ware.product_id,
+                "name": ware.name,
+                "category": ware.category,
+                "base_price": ware.base_price,
+                "unit_cost": ware.unit_cost,
+                "seasonality": ware.seasonality,
+                "related_products": related,
+                "init_stock_share": (
+                    ware.init_stock_share if ware.init_stock_share is not None else 1.0
+                ),
+            })
+
+    # --- setup.yaml (market block only) -------------------------------------
+    yaml_path = setup_dir / "setup.yaml"
+    if yaml_path.is_file():
+        with yaml_path.open(encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+    else:
+        doc = {}
+
+    doc["market"] = _write_market_block(market)
+
+    with yaml_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
+
+
+__all__ = [
+    "load_setup",
+    "write_setup",
+    "write_catalog_and_market",
+    "load_or_build_setup",
+    "_derive_node_seed",
+]

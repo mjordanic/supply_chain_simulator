@@ -1,6 +1,6 @@
 # 04 — LLM generator writes setup files (+ `write_setup`, dir-as-cache)
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
