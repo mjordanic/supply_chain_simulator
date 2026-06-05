@@ -1,0 +1,97 @@
+# Three-node chain example setup.
+# Topology: factory-1 → shop-1 → sink-1
+# No API key required. Run with:
+#   uv run python main.py run setups/three_node_chain
+
+run:
+  n_steps: 30
+  start_date: "2024-01-01"
+  world_seed: 42
+
+market:
+  cycle_len: 365
+  cycle_amp: 0.0
+  init_demand: 1.0
+  init_supply: 1.0
+  peak_factor: 1.0
+  off_factor: 1.0
+  season_months:
+    peak: [6, 7, 8]
+  regions: [US]
+  correlation: 0.0
+  trend_update_interval: 100
+  min_value: 0.5
+  max_value: 2.0
+  stage_multipliers: {}
+  price_elasticity: 0.0
+  promo_multiplier: 1.0
+  demand_factor_min: 0.1
+  supply_factor_min: 0.01
+  cross_inv_lo: 0.3
+  cross_inv_hi: 0.7
+  cross_factor_range: [0.5, 1.5]
+  trend: {kind: constant, value: 1.0}
+  demand_shock: {kind: constant, value: 0.0}
+  supply_shock: {kind: constant, value: 0.0}
+  base_demand: {kind: constant, value: 10.0}
+
+disruption:
+  event_prob: 0.0
+  types: [natural_disaster]
+  regions: [US]
+  severity: {kind: constant, value: 0.0}
+  duration: {kind: constant, value: 1}
+
+nodes:
+  - id: factory-1
+    type: factory
+    region: US
+    produces_product_id: P0001
+    unit_cost: 5.0
+    capacity_per_tick: 50
+    inventory: 100
+    list_price: 5.0
+    cash: 0.0
+    policy:
+      name: static_factory
+      params:
+        target_inventory: 200
+
+  - id: shop-1
+    type: intermediate
+    region: US
+    carried_products: [P0001]
+    capacity: 500
+    tags: [shop]
+    inventory:
+      P0001: 20
+    list_prices:
+      P0001: 8.0
+    min_order_imposed:
+      P0001: 0
+    cash: 500.0
+    policy:
+      name: order_up_to
+      params:
+        cover_horizon_ticks: 14
+        list_price_out: 8.0
+
+  - id: sink-1
+    type: demand_sink
+    region: US
+    product_id: P0001
+    demand_dist: {kind: normal, mean: 10.0, std: 2.0}
+    income_rate: 200.0
+    cash: 1000.0
+    policy:
+      name: default_demand_sink
+      params: {}
+
+edges:
+  - supplier: factory-1
+    buyer: shop-1
+    lead_time: 2
+
+  - supplier: shop-1
+    buyer: sink-1
+    lead_time: 1

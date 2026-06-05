@@ -8,9 +8,8 @@ Acceptance criteria pinned by these tests:
 2. ``scenarios/example_paired_comparison.py`` exposes a top-level
    ``Scenario`` whose paired sub-graphs share seeds — the verifiable CRN
    signal that the two policy groups operate on bit-identical world data.
-3. ``main.py`` accepts a scenario path argument, dispatches it through
-   ``Runner`` + ``DataExporter``, and writes parquet/JSON/PNG artifacts.
-   Passing a path that is not a Scenario fails loudly.
+3. ``main.py run <setup-dir>`` loads a setup directory and writes artifacts.
+   The old ``scenarios/*.py`` positional entry point is removed (issue 02).
 """
 
 from __future__ import annotations
@@ -162,86 +161,56 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_main_runs_homogeneous_example(tmp_path):
-    """``main.py <path>`` runs the example end-to-end and writes artifacts."""
-    output = tmp_path / "homo_out"
+def test_main_run_three_node_chain(tmp_path):
+    """``main.py run <setup-dir>`` runs the example end-to-end and writes artifacts."""
+    output = tmp_path / "chain_out"
     proc = _run_cli(
-        "scenarios/example_homogeneous.py",
+        "run",
+        str(_REPO_ROOT / "setups" / "three_node_chain"),
         "--output",
         str(output),
     )
     assert proc.returncode == 0, proc.stderr
-    # Every artifact the exporter promises must exist.
-    assert (output / "config" / "scenario.json").exists()
+    # Core artifacts must exist.
+    assert (output / "data" / "nodes.parquet").exists(), "nodes.parquet must be written"
     assert (output / "data" / "run_log.json").exists()
     assert (output / "data" / "products.parquet").exists()
-    assert (output / "data" / "stores.parquet").exists()
-    assert (output / "data" / "timeseries.parquet").exists()
     assert (output / "reports" / "overview.png").exists()
-
-    # Round-trip the scenario JSON written by the exporter.
-    with open(output / "config" / "scenario.json") as f:
-        payload = json.load(f)
-    assert "world_seed" in payload
-    # Graph-mode scenarios carry "nodes" and "edges" instead of "stores".
-    assert "nodes" in payload, "graph-mode scenario JSON must include 'nodes'"
-    assert "edges" in payload, "graph-mode scenario JSON must include 'edges'"
+    # Verbatim config snapshot.
+    assert (output / "config" / "catalog.csv").exists(), "catalog.csv must be copied to config/"
+    assert (output / "config" / "setup.yaml").exists(), "setup.yaml must be copied to config/"
 
 
-def test_main_runs_paired_example(tmp_path):
-    output = tmp_path / "paired_out"
-    proc = _run_cli(
-        "scenarios/example_paired_comparison.py",
-        "--output",
-        str(output),
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert (output / "data" / "run_log.json").exists()
-
-
-def test_main_rejects_missing_file(tmp_path):
-    """Non-existent scenario path errors out with a non-zero exit code."""
-    proc = _run_cli(str(tmp_path / "nope.py"))
+def test_main_run_rejects_missing_setup_dir(tmp_path):
+    """Non-existent setup directory errors out with a non-zero exit code."""
+    proc = _run_cli("run", str(tmp_path / "no_such_dir"))
     assert proc.returncode != 0
     assert "not found" in (proc.stdout + proc.stderr).lower()
 
 
-def test_main_rejects_module_without_scenario_symbol(tmp_path):
-    """A scenario file missing the ``scenario`` symbol fails loudly."""
-    bad = tmp_path / "no_scenario.py"
-    bad.write_text("# Intentionally empty: no `scenario` symbol.\n")
-    proc = _run_cli(str(bad))
-    assert proc.returncode != 0
-    msg = (proc.stdout + proc.stderr).lower()
-    assert "scenario" in msg
-
-
-def test_main_rejects_wrong_scenario_type(tmp_path):
-    """A module exposing ``scenario`` of the wrong type fails loudly."""
-    bad = tmp_path / "wrong_type.py"
-    bad.write_text("scenario = 42  # not a Scenario\n")
-    proc = _run_cli(str(bad))
-    assert proc.returncode != 0
-    msg = (proc.stdout + proc.stderr).lower()
-    assert "scenario" in msg
-
-
-def test_main_default_output_folder(tmp_path, monkeypatch):
-    """Without ``--output``, artifacts land in ``data/<stem>`` under cwd."""
+def test_main_run_default_output_folder(tmp_path):
+    """Without ``--output``, artifacts land in ``data/<setup-dir-name>`` under cwd."""
     proc = subprocess.run(
         [
             sys.executable,
             str(_REPO_ROOT / "main.py"),
-            str(_REPO_ROOT / "scenarios" / "example_homogeneous.py"),
+            "run",
+            str(_REPO_ROOT / "setups" / "three_node_chain"),
         ],
         cwd=tmp_path,
         capture_output=True,
         text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    expected = tmp_path / "data" / "example_homogeneous"
+    expected = tmp_path / "data" / "three_node_chain"
     assert expected.exists()
-    assert (expected / "config" / "scenario.json").exists()
+    assert (expected / "data" / "nodes.parquet").exists()
+
+
+def test_main_no_subcommand_exits_nonzero():
+    """Running main.py with no subcommand prints help and exits non-zero."""
+    proc = _run_cli()
+    assert proc.returncode != 0
 
 
 # --------------------------------------------------------- offline LLM example
@@ -253,15 +222,13 @@ def test_offline_exposes_scenario_symbol(offline_module):
 
 
 def test_main_runs_offline_llm_example(tmp_path):
-    """main.py runs the offline (no-API-key) LLM scenario and writes artifacts."""
-    output = tmp_path / "offline_out"
-    proc = _run_cli(
-        "scenarios/example_llm_world_offline.py",
-        "--output",
-        str(output),
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert (output / "config" / "scenario.json").exists()
-    assert (output / "data" / "run_log.json").exists()
-    assert (output / "data" / "products.parquet").exists()
-    assert (output / "data" / "stores.parquet").exists()
+    """The offline LLM scenario can still be run via Runner directly (no CLI change needed)."""
+    # The old main.py CLI has been replaced by ``run <setup-dir>``.
+    # The offline example's Runner path is still tested here via direct invocation.
+    from src.sim.runner import Runner
+    import importlib
+    mod = importlib.import_module("scenarios.example_llm_world_offline")
+    assert isinstance(mod.scenario, Scenario)
+    run_log = Runner(mod.scenario).run()
+    assert "ticks" in run_log
+    assert len(run_log["ticks"]) == mod.scenario.n_steps

@@ -238,6 +238,24 @@ class DataExporter:
         pd.DataFrame(rows).to_parquet(path)
         return path
 
+    def save_nodes_parquet(self, output_folder: str) -> str:
+        """Write the node static table as ``nodes.parquet`` (setup-dir runs).
+
+        Replaces ``stores.parquet`` for graph-mode scenarios loaded from a
+        setup directory.  For legacy store-mode scenarios this is a no-op
+        (returns empty path) — the old ``save_stores_parquet`` handles them.
+        """
+        if not self.scenario.is_graph:
+            return ""
+        folder = os.path.join(output_folder, "data")
+        os.makedirs(folder, exist_ok=True)
+        nodes_df = self.scenario.nodes_df().rename(
+            columns={"policy_class": "policy_type"}
+        )
+        path = os.path.join(folder, "nodes.parquet")
+        nodes_df.to_parquet(path)
+        return path
+
     def save_overview_plot(self, output_folder: str) -> str:
         """Render a regional supply / demand overview to ``overview.png``."""
         folder = os.path.join(output_folder, "reports")

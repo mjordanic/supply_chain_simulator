@@ -1,6 +1,6 @@
 # 02 — Run a hand-authored setup directory end-to-end
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

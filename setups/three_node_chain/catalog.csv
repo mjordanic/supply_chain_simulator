@@ -1,0 +1,2 @@
+product_id,name,category,base_price,unit_cost,seasonality,related_products,init_stock_share
+P0001,Widget A,widgets,12.50,5.00,peak,,1.0
