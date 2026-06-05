@@ -70,6 +70,7 @@
 - 2026-06-05T18:30:00Z — Wave-runner: 07-remove-remaining-legacy committed on claude/eloquent-hopper-Mwefh. 816 tests pass, 10 skipped. All Store-model, World, world_loader, NoopPolicy/HeuristicPolicy, Scenario.to_json/from_json/stores/is_graph deleted. Fixtures regenerated.
 - 2026-06-05T18:31:00Z — Wave-runner: dispatching issue-implementer for 08-docs-and-convert-examples (model=opus).
 - 2026-06-05T19:15:00Z — Wave-runner: Wave 5 complete. 08-docs-and-convert-examples committed as 8fc8ce1 on claude/eloquent-hopper-Mwefh. 806 tests pass, 10 skipped. Rewrote README.md, CONTEXT.md, all src/*/README.md. Added setups/two_factories_two_shops/. Deleted all 10 scenarios/*.py files. Updated test_examples_and_cli.py, test_scenario.py, test_data_exporter_parquet_parity.py.
+- 2026-06-05T19:20:00Z — Orchestrator: Phase 5 finalize. Committed dangling `git mv` of issue-08 file to done/ (96cf816). Full suite re-run green: 806 passed, 10 skipped. No worktrees or `setup-files/issue-*` branches remain. All 8/8 issues committed. Run complete.
 
 ## Outstanding follow-ups
 
