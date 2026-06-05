@@ -1,6 +1,6 @@
 # 03 — Topology scaffolder
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
