@@ -1,8 +1,15 @@
 # `src/rl/` — Reinforcement learning (PPO)
 
-A self-contained PPO training stack that wraps the simulator as a Gymnasium environment, trains a continuous-control policy on pricing and ordering decisions, and evaluates the trained policy against `OrderUpToPolicy` with Common Random Numbers (CRN) so all world variance cancels in the comparison.
+A self-contained PPO training stack that wraps the simulator as a Gymnasium environment, trains a
+continuous-control policy on pricing and ordering decisions, and evaluates the trained policy
+against `OrderUpToPolicy` with Common Random Numbers (CRN) so all world variance cancels in the
+comparison.
 
-Key design choices baked into the env: randomised assortment per episode, slot-shuffled observations, hidden market state, and a frozen assortment for the duration of every episode. A scale-invariance package — order-up-to action decoder, demand-units inventory feature, log-uniform domain randomisation over capacity and balance — lets one trained policy generalise across two orders of magnitude in store size.
+Key design choices baked into the env: randomised assortment per episode, slot-shuffled
+observations, hidden market state, and a frozen assortment for the duration of every episode. A
+scale-invariance package — order-up-to action decoder, demand-units inventory feature, log-uniform
+domain randomisation over capacity and balance — lets one trained policy generalise across two
+orders of magnitude in node size.
 
 ## Contents
 
@@ -29,13 +36,18 @@ src/rl/
   train.py             argparse driver that wires the pieces together
 ```
 
-`RunSlice` + `aggregate_episode` + KPI helpers live in `src/sim/metrics.py` (shared with tuning). The per-tick state machine has exactly one implementation — `Simulation.tick_decide_and_settle()` in `src/sim/runner.py` — and the RL env, eval, and tuning rollout are all sibling consumers.
+`RunSlice` + `aggregate_episode` + KPI helpers live in `src/sim/metrics.py` (shared with tuning).
+The per-tick state machine has exactly one implementation — `Simulation.tick_decide_and_settle()`
+in `src/sim/runner.py` — and the RL env, eval, and tuning rollout are all sibling consumers.
 
-The `Actor` and `Critic` boundary in `agents/ppo.py` is the only place a future heavier model (transformer, attention-over-SKUs) needs to change; the env, encoder, sampler, and eval harness all stay the same.
+The `Actor` and `Critic` boundary in `agents/ppo.py` is the only place a future heavier model
+(transformer, attention-over-SKUs) needs to change; the env, encoder, sampler, and eval harness
+all stay the same.
 
 ## Observation and action layout
 
-For `K_active = 5` (default), the flat observation has length `K_active * 18 + 4 = 94` (`N_PER_SKU = 18`, `N_GLOBAL = 4`):
+For `K_active = 5` (default), the flat observation has length `K_active * 18 + 4 = 94`
+(`N_PER_SKU = 18`, `N_GLOBAL = 4`):
 
 | Index in slot | Feature | Range |
 | --- | --- | --- |
@@ -54,11 +66,19 @@ For `K_active = 5` (default), the flat observation has length `K_active * 18 + 4
 | 16 | mean lead time / max lead time | [0, 1] | central-table snapshot |
 | 17 | mean recent fill rate | [0, 1] | central-table snapshot |
 
-Slots 14–17 are the **central-table snapshot block** (added with the multi-echelon migration): per product slot the env reads `central_table.snapshot_for_buyer(pid)` for the trainable node's direct suppliers, so the agent sees live upstream availability, price, lead time, and fill rate. When no central table is present they default to zero.
+Slots 14–17 are the **central-table snapshot block**: per product slot the env reads
+`central_table.snapshot_for_buyer(pid)` for the trainable node's direct suppliers, so the agent
+sees live upstream availability, price, lead time, and fill rate. When no central table is present
+they default to zero.
 
-Global block (appended once after all per-SKU slots): `cash / initial_cash`, `total_inventory / capacity`, `sin(2π·step/360)`, `cos(2π·step/360)`.
+Global block (appended once after all per-SKU slots): `cash / initial_cash`,
+`total_inventory / capacity`, `sin(2π·step/360)`, `cos(2π·step/360)`.
 
-Action: `2 * K_active` continuous values in `[-1, 1]`. First `K_active` are price multipliers (`[-1, 1]` → `[0.5, 1.5]` × MSRP); second `K_active` are order quantities, decoded order-up-to style (lead-times-of-demand) and split across the slot's suppliers by `decode_action`. `activate`, `deactivate`, and `promotions` are empty for the duration of every episode — the env locks the assortment at reset so the agent's job is pricing and ordering only.
+Action: `2 * K_active` continuous values in `[-1, 1]`. First `K_active` are price multipliers
+(`[-1, 1]` → `[0.5, 1.5]` × MSRP); second `K_active` are order quantities, decoded
+order-up-to style (lead-times-of-demand) and split across the slot's suppliers by `decode_action`.
+`activate`, `deactivate`, and `promotions` are empty for the duration of every episode — the env
+locks the assortment at reset so the agent's job is pricing and ordering only.
 
 ## Quickstart
 
@@ -76,17 +96,19 @@ Outputs:
 - `runs/smoke/events.out.tfevents.*` — TensorBoard scalars
 - `runs/smoke/checkpoints/actor_step{eval_index:010d}.pt` — actor weights, saved each time the CRN eval fires
 
-A full 1 M-step run against a cached LLM-built world:
+A full 1 M-step run against a catalog from a setup directory:
 
 ```bash
 uv run python -m src.rl.train \
   --total-env-steps 1000000 \
   --n-envs 8 \
   --experiment-name fashion_run \
-  --world-cache-path data/worlds/fashion_retail_1000/world.json
+  --setup-dir setups/fashion_retail
 ```
 
-The driver resolves the catalog in this order: explicit `--world-cache-path`, then `data/worlds/<--world-archetype>/world.json`, then falls back to a synthetic catalog of size `--k-catalog`. So you can always do a smoke run even without an LLM cache.
+When `--setup-dir` is provided, the catalog and market are loaded from `catalog.csv` and the
+`market:` block of `setup.yaml`. Otherwise the stack falls back to a synthetic catalog of size
+`--k-catalog`.
 
 ## Monitoring training
 
@@ -98,7 +120,8 @@ Two equivalent paths.
 uv run tensorboard --logdir runs/
 ```
 
-Then open `http://localhost:6006/`. Run names (`--experiment-name`) are the top-level tag filter; you can overlay multiple runs to compare hyperparameter sweeps.
+Then open `http://localhost:6006/`. Run names (`--experiment-name`) are the top-level tag filter;
+you can overlay multiple runs to compare hyperparameter sweeps.
 
 **Notebook** (offline / programmatic):
 
@@ -106,7 +129,10 @@ Then open `http://localhost:6006/`. Run names (`--experiment-name`) are the top-
 uv run jupyter notebook notebooks/05-monitor_rl_training.ipynb
 ```
 
-The notebook reads the same `events.out.tfevents.*` files TensorBoard reads, surfaces every scalar tag, plots the training curves inline (loss / return / SPS), pairs the CRN eval scalars (RL vs baseline), and lists the saved checkpoints. Use it when you want to slice the curves programmatically, render to a PDF/PNG report, or skip TensorBoard entirely.
+The notebook reads the same `events.out.tfevents.*` files TensorBoard reads, surfaces every scalar
+tag, plots the training curves inline (loss / return / SPS), pairs the CRN eval scalars (RL vs
+baseline), and lists the saved checkpoints. Use it when you want to slice the curves
+programmatically, render to a PDF/PNG report, or skip TensorBoard entirely.
 
 ### Scalars logged every PPO update
 
@@ -136,7 +162,11 @@ The notebook reads the same `events.out.tfevents.*` files TensorBoard reads, sur
 | `eval/rl_revenue` / `eval/baseline_revenue` | Episode revenue |
 | `eval/rl_net_profit` / `eval/baseline_net_profit` | Revenue − holding − order cost − fees |
 
-`eval/paired_uplift` is the headline number. Because the CRN eval shares `(world_seed, init_seed, capacity, balance, active subset, slot permutation)` between the RL and baseline runs for every seed, world stochasticity is fully cancelled — any observed difference is attributable to the policy alone. A positive *and stable* `paired_uplift` means the policy beats `OrderUpToPolicy` on identical worlds, not just on lucky draws.
+`eval/paired_uplift` is the headline number. Because the CRN eval shares
+`(world_seed, init_seed, capacity, balance, active subset, slot permutation)` between the RL and
+baseline runs for every seed, world stochasticity is fully cancelled — any observed difference is
+attributable to the policy alone. A positive *and stable* `paired_uplift` means the policy beats
+`OrderUpToPolicy` on identical worlds, not just on lucky draws.
 
 ## Checkpoints
 
@@ -146,7 +176,10 @@ The notebook reads the same `events.out.tfevents.*` files TensorBoard reads, sur
 runs/<experiment-name>/checkpoints/actor_step{eval_index:010d}.pt
 ```
 
-The integer in the filename is the eval-call index, not the global env step — `actor_step0000000000.pt` is the actor after the first eval, `actor_step0000000001.pt` after the second, and so on. A final checkpoint is also written at `total_env_steps` after the loop returns. The critic is intentionally discarded after training because it is not needed for inference.
+The integer in the filename is the eval-call index, not the global env step —
+`actor_step0000000000.pt` is the actor after the first eval, `actor_step0000000001.pt` after the
+second, and so on. A final checkpoint is also written at `total_env_steps` after the loop returns.
+The critic is intentionally discarded after training because it is not needed for inference.
 
 Reload an actor (you must pass the same `RLConfig.K_active` you trained with):
 
@@ -165,30 +198,20 @@ actor.load_state_dict(torch.load("runs/smoke/checkpoints/actor_step0000000000.pt
 actor.eval()
 ```
 
-Running the policy in the simulator: wrap the actor in a `(obs_np) → action_np` closure and pass it to `evaluate(...)` (`src/rl/eval.py`), or step `RLEnv` manually:
+Running the policy against the simulator: wrap the actor in a `(obs_np) → action_np` closure and
+pass it to `evaluate(...)` (`src/rl/eval.py`), or step `RLEnv` manually:
 
 ```python
 import numpy as np
 import torch
 from src.rl.env import RLEnv
-from src.sim.scenario import load_catalog, StoreTemplate
 from src.rl.configs.default import RLConfig
+from src.sim.episode_sampler import make_synthetic_catalog
 
 cfg = RLConfig()
-catalog = load_catalog([
-    {"name": f"Product {i}", "category": "General", "related_products": [],
-     "base_price": float(10 + i % 30), "unit_cost": float(4 + i % 10),
-     "seasonality": "all_season"}
-    for i in range(cfg.K_catalog)
-])
-template = StoreTemplate(
-    id="eval", region="US", capacity=200, init_balance=20_000.0,
-    init_stock_pct=0.0, delivery_lag=cfg.delivery_lag,
-    holding_rate=cfg.holding_rate, order_fee=cfg.order_fee,
-    init_active_count=cfg.K_active,
-)
+catalog = make_synthetic_catalog(cfg.K_catalog)
 
-env = RLEnv(catalog=catalog, base_template=template, config=cfg)
+env = RLEnv(catalog=catalog, config=cfg)
 obs, _ = env.reset(seed=10_000_000)
 done = False
 total = 0.0
@@ -204,7 +227,8 @@ print(f"Episode return: {total:.2f}")
 
 ## Comparing a trained policy against `OrderUpToPolicy`
 
-`notebooks/06-compare_rl_vs_baseline.ipynb` reproduces the CRN eval offline and exposes per-seed detail that the TensorBoard-aggregated scalars hide. It:
+`notebooks/06-compare_rl_vs_baseline.ipynb` reproduces the CRN eval offline and exposes per-seed
+detail that the TensorBoard-aggregated scalars hide. It:
 
 1. Loads a checkpoint into an `Actor`.
 2. Builds a fixed held-out 32-seed eval set with `build_eval_seeds(...)`.
@@ -219,7 +243,10 @@ print(f"Episode return: {total:.2f}")
 
 Use the comparison notebook to spot regimes the policy fails in (outliers below the 45° line), and to confirm that aggregate uplift is not driven by one or two lucky seeds.
 
-**Business KPI side-by-side.** Per-KPI mean across the 32 CRN-paired held-out seeds — RL (blue) vs `OrderUpToPolicy` (orange). Rendered from a 1 M-step checkpoint trained on `fashion_retail_250` via `uv run python scripts/render_readme_rl_images.py`. Higher service level + lower stockout rate at comparable turnover and revenue → the policy ordered better; the price-multiplier panel surfaces *how* it's pricing relative to MSRP.
+**Business KPI side-by-side.** Per-KPI mean across the 32 CRN-paired held-out seeds — RL (blue)
+vs `OrderUpToPolicy` (orange). Higher service level + lower stockout rate at comparable turnover
+and revenue → the policy ordered better; the price-multiplier panel surfaces *how* it's pricing
+relative to MSRP.
 
 ![RL vs OrderUpToPolicy KPIs](../../docs/images/rl_vs_baseline_kpis.png)
 
@@ -233,11 +260,10 @@ Use the comparison notebook to spot regimes the policy fails in (outliers below 
 | `--n-envs` | 8 | Parallel envs in the `SyncVectorEnv` |
 | `--experiment-name` | rl_ppo | TensorBoard subdir + checkpoint prefix |
 | `--seed` | 0 | torch / numpy seed inside the loop |
-| `--world-cache-path` | None | Explicit `world.json` path (overrides auto-lookup) |
-| `--world-archetype` | rl_train | Auto-lookup key under `data/worlds/<archetype>/` |
+| `--setup-dir` | None | Load catalog and market from this setup directory |
 | `--episode-length` | 180 | Ticks per episode (half-year at daily resolution) |
 | `--k-active` | 5 | Active SKUs per episode |
-| `--k-catalog` | 100 | Synthetic catalog size when no world cache is found |
+| `--k-catalog` | 100 | Synthetic catalog size when no setup directory is provided |
 | `--lr`, `--gamma`, `--gae-lambda`, `--clip-coef`, `--ent-coef`, `--vf-coef`, `--max-grad-norm`, `--n-steps`, `--n-epochs`, `--n-minibatches`, `--target-kl` | CleanRL defaults | Standard PPO knobs (see `RLConfig`) |
 | `--eval-cadence-env-steps` | 50_000 | Run a CRN eval (and save a checkpoint) this often |
 | `--n-eval-seeds` | 32 | Number of held-out CRN seeds per eval |
@@ -245,18 +271,27 @@ Use the comparison notebook to spot regimes the policy fails in (outliers below 
 
 ## How the env relates to `Runner`
 
-`reset()` builds a degenerate three-tier graph for the episode — one `FactoryNode("F_<pid>")` per active SKU → one trainable `IntermediateNode("S")` → one `DemandSinkNode("D_<pid>")` per active SKU — and calls `build_world(scenario, policy_overrides={"S": rl_policy})`, where `rl_policy` is an `RLIntermediatePolicy` shim (`src/sim/policy.py`). `RLEnv.step()` drives the graph engine's two-phase tick API in the seam between phases:
+`reset()` builds a degenerate three-tier graph for the episode — one `FactoryNode("F_<pid>")` per
+active SKU → one trainable `IntermediateNode("S")` → one `DemandSinkNode("D_<pid>")` per active
+SKU — and calls `build_world(scenario, policy_overrides={"S": rl_policy})`, where `rl_policy` is
+an `RLIntermediatePolicy` shim (`src/sim/policy.py`). `RLEnv.step()` drives the graph engine's
+two-phase tick API in the seam between phases:
 
 1. `sim.tick_world()` — advance market / events / item lifecycle; publish all seller offers to the central table.
 2. `encode_observation(node_S, market, registry, central_table, …)` — read the trainable node's state plus the central-table snapshot.
 3. `decode_action(...)` → `RLIntermediatePolicy.set_pending_action(...)` — inject the agent's pre-decoded per-supplier order/price action.
 4. `sim.tick_decide_and_settle(...)` — run the phase cascade: `S.policy.decide()` returns the pending action, the FCFS allocator settles trades against the central table, deliveries schedule at `current_tick + lead_time`, and demand sinks consume.
 
-Demand is sampled for *every* catalog product each tick (not only the active subset), so swapping policies leaves the world stream untouched — the CRN cleanliness property.
+Demand is sampled for *every* catalog product each tick (not only the active subset), so swapping
+policies leaves the world stream untouched — the CRN cleanliness property.
 
-The reward each tick is node `S`'s `cash` delta (`cash_after − cash_before`). Total episode return equals the sum of per-tick cash deltas, which is the `net_profit` proxy reported by `evaluate(...)`. This is why `eval/paired_uplift` is computed on `net_profit`.
+The reward each tick is node `S`'s `cash` delta (`cash_after − cash_before`). Total episode return
+equals the sum of per-tick cash deltas, which is the `net_profit` proxy reported by
+`evaluate(...)`. This is why `eval/paired_uplift` is computed on `net_profit`.
 
-`Runner` itself is not modified by anything in `src/rl/`; the same graph simulator powers both batch scenario runs and RL episodes. The baseline arm of the CRN eval runs `OrderUpToPolicy` through the identical path via `build_world(scenario, policy_overrides={"S": baseline_policy})`.
+`Runner` itself is not modified by anything in `src/rl/`; the same graph simulator powers both
+batch scenario runs and RL episodes. The baseline arm of the CRN eval runs `OrderUpToPolicy`
+through the identical path via `build_world(scenario, policy_overrides={"S": baseline_policy})`.
 
 ## Further reading
 

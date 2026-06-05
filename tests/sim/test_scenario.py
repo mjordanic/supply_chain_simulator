@@ -242,28 +242,90 @@ def test_graph_kway_three_nodes_sharing_init_seed_are_bit_identical_at_step0() -
 # ---------------------------------------------------------------- load_scenario_from_path
 
 
-_HOMOGENEOUS = (
-    Path(__file__).parent.parent.parent / "scenarios" / "example_homogeneous.py"
+# Minimal scenario module written inline for load_scenario_from_path tests.
+_MINIMAL_SCENARIO_SRC = """\
+from datetime import datetime
+from src.sim.distributions import Constant, Normal
+from src.sim.graph import EdgeSpec
+from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+from src.sim.policy import DefaultDemandSinkPolicy, OrderUpToPolicy, StaticFactoryPolicy
+from src.sim.scenario import (
+    DisruptionParams, ItemLifecycleParams, MarketParams, NodeInstance, Scenario, load_catalog,
 )
 
+_catalog = load_catalog([
+    {"name": "Widget", "category": "g", "related_products": [], "base_price": 10.0,
+     "unit_cost": 4.0, "seasonality": "all_season"}
+])
+_pid = _catalog[0].product_id
+_f = FactoryNode(id="f-1", region="US", init_seed=1, produces_product_id=_pid,
+                 unit_cost=4.0, capacity_per_tick=50, inventory=100, list_price=4.0, cash=0.0)
+_f.policy = StaticFactoryPolicy(capacity_per_tick=50, unit_cost=4.0, policy_seed=1)
+_s = IntermediateNode(id="s-1", region="US", init_seed=2, carried_products={_pid},
+                      capacity=500, tags=["shop"], inventory={_pid: 20}, pending={},
+                      list_prices={_pid: 10.0}, min_order_imposed={_pid: 0}, cash=500.0)
+_s.policy = OrderUpToPolicy(cover_horizon_ticks=14, policy_seed=2)
+_d = DemandSinkNode(id="d-1", region="US", init_seed=3, product_id=_pid,
+                    demand_dist=Normal(mean=10, std=2), income_rate=200.0, cash=1000.0)
+_d.policy = DefaultDemandSinkPolicy(policy_seed=3)
 
-def test_load_scenario_from_path_returns_scenario_with_catalog_and_nodes() -> None:
-    """Phase-4: example_homogeneous uses graph-mode nodes, not stores."""
-    sc = load_scenario_from_path(_HOMOGENEOUS)
+_STAGES = ["introduction", "growth", "maturity", "decline", "dead"]
+scenario = Scenario(
+    catalog=_catalog,
+    market=MarketParams(
+        cycle_len=365, cycle_amp=0.0, init_demand=1.0, init_supply=1.0,
+        peak_factor=1.0, off_factor=1.0, season_months={}, regions=["US"],
+        correlation=0.0, trend_update_interval=100, min_value=0.5, max_value=2.0,
+        stage_multipliers={s: 1.0 for s in _STAGES},
+        price_elasticity=0.0, promo_multiplier=1.0,
+        demand_factor_min=0.1, supply_factor_min=0.01,
+        cross_inv_lo=0.3, cross_inv_hi=0.7, cross_factor_range=(0.5, 1.5),
+        trend=Constant(1.0), demand_shock=Constant(0.0), supply_shock=Constant(0.0),
+        base_demand=Constant(10),
+    ),
+    disruption=DisruptionParams(
+        event_prob=0.0, types=["natural_disaster"], regions=["US"],
+        severity=Constant(0.0), duration=Constant(1),
+    ),
+    item_lifecycle=ItemLifecycleParams(
+        stages=_STAGES, init_stage="maturity",
+        default_stage_change_probs={s: 0.0 for s in _STAGES},
+    ),
+    nodes=[NodeInstance(node=_f, init_seed=1, policy=_f.policy),
+           NodeInstance(node=_s, init_seed=2, policy=_s.policy),
+           NodeInstance(node=_d, init_seed=3, policy=_d.policy)],
+    edges=[
+        EdgeSpec(supplier_id="f-1", buyer_id="s-1", default_lead_time=2),
+        EdgeSpec(supplier_id="s-1", buyer_id="d-1", default_lead_time=1),
+    ],
+    n_steps=5, start_date=datetime(2024, 1, 1), world_seed=42,
+)
+"""
+
+
+def test_load_scenario_from_path_returns_scenario_with_catalog_and_nodes(
+    tmp_path: Path,
+) -> None:
+    """load_scenario_from_path loads a graph-mode Scenario from a Python file."""
+    sc_file = tmp_path / "minimal_scenario.py"
+    sc_file.write_text(_MINIMAL_SCENARIO_SRC)
+    sc = load_scenario_from_path(sc_file)
     assert isinstance(sc, Scenario)
     assert len(sc.catalog) > 0
-    # Graph-mode scenario: nodes are populated.
     assert len(sc.nodes) > 0
 
 
-def test_load_scenario_from_path_preserves_live_policies() -> None:
-    sc = load_scenario_from_path(_HOMOGENEOUS)
-    # Graph-mode: check node policies instead of store policies.
+def test_load_scenario_from_path_preserves_live_policies(tmp_path: Path) -> None:
+    sc_file = tmp_path / "minimal_scenario.py"
+    sc_file.write_text(_MINIMAL_SCENARIO_SRC)
+    sc = load_scenario_from_path(sc_file)
     assert any(ni.policy is not None for ni in sc.nodes)
 
 
-def test_load_scenario_from_path_accepts_string_path() -> None:
-    sc = load_scenario_from_path(str(_HOMOGENEOUS))
+def test_load_scenario_from_path_accepts_string_path(tmp_path: Path) -> None:
+    sc_file = tmp_path / "minimal_scenario.py"
+    sc_file.write_text(_MINIMAL_SCENARIO_SRC)
+    sc = load_scenario_from_path(str(sc_file))
     assert isinstance(sc, Scenario)
 
 

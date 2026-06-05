@@ -1,0 +1,174 @@
+# Two-factories / two-shops contention scenario.
+# Topology: f-lo (cheap, slow) ─┬─► shop-1 ──► sink-1
+#           f-hi (fast, pricey) ─┘
+#                               └─► shop-2 ──► sink-2
+# Both shops compete for inventory from both factories.
+# f-lo is cheaper (unit_cost=5) but limited capacity (30/tick).
+# f-hi is more expensive (unit_cost=8) with higher capacity (60/tick).
+# No API key required. Run with:
+#   uv run python main.py run setups/two_factories_two_shops
+
+run:
+  n_steps: 120
+  start_date: "2024-01-01"
+  world_seed: 42
+
+market:
+  cycle_len: 365
+  cycle_amp: 0.0
+  init_demand: 1.0
+  init_supply: 1.0
+  peak_factor: 1.0
+  off_factor: 1.0
+  season_months: {}
+  regions: [US]
+  correlation: 0.0
+  trend_update_interval: 100
+  min_value: 0.5
+  max_value: 2.0
+  stage_multipliers:
+    introduction: 1.0
+    growth: 1.0
+    maturity: 1.0
+    decline: 1.0
+    dead: 0.0
+  price_elasticity: 0.0
+  promo_multiplier: 1.0
+  demand_factor_min: 0.1
+  supply_factor_min: 0.01
+  cross_inv_lo: 0.3
+  cross_inv_hi: 0.7
+  cross_factor_range: [0.5, 1.5]
+  trend: {kind: constant, value: 1.0}
+  demand_shock: {kind: constant, value: 0.0}
+  supply_shock: {kind: constant, value: 0.0}
+  base_demand: {kind: constant, value: 15.0}
+
+disruption:
+  event_prob: 0.0
+  types: [natural_disaster]
+  regions: [US]
+  severity: {kind: constant, value: 0.0}
+  duration: {kind: constant, value: 1}
+
+nodes:
+  # Cheap factory: lower unit cost, limited capacity (creates contention).
+  - id: f-lo
+    type: factory
+    region: US
+    produces_product_id: P0000
+    unit_cost: 5.0
+    capacity_per_tick: 30
+    inventory: 100
+    list_price: 5.0
+    cash: 0.0
+    policy:
+      name: static_factory
+      params:
+        target_inventory: 300
+
+  # Premium factory: higher unit cost, larger capacity (absorbs overflow).
+  - id: f-hi
+    type: factory
+    region: US
+    produces_product_id: P0000
+    unit_cost: 8.0
+    capacity_per_tick: 60
+    inventory: 100
+    list_price: 8.0
+    cash: 0.0
+    policy:
+      name: static_factory
+      params:
+        target_inventory: 400
+
+  # Shop-1: orders from both factories via OrderUpToPolicy (cheapest-first).
+  - id: shop-1
+    type: intermediate
+    region: US
+    carried_products: [P0000]
+    capacity: 300
+    tags: [shop]
+    inventory:
+      P0000: 30
+    list_prices:
+      P0000: 12.0
+    min_order_imposed:
+      P0000: 0
+    cash: 1000.0
+    policy:
+      name: order_up_to
+      params:
+        cover_horizon_ticks: 14
+        safety_lead_pct_of_lag: 0.333
+        delivery_lag: 3
+        unit_cost: 5.0
+        list_price_out: 12.0
+
+  # Shop-2: identical parameters to shop-1 — contention is symmetric.
+  - id: shop-2
+    type: intermediate
+    region: US
+    carried_products: [P0000]
+    capacity: 300
+    tags: [shop]
+    inventory:
+      P0000: 30
+    list_prices:
+      P0000: 12.0
+    min_order_imposed:
+      P0000: 0
+    cash: 1000.0
+    policy:
+      name: order_up_to
+      params:
+        cover_horizon_ticks: 14
+        safety_lead_pct_of_lag: 0.333
+        delivery_lag: 3
+        unit_cost: 5.0
+        list_price_out: 12.0
+
+  # Sink-1: attached to shop-1.
+  - id: sink-1
+    type: demand_sink
+    region: US
+    product_id: P0000
+    demand_dist: {kind: normal, mean: 15.0, std: 3.0}
+    income_rate: 300.0
+    cash: 1000.0
+    policy:
+      name: default_demand_sink
+      params: {}
+
+  # Sink-2: attached to shop-2.
+  - id: sink-2
+    type: demand_sink
+    region: US
+    product_id: P0000
+    demand_dist: {kind: normal, mean: 15.0, std: 3.0}
+    income_rate: 300.0
+    cash: 1000.0
+    policy:
+      name: default_demand_sink
+      params: {}
+
+edges:
+  # Both shops source from both factories (contention topology).
+  - supplier: f-lo
+    buyer: shop-1
+    lead_time: 4
+  - supplier: f-hi
+    buyer: shop-1
+    lead_time: 2
+  - supplier: f-lo
+    buyer: shop-2
+    lead_time: 4
+  - supplier: f-hi
+    buyer: shop-2
+    lead_time: 2
+  - supplier: shop-1
+    buyer: sink-1
+    lead_time: 1
+  - supplier: shop-2
+    buyer: sink-2
+    lead_time: 1

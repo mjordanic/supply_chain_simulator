@@ -1,8 +1,19 @@
 # Supply Chain Simulator
 
-A small, hackable **multi-echelon** supply-chain simulator. A scenario is a validated directed acyclic graph of typed nodes — factories produce, intermediate nodes (warehouses / shops) hold inventory and route orders across multiple upstream suppliers, and demand sinks generate the only new cash in the system — all sharing one world: regional supply and demand, seasonal cycles, product life-cycles, cross-product correlations, and stochastic disruption events (natural disasters, economic crises, pandemics). A live central offer book lets buyers route against real-time supplier availability; orders settle through a first-come-first-served allocator and arrive after a physical lead time. Each node runs its own decision policy.
+A small, hackable **multi-echelon** supply-chain simulator. A scenario is a validated directed
+acyclic graph of typed nodes — factories produce, intermediate nodes (warehouses / shops) hold
+inventory and route orders across multiple upstream suppliers, and demand sinks generate the only
+new cash in the system — all sharing one stochastic world (regional supply/demand, seasonal cycles,
+and disruption events). A live central offer book lets buyers route against real-time supplier
+availability; orders settle through a first-come-first-served allocator and arrive after a physical
+lead time. Each node runs its own decision policy.
 
-The simulator ships with a family of textbook inventory policies — `OrderUpToPolicy` (s,S), `ReorderPointPolicy` (s,Q), and two periodic variants, all lifted to multi-supplier routing — that double as ready-made baselines for evaluating custom policies. Three add-ons build on top of the simulator: an **LLM world generator** that drafts realistic catalogs and markets from a domain prompt, a **hyperparameter tuner** built on Optuna, and a **PPO reinforcement-learning stack** that trains a continuous-control policy against the textbook baseline using Common Random Numbers.
+The simulator ships with a family of textbook inventory policies — `OrderUpToPolicy` (s,S),
+`ReorderPointPolicy` (s,Q), and two periodic variants, all lifted to multi-supplier routing — that
+serve as ready-made baselines. Three add-ons build on top: an **LLM world generator** that drafts
+a realistic catalog and market from a domain prompt, a **hyperparameter tuner** built on Optuna,
+and a **PPO reinforcement-learning stack** that trains a continuous-control policy against the
+textbook baseline using Common Random Numbers.
 
 It is a demo project — the goal is to be readable and easy to extend, not production-grade.
 
@@ -11,26 +22,96 @@ It is a demo project — the goal is to be readable and easy to extend, not prod
 ## Quickstart
 
 ```bash
-uv sync                                                # install
-uv run python main.py scenarios/example_homogeneous.py # run a scenario
-uv run pytest                                          # tests
+uv sync                                               # install
+uv run python main.py run setups/three_node_chain     # run the minimal example
+uv run pytest                                         # tests
 ```
 
-Outputs land under `data/example_homogeneous/` (parquet + JSON + PNG). All the graph-engine examples (`example_chain_three_node`, `example_two_factories_two_shops`, `example_homogeneous`, `example_paired_comparison`, `example_llm_world_offline`) use synthetic or canned catalogs and need no API key.
+Outputs land under `data/three_node_chain/` (parquet + JSON + PNG). Neither example setup
+requires an API key.
+
+## Two-stage workflow
+
+Scenarios live in **setup directories** — plain folders containing two files:
+
+| File | Contents |
+|---|---|
+| `catalog.csv` | One row per SKU: `product_id`, `name`, `category`, `base_price`, `unit_cost`, `seasonality` |
+| `setup.yaml` | `run:`, `market:`, `disruption:`, `nodes:`, `edges:` blocks |
+
+**Stage 1 — prepare a setup directory** (pick one):
+
+```bash
+# Option A: author it by hand (copy setups/three_node_chain as a starting point)
+
+# Option B: scaffold the nodes/edges block from an existing catalog CSV
+uv run python main.py scaffold my_catalog.csv --out setups/my_run/setup.yaml
+
+# Option C: let the LLM draft the catalog and market (needs OPENAI_API_KEY)
+python - <<'EOF'
+from src.llm.world_builder import WorldBuilder
+from src.llm.openai_client import OpenAIClient
+catalog, market = WorldBuilder("fashion_retail", OpenAIClient()).build_setup(
+    n_items=50, setup_dir="setups/fashion_retail"
+)
+EOF
+# Then fill in nodes/edges (run scaffold on the generated catalog.csv, then edit)
+```
+
+**Stage 2 — run:**
+
+```bash
+uv run python main.py run setups/my_run
+uv run python main.py run setups/my_run --output /tmp/my_run_out
+```
+
+## Determinism and A/B comparisons
+
+Every run is fully reproducible from `world_seed` in `setup.yaml`. To compare two policies
+on bit-identical worlds, copy the setup directory and change only the `policy:` block on the
+node(s) of interest — `world_seed`, `market:`, `disruption:`, and `nodes:` initial state stay
+identical, so any outcome difference is attributable to the policy alone.
+
+## Bundled setup directories
+
+```
+setups/
+  three_node_chain/        minimal factory → shop → sink, 1 product, 30 ticks
+  two_factories_two_shops/ 2 factories + 2 shops + 2 sinks; both shops compete for
+                           inventory from a cheap-but-slow and a premium-but-fast factory
+```
+
+Run either:
+
+```bash
+uv run python main.py run setups/three_node_chain
+uv run python main.py run setups/two_factories_two_shops
+```
 
 ## What's inside
 
 ### Simulator and policies (`src/sim/`)
 
-The simulator core. A scenario bundles a product catalog, a market, stochastic disruption events, and a graph of typed nodes (`FactoryNode` → `IntermediateNode` → `DemandSinkNode`) wired by `EdgeSpec` supply edges, each node running its own decision policy. Every tick runs as an upward cascade by echelon level: sellers publish offers to a live central table, buyers observe and decide, the FCFS allocator settles trades, and deliveries arrive after their lead time. Custom policies subclass the `NodePolicy` ABC matching their node type and override `decide`. Four textbook inventory rules ship with the repo — `OrderUpToPolicy` (s,S), `ReorderPointPolicy` (s,Q), and two periodic variants, all with multi-supplier routing — ready to drop in as baselines.
+The simulator core. A scenario bundles a product catalog, a market, stochastic disruption events,
+and a graph of typed nodes (`FactoryNode` → `IntermediateNode` → `DemandSinkNode`) wired by
+`EdgeSpec` supply edges, each node running its own decision policy. Every tick runs as an upward
+cascade by echelon level: sellers publish offers to a live central table, buyers observe and
+decide, the FCFS allocator settles trades, and deliveries arrive after their lead time. Custom
+policies subclass the `NodePolicy` ABC matching their node type and override `decide`. Four
+textbook inventory rules ship with the repo — `OrderUpToPolicy` (s,S), `ReorderPointPolicy` (s,Q),
+and two periodic variants, all with multi-supplier routing — ready to drop in as baselines.
 
 ![Equity composition and cumulative P&L](docs/images/sim_equity_composition.png)
 
-Full reference: [`src/sim/README.md`](src/sim/README.md) · walkthrough: `notebooks/04-deep-dive-per-product.ipynb`
+Full reference: [`src/sim/README.md`](src/sim/README.md)
 
 ### LLM world generator (`src/llm/`)
 
-A pipeline that drafts a coherent world — taxonomy, catalog with prices and seasonality, cross-product correlations, freshness curves, and store templates — from a single domain prompt like `"fashion_retail"` or `"sports_cars"`. Each stage is a schema-validated LLM call; everything else is plain Python. Generated worlds are cached to disk so repeat runs hit no API.
+A pipeline that drafts a coherent catalog and market from a single domain prompt like
+`"fashion_retail"` or `"sports_cars"`. Each stage is a schema-validated LLM call; the output is
+persisted as `catalog.csv` + the `market:` block of `setup.yaml` (the setup directory acts as a
+local cache — repeat calls with the same directory skip the LLM). Topology, policies, and run
+parameters are the modeller's domain.
 
 **`sports_cars_100`** — 102 items across 7 categories.
 
@@ -52,35 +133,43 @@ A pipeline that drafts a coherent world — taxonomy, catalog with prices and se
 | P0192 | Women's Leather Tote Bag | Accessories | 118.00 | 46.00 | all_season |
 | P0241 | Kids' Graphic Tee Pack | Kids' Apparel | 24.00 | 7.50 | spring/summer |
 
-Full reference: [`src/llm/README.md`](src/llm/README.md) · walkthroughs: `notebooks/00-build-or-load-world.ipynb`, `notebooks/01-inspect-world.ipynb`
+Full reference: [`src/llm/README.md`](src/llm/README.md)
 
 ### Hyperparameter tuning (`src/tuning/`)
 
-An Optuna-based hyperparameter search for any policy. Each trial runs the policy across a fixed set of seeded worlds spanning two orders of magnitude in store size, optimising mean profit per opening dollar. The top winners are re-checked on a separate held-out seed set with bootstrap confidence intervals. All four textbook policies have ready-made search spaces; custom policies need a ~10-line callback.
+An Optuna-based hyperparameter search for any policy. Each trial runs the policy across a fixed
+set of seeded episodes spanning two orders of magnitude in node capacity, optimising mean profit
+per opening dollar. The top winners are re-checked on a separate held-out seed set with bootstrap
+confidence intervals. All four textbook policies have ready-made search spaces; custom policies
+need a ~10-line callback.
 
 ![Pareto front: profit vs service level](docs/images/tuning_pareto_front.png)
 
-Full reference: [`src/tuning/README.md`](src/tuning/README.md) · walkthrough: `notebooks/07-tune-textbook-policy.ipynb`
+Full reference: [`src/tuning/README.md`](src/tuning/README.md)
 
 ### Reinforcement learning (`src/rl/`)
 
-A PPO training loop on top of a Gymnasium wrapper around the simulator. The agent learns continuous pricing and ordering decisions on a randomised slice of SKUs, and per-episode store size is sampled across two orders of magnitude so one trained policy covers corner-shop to flagship. Evaluation pairs it head-to-head against the textbook baseline on bit-identical worlds — any uplift is the policy, not seed luck.
+A PPO training loop on top of a Gymnasium wrapper around the simulator. The agent learns
+continuous pricing and ordering decisions on a randomised slice of SKUs, and per-episode node
+capacity is sampled across two orders of magnitude so one trained policy covers a wide size range.
+Evaluation pairs it head-to-head against the textbook baseline on bit-identical worlds — any
+uplift is the policy, not seed luck.
 
 ![RL vs OrderUpToPolicy KPIs](docs/images/rl_vs_baseline_kpis.png)
 
-Full reference: [`src/rl/README.md`](src/rl/README.md) · walkthroughs: `notebooks/08-monitor-rl-training.ipynb`, `notebooks/09-rl-vs-baseline.ipynb`
+Full reference: [`src/rl/README.md`](src/rl/README.md)
 
 ## Repo layout
 
 ```
 src/
   sim/         core simulator + textbook policies
-  llm/         LLM world generator
+  llm/         LLM catalog and market generator
   tuning/      Optuna-based hyperparameter search
   rl/          PPO training stack
-scenarios/     runnable example scenarios
+setups/        runnable example setup directories
 notebooks/     exploration + analysis notebooks
-data/          scenario outputs + cached LLM worlds
+data/          scenario outputs
 runs/          tuning + RL training artifacts
 docs/images/   figures used in READMEs
 tests/         pytest suite
