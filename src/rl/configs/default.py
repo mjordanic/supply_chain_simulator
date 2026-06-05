@@ -208,3 +208,9 @@ class RLConfig:
 
     world_cache_path: Optional[str] = None
     """Optional explicit path to a cached ``world.json``; overrides auto-lookup."""
+
+    setup_dir: Optional[str] = None
+    """Optional path to a setup directory (catalog.csv + setup.yaml).
+    When set, the RL stack loads catalog + market from this directory
+    instead of using world_loader / world.json.
+    Takes priority over world_cache_path and world_archetype when set."""

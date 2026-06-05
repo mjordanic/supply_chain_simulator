@@ -1,6 +1,6 @@
 # 05 — RL trains against a setup directory
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

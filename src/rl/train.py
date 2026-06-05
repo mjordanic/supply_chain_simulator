@@ -49,6 +49,7 @@ from src.rl.agents.ppo import Actor, train_ppo
 from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
 from src.rl.eval import build_eval_seeds, evaluate
+from src.rl.episode_sampler import load_catalog_and_market_from_setup, make_synthetic_catalog
 from src.sim.scenario import DisruptionParams, MarketParams, StoreTemplate
 from src.sim.policy import OrderUpToPolicy
 from src.sim.world_loader import load_world as _sim_load_world
@@ -64,10 +65,27 @@ def _load_world_catalog_and_template(
 ) -> tuple[list[Any], StoreTemplate, MarketParams | None, DisruptionParams | None]:
     """Return ``(catalog, base_template, market_params, disruption_params)``.
 
-    Delegates to ``src.sim.world_loader.load_world``; see that module for
-    the full three-tier resolution order (explicit cache_path → archetype
-    auto-lookup → synthetic fallback).
+    Resolution order:
+    1. If ``config.setup_dir`` is set and exists: load catalog + market from
+       the setup directory (no world_loader, no StoreTemplate needed).
+    2. Otherwise: delegate to ``src.sim.world_loader.load_world`` for the
+       legacy three-tier resolution (explicit cache_path → archetype
+       auto-lookup → synthetic fallback).
+
+    The returned ``base_template`` is a minimal StoreTemplate consistent
+    with ``config`` — it is only used to pass delivery_lag/holding_rate/
+    order_fee into sample_episode until those are fully injected from config.
     """
+    if config.setup_dir is not None:
+        catalog, market = load_catalog_and_market_from_setup(config.setup_dir)
+        print(
+            f"[train] Loaded catalog ({len(catalog)} products) + market "
+            f"from setup directory: {config.setup_dir}",
+            file=sys.stderr,
+        )
+        base_template = _default_template(config)
+        return catalog, base_template, market, None
+
     return _sim_load_world(
         archetype=config.world_archetype,
         cache_path=config.world_cache_path,

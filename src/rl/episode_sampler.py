@@ -380,4 +380,85 @@ def sample_episode(
     )
 
 
-__all__ = ["RLEpisodeSpec", "EpisodeSpec", "sample_episode"]
+def load_catalog_and_market_from_setup(
+    setup_dir: "str | Path",
+) -> "tuple[list[Ware], MarketParams]":
+    """Load catalog + market params from a setup directory.
+
+    Thin wrapper around ``setup_io._parse_catalog`` and
+    ``setup_io._parse_market`` so the RL stack can consume a setup directory
+    without pulling in the full ``load_setup`` pipeline (which also requires
+    nodes/edges/run/disruption to be present).
+
+    Parameters
+    ----------
+    setup_dir:
+        Path to a directory containing ``catalog.csv`` and ``setup.yaml``
+        with at least a ``market:`` block.
+
+    Returns
+    -------
+    (catalog, market_params)
+    """
+    from pathlib import Path as _Path
+
+    import yaml as _yaml
+
+    from src.sim.setup_io import _parse_catalog, _parse_market
+
+    setup_dir = _Path(setup_dir)
+    catalog_path = setup_dir / "catalog.csv"
+    yaml_path = setup_dir / "setup.yaml"
+
+    if not catalog_path.is_file():
+        raise FileNotFoundError(
+            f"load_catalog_and_market_from_setup: catalog.csv not found in {setup_dir}"
+        )
+    if not yaml_path.is_file():
+        raise FileNotFoundError(
+            f"load_catalog_and_market_from_setup: setup.yaml not found in {setup_dir}"
+        )
+
+    catalog = _parse_catalog(catalog_path)
+
+    with yaml_path.open(encoding="utf-8") as f:
+        doc = _yaml.safe_load(f) or {}
+
+    if "market" not in doc:
+        raise ValueError(
+            f"load_catalog_and_market_from_setup: setup.yaml in {setup_dir} "
+            "has no 'market:' block"
+        )
+
+    market = _parse_market(doc["market"], "setup.yaml.market")
+    return catalog, market
+
+
+def make_synthetic_catalog(n: int = 100) -> "list[Ware]":
+    """Build a synthetic n-product catalog for CI / smoke runs (no LLM).
+
+    This is the small synthetic-setup helper the RL stack uses when no
+    setup dir is supplied.  Products have stable P{i:04d} ids, consistent
+    pricing, and ``all_season`` seasonality.
+    """
+    items = [
+        {
+            "name": f"Product {i}",
+            "category": "General",
+            "related_products": [],
+            "base_price": float(10 + (i % 30)),
+            "unit_cost": float(4 + (i % 10)),
+            "seasonality": "all_season",
+        }
+        for i in range(n)
+    ]
+    return load_catalog(items)
+
+
+__all__ = [
+    "RLEpisodeSpec",
+    "EpisodeSpec",
+    "sample_episode",
+    "load_catalog_and_market_from_setup",
+    "make_synthetic_catalog",
+]
