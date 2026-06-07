@@ -78,3 +78,54 @@ restore `_resolve_stage_change_probs` override logic in `item_registry`.
   technological breakthrough) stay — they're the headline supply-chain feature.
 - **CRN per-catalog-product demand draw** (ADR 0003) stays — load-bearing for RL/tuning
   paired evaluation. It just no longer lives inside `ItemRegistry`.
+
+---
+
+## 5. Tick phasing redesign — allow lateral links  — PLANNED
+
+Replace the upward echelon cascade (ADR 0014) with a scheduling model that supports
+**lateral supplier links** (same-echelon shop→shop, warehouse→warehouse, etc.) and
+relaxed graph validation: drop the BFS same-level check in `validate_dag` and permit any
+directed edge in the DAG **except factory→demand-sink**, which bypasses intermediates and
+breaks the multi-echelon economics the simulator is built around. The current cascade assigns
+one phase per longest-path echelon level and shuffles same-level buyers in parallel — that
+breaks when a buyer depends on a same-phase supplier (order depends on shuffle) or when
+shortcuts make BFS and longest-path disagree on what counts as a peer link. A new ADR should
+pick the replacement mechanism (e.g. simultaneous clearing within a tick, topological phases
+over the full edge set, or multi-pass settle) and define what each buyer observes before
+deciding; until then, `build_graph` and `Simulation.tick` remain on the tiered-cascade
+contract.
+
+---
+
+## 6. Replace the per-catalog CRN draw loop with per-stream RNG  — PLANNED
+
+`DemandSinkNode.demand_target` loops over the **whole catalog** every tick, drawing one
+`world_rng` sample per product but returning only the draw for `self.product_id` (the sink's
+single bound product). The loop exists to keep CRN alignment on a single shared `world_rng`
+stream: a single stream is position-sensitive, so the number of draws each sink makes must be
+constant — a pure function of `(catalog size, tick)` — regardless of binding or active set, or
+two paired runs (same scenario, different policy) desync and the comparison is contaminated
+(ADR 0003). This was load-bearing in the old `Store` model where a store's *policy* could
+activate/deactivate SKUs, making draw count vary by policy. In the multi-echelon model a sink
+is bound to one fixed `product_id` set in the scenario (never policy-dependent), so that
+original justification has largely evaporated — the loop now survives mostly as inherited
+ceremony plus shared-stream coupling, and it depends on a fragile quirk (`Constant` skips its
+draw, silently breaking alignment — see the docstring caveat).
+
+**Better alternative.** Independent per-stream RNG seeded from `(world_seed, key)` (key =
+`product_id` or `sink.id`), as ADR 0003 itself names. Each sink draws **one** sample from its
+own stream: no loop, draw count/binding of one sink can't affect any other, and CRN holds by
+construction (a stream's position depends only on its own key + tick, never on global ordering,
+active sets, or the `Constant` quirk). Robust to adding/removing/reordering sinks and to future
+multi-product changes.
+
+**Tradeoffs.** Behavior-changing (RNG seeding moves ⇒ recorded runs and golden tests shift,
+needs a re-baseline); loses the "latent demand for all products" side-data the loop emits
+(ADR 0003 notes it is currently unused). Worth doing when next touching the CRN layer; not
+worth standalone churn while current paired-eval tests are green. A new ADR should supersede
+ADR 0003 and define the seeding scheme.
+
+
+
+In evaluate functions there is no service level. Why is that? Please make sure that we can evaluate service level and other common metrics as specified in README.

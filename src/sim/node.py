@@ -203,20 +203,42 @@ class DemandSinkNode(Node):
     ) -> int:
         """Compute the demand target for this tick.
 
-        Samples ``world_rng`` once per catalog product in catalog iteration
-        order — load-bearing for the CRN contract (ADR 0003): the RNG stream
-        position after this call depends only on catalog size and tick count,
-        never on which product this sink is bound to or which products are
-        currently active.
+        **Each sink is bound to exactly one product** (``self.product_id``), the
+        same way a factory produces exactly one product. This method returns the
+        demand only for that single bound product — a sink never demands more
+        than one SKU.
+
+        Why, then, the loop over the *whole* catalog? It is purely a
+        Common-Random-Numbers (CRN) device, not a sign of multi-product demand.
+        The simulator shares a single ``world_rng`` stream across all sinks, and
+        a single stream is position-sensitive: how many draws one sink takes
+        shifts the stream position for every sink after it. CRN paired
+        evaluation (RL / tuning) relies on two runs of the *same scenario under
+        different policies* seeing *identical* random shocks, so the only
+        measured difference is the policy. For that to hold, the number of draws
+        each sink consumes must be constant — a pure function of
+        ``(catalog size, tick)`` — and must **not** depend on which product the
+        sink is bound to or which products happen to be active. So we draw one
+        sample per catalog product in catalog declaration order (ADR 0003),
+        keep only the draw for ``self.product_id``, and discard the rest; the
+        discarded draws exist solely to advance ``world_rng`` by a fixed amount
+        and keep paired sinks aligned.
 
         Multiplier composition for each catalog pid::
 
             demand_target = demand_dist.sample(world_rng)
-                            * market.demand_multiplier(pid, region, tick)
+                            * market.demand_multiplier(pid, region)
 
         Only the value for ``self.product_id`` is returned as the integer
         demand target; the draws for all other pids advance ``world_rng`` to
         preserve CRN alignment across paired sinks.
+
+        Note: this whole-catalog loop is inherited from the old ``Store`` model,
+        where a store's *policy* could activate/deactivate SKUs and so vary its
+        own draw count. A sink's product binding is fixed by the scenario and is
+        never policy-dependent, so a cleaner, more robust design is a dedicated
+        per-stream RNG seeded from ``(world_seed, product_id)`` — one draw, no
+        loop, CRN by construction. See TODO.md §6 for the planned migration.
 
         Parameters
         ----------
@@ -242,7 +264,7 @@ class DemandSinkNode(Node):
         for ware in catalog:
             pid = ware.product_id
             # Market multiplier — deterministic, no RNG draw (ADR 0015).
-            market_mult = market.demand_multiplier(pid, self.region, tick)
+            market_mult = market.demand_multiplier(pid, self.region)
 
             # One demand sample per catalog pid — load-bearing CRN draw.
             # ``Uniform`` / ``Normal`` each consume exactly one world_rng.random()
@@ -254,6 +276,8 @@ class DemandSinkNode(Node):
                 base = 0.0
 
             raw = base * market_mult
+            
+            # Select only the demand for the product that the sink is bound to.
             if pid == self.product_id:
                 result_for_product = max(0, int(raw))
 

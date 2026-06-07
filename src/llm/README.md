@@ -55,8 +55,7 @@ existing files without any LLM calls.
       refs are dropped at the boundary rather than triggering schema retries.
    4. (LLM) **chunked** `freshness_prompt` calls author per-item `freshness_alpha` /
       `freshness_decay`; chunk size `freshness_chunk_size` (default `50`). Items the LLM omits
-      or misnames keep `Ware` default `None` so `ItemRegistry` falls back to `ItemLifecycleParams`
-      defaults.
+      or misnames keep `Ware`'s default `None` for those fields.
 
    Output is a `list[Ware]` with stable `P{i:04d}` ids assigned by `load_catalog`.
 

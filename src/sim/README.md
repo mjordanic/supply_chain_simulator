@@ -2,7 +2,7 @@
 
 The discrete-event, **multi-echelon** supply-chain simulator: a validated DAG of typed nodes
 (factories → intermediates → demand sinks), a live central offer book, FCFS allocation, market
-dynamics, item life-cycle, and the data exporter that persists run results. Every other sub-package
+dynamics, and the data exporter that persists run results. Every other sub-package
 (`src/llm/`, `src/tuning/`, `src/rl/`) builds on top of the primitives defined here.
 
 ## Contents
@@ -29,9 +29,6 @@ src/sim/
   runner.py              Runner + Simulation / build_world / TickResult (two-phase tick API)
   market.py              regional demand/supply; demand_multiplier(pid, region, tick)
   event_engine.py        stochastic disruptions + scheduled delivery callbacks
-  item_registry.py       catalog + per-item global lifecycle stage + freshness params
-  lifecycle_clock.py     pure advance_stage() over [introduction, growth, maturity, decline, dead]
-  freshness_curve.py     pure m(τ) = 1 + α · exp(−τ / β) multiplier
   observation.py         per-node observation builders handed to policies each tick
   distributions.py       Constant / Uniform / Normal / Choice / LogUniform
   metrics.py             RunSlice + aggregate_episode + KPI helpers (shared with tuning + RL)
@@ -41,6 +38,7 @@ src/sim/
   topology_scaffolder.py scaffold_topology (nodes/edges block generator)
   policy_registry.py     string-name → Policy factory (used by setup_io)
   data_exporter.py       parquet + JSON + PNG writer
+  inspect.py             run-log → tidy DataFrames (node / global / per-product, equity)
 ```
 
 ## Concepts
@@ -54,8 +52,8 @@ src/sim/
 - **Graph** + **EdgeSpec** — `build_graph(node_ids, edges)` validates a DAG (raises on cycles, unreachable nodes, or same-level supplier links) and computes echelon `levels` via longest-path-from-any-factory. `EdgeSpec(supplier_id, buyer_id, default_lead_time, per_product_lead_time=None)` is a directed supply edge with an optional per-product lead-time override. Topology queries: `suppliers_of`, `buyers_of`, `lead_time`.
 - **CentralTable** + **Offer** — a live, globally-visible offer book. At the start of each tick every seller `publish`es an `Offer(available_qty, list_price, min_order, fill_rate_recent)`; as allocations land the allocator `commit`s, decrementing `available_qty` live and updating a qty-weighted EMA on `fill_rate_recent` (10-tick window). `snapshot_for_buyer(pid)` reflects prior buyers' allocations *within the same phase*, so routing accounts for live supply depletion. See ADR 0012.
 - **Allocation** — `execute_buy(buyer, supplier, pid, qty_requested, table, cash_ledger) -> AllocationResult` is the single FCFS primitive: two-layer min-order rejection (supplier-imposed + buyer-side policy floor), clamp by live `available_qty` / buyer cash / buyer remaining capacity, `table.commit`, cash transfer, and a delivery callback scheduled at `current_tick + lead_time`. Physical lead time still delays arrival. `shuffle_buyers(buyers, allocation_rng)` is the deterministic per-phase buyer shuffle. See ADR 0012, ADR 0016.
-- **Phase cascade (tick phasing)** — one tick is a deterministic upward cascade by echelon level: `tick_world` (market multiplier → events → item lifecycle) → publish all offers → for each level p from 1..max: shuffle buyers → per-buyer observe → decide → `execute_buy` per line → factory produce → fire delivery callbacks → consume demand sinks. Demand pulls up the chain in natural order. See ADR 0014.
-- **Four-stream RNG split** — `world_rng` (market, events, lifecycle, demand draws), `allocation_rng` (per-phase buyer shuffle, ADR 0016), `policy_rng` (one per policy instance), and `init_rng` (one per node, step-0 state) never share state. This is what makes CRN comparison correct.
+- **Phase cascade (tick phasing)** — one tick is a deterministic upward cascade by echelon level: `tick_world` (market multiplier → events) → publish all offers → for each level p from 1..max: shuffle buyers → per-buyer observe → decide → `execute_buy` per line → factory produce → fire delivery callbacks → consume demand sinks. Demand pulls up the chain in natural order. See ADR 0014.
+- **Four-stream RNG split** — `world_rng` (market, events, demand draws), `allocation_rng` (per-phase buyer shuffle, ADR 0016), `policy_rng` (one per policy instance), and `init_rng` (one per node, step-0 state) never share state. This is what makes CRN comparison correct.
 - **DataExporter** — consumes the run log + scenario and writes parquet/JSON/PNG under `data/<setup-dir-name>/`.
 
 For full domain definitions see [`CONTEXT.md`](../../CONTEXT.md).
@@ -181,7 +179,7 @@ edges:
 | `reorder_point` | intermediate | `ReorderPointPolicy` |
 | `periodic_order_up_to` | intermediate | `PeriodicOrderUpToPolicy` |
 | `periodic_reorder` | intermediate | `PeriodicReorderPolicy` |
-| `single_supplier_order_up_to` | intermediate | `SingleSupplierAdapter(OrderUpToPolicy)` |
+| `single_supplier` | intermediate | `IntermediatePolicy.SingleSupplierAdapter` |
 
 **Distribution kinds** (used in `demand_dist`, `capacity_per_tick`, `severity`, `duration`, …):
 
@@ -200,7 +198,7 @@ See `setups/three_node_chain/` and `setups/two_factories_two_shops/` for complet
 `Runner(scenario).run()` returns a run log with top-level keys `n_steps`, `ticks`, `global`:
 
 - `ticks` — one entry per tick: `tick`, `node_cash`, `node_inventory` (per-node `{pid: qty}`; factories use `{"_total": qty}`), `node_pending` (per-node `{pid: in_transit}` summed across suppliers), `node_orders`.
-- `global` — `time` (`simulation_step`, `simulation_date`), `market_supply` / `market_demand` per region, and `products` (resolved freshness / lifecycle per pid).
+- `global` — `time` (`simulation_step`, `simulation_date`), `market_supply` / `market_demand` per region, and `events`.
 
 `DataExporter(scenario, run_log).export_all(output_folder)` writes (relative to `--output`, default `data/<setup-dir-name>/`):
 
@@ -306,7 +304,7 @@ Four independent random streams, four independent seeds:
 
 | Seed | Stream | Used for |
 |---|---|---|
-| `Scenario.world_seed` | `world_rng` | market dynamics, disruption events, lifecycle transitions, demand draws |
+| `Scenario.world_seed` | `world_rng` | market dynamics, disruption events, demand draws |
 | derived `_derive_seed(world_seed, "allocation")` | `allocation_rng` | per-phase buyer shuffle (ADR 0016) |
 | `NodePolicy.policy_seed` | `policy_rng` | policy decisions only (one stream per policy instance) |
 | `NodeInstance.init_seed` | `init_rng` | per-node step-0 state |
@@ -321,7 +319,7 @@ Consequences:
 
 ## Visualizing a run
 
-`notebooks/04a-deep_dive_active_only.ipynb` is a single-node deep-dive over a run's parquet + run-log artifacts: world view, node financials, decision summary, and per-product cards over the active SKUs.
+`notebooks/02-run-and-inspect.ipynb` dissects a run's outputs: run-log anatomy, per-tier cash/inventory/equity, market supply/demand, per-product time-series, and the exported parquet/JSON/PNG artifacts.
 
 **Market supply / demand per region.** The market dynamics every node sees, with disruption windows shaded by event type. This is the world stream held fixed across paired-CRN comparisons.
 

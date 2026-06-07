@@ -126,13 +126,13 @@ you can overlay multiple runs to compare hyperparameter sweeps.
 **Notebook** (offline / programmatic):
 
 ```bash
-uv run jupyter notebook notebooks/05-monitor_rl_training.ipynb
+uv run jupyter notebook notebooks/06-rl-train-and-eval.ipynb
 ```
 
-The notebook reads the same `events.out.tfevents.*` files TensorBoard reads, surfaces every scalar
-tag, plots the training curves inline (loss / return / SPS), pairs the CRN eval scalars (RL vs
-baseline), and lists the saved checkpoints. Use it when you want to slice the curves
-programmatically, render to a PDF/PNG report, or skip TensorBoard entirely.
+The notebook trains a tiny agent, then reads the same `events.out.tfevents.*` files TensorBoard
+reads, surfaces every scalar tag, and plots the training curves inline (loss / return / SPS). Use
+it when you want to slice the curves programmatically, render to a PDF/PNG report, or skip
+TensorBoard entirely.
 
 ### Scalars logged every PPO update
 
@@ -206,7 +206,7 @@ import numpy as np
 import torch
 from src.rl.env import RLEnv
 from src.rl.configs.default import RLConfig
-from src.sim.episode_sampler import make_synthetic_catalog
+from src.rl.episode_sampler import make_synthetic_catalog
 
 cfg = RLConfig()
 catalog = make_synthetic_catalog(cfg.K_catalog)
@@ -227,7 +227,7 @@ print(f"Episode return: {total:.2f}")
 
 ## Comparing a trained policy against `OrderUpToPolicy`
 
-`notebooks/06-compare_rl_vs_baseline.ipynb` reproduces the CRN eval offline and exposes per-seed
+`notebooks/06-rl-train-and-eval.ipynb` reproduces the CRN eval offline and exposes per-seed
 detail that the TensorBoard-aggregated scalars hide. It:
 
 1. Loads a checkpoint into an `Actor`.
@@ -241,7 +241,7 @@ detail that the TensorBoard-aggregated scalars hide. It:
    - Side-by-side KPI bar chart.
 6. Lets you swap `baseline_policy_factory` for a tuned `OrderUpToPolicy(...)` variant — same CRN guarantee holds.
 
-Use the comparison notebook to spot regimes the policy fails in (outliers below the 45° line), and to confirm that aggregate uplift is not driven by one or two lucky seeds.
+Use the eval section to spot regimes the policy fails in (outliers below the 45° line), and to confirm that aggregate uplift is not driven by one or two lucky seeds.
 
 **Business KPI side-by-side.** Per-KPI mean across the 32 CRN-paired held-out seeds — RL (blue)
 vs `OrderUpToPolicy` (orange). Higher service level + lower stockout rate at comparable turnover
@@ -277,7 +277,7 @@ SKU — and calls `build_world(scenario, policy_overrides={"S": rl_policy})`, wh
 an `RLIntermediatePolicy` shim (`src/sim/policy.py`). `RLEnv.step()` drives the graph engine's
 two-phase tick API in the seam between phases:
 
-1. `sim.tick_world()` — advance market / events / item lifecycle; publish all seller offers to the central table.
+1. `sim.tick_world()` — advance market / events; publish all seller offers to the central table.
 2. `encode_observation(node_S, market, registry, central_table, …)` — read the trainable node's state plus the central-table snapshot.
 3. `decode_action(...)` → `RLIntermediatePolicy.set_pending_action(...)` — inject the agent's pre-decoded per-supplier order/price action.
 4. `sim.tick_decide_and_settle(...)` — run the phase cascade: `S.policy.decide()` returns the pending action, the FCFS allocator settles trades against the central table, deliveries schedule at `current_tick + lead_time`, and demand sinks consume.

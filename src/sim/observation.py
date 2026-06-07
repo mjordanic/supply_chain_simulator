@@ -101,8 +101,8 @@ def build_sink_obs(
     tick:
         Current simulation tick.
     demand_target:
-        The resolved demand target for this tick (post lifecycle/freshness
-        composition). Defaults to 0.0 until the graph engine provides it.
+        The resolved demand target for this tick. Defaults to 0.0
+        until the graph engine provides it.
 
     Returns
     -------

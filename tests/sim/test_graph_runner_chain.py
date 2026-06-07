@@ -412,12 +412,12 @@ class TestMarketDemandMultiplier:
 
     def test_demand_multiplier_returns_float(self):
         market, pid = self._build_market_with_catalog()
-        result = market.demand_multiplier(pid, "US", 0)
+        result = market.demand_multiplier(pid, "US")
         assert isinstance(result, float)
 
     def test_demand_multiplier_is_positive(self):
         market, pid = self._build_market_with_catalog()
-        result = market.demand_multiplier(pid, "US", 0)
+        result = market.demand_multiplier(pid, "US")
         assert result > 0.0
 
     def test_demand_multiplier_does_not_consume_world_rng(self):
@@ -425,7 +425,7 @@ class TestMarketDemandMultiplier:
         market, pid = self._build_market_with_catalog()
         # Save RNG state via a snapshot of the next value.
         rng_before = market.rng.getstate()
-        market.demand_multiplier(pid, "US", 0)
+        market.demand_multiplier(pid, "US")
         rng_after = market.rng.getstate()
         assert rng_before == rng_after, "demand_multiplier must not consume world_rng"
 
@@ -434,7 +434,7 @@ class TestMarketDemandMultiplier:
         params = _minimal_market_params()
         market = Market(params, Random(1), datetime(2024, 1, 1))
         # Unknown pid with no catalog — seasonality falls back to None -> off_factor.
-        result = market.demand_multiplier("P9999", "US", 0)
+        result = market.demand_multiplier("P9999", "US")
         assert isinstance(result, float)
         assert result > 0.0
 
@@ -459,7 +459,7 @@ class TestMarketDemandMultiplier:
         # Suppress season effect.
         market.off_factor = 1.0
         market.peak_factor = 1.0
-        result = market.demand_multiplier(pid, "US", 0)
+        result = market.demand_multiplier(pid, "US")
         assert result >= 0.2  # demand_factor_min floor applies
 
 

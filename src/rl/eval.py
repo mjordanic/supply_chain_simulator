@@ -804,7 +804,7 @@ def _load_policy_fn(checkpoint_path: str, config: RLConfig) -> PolicyFn:
     def policy_fn(obs: np.ndarray) -> np.ndarray:
         with torch.no_grad():
             t = torch.from_numpy(obs).float().unsqueeze(0)
-            action, _, _ = actor.get_action(t)
+            action, _, _ = actor.get_action_and_log_prob(t)
             return action.squeeze(0).numpy()
 
     return policy_fn

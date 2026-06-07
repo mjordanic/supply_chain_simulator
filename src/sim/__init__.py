@@ -23,10 +23,6 @@ Key modules:
 - ``allocation``      — ``execute_buy``, ``shuffle_buyers``.
 - ``market``          — regional demand/supply environment.
 - ``event_engine``    — stochastic disruption events + delivery callbacks.
-- ``item_registry``   — catalog + per-item lifecycle state.
-- ``lifecycle_clock`` — pure ``advance_stage`` over the five-stage PLC.
-- ``freshness_curve`` — per-(node, product) hype multiplier
-                        ``m(τ) = 1 + α · exp(−τ/β)``.
 - ``distributions``   — ``Constant`` / ``Uniform`` / ``Normal`` /
                         ``Choice`` lazy sample objects.
 - ``data_exporter``   — parquet + JSON + PNG writer for a finished run.

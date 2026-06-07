@@ -9,8 +9,8 @@ run:
   world_seed: 42
 
 market:
-  cycle_len: 365
-  cycle_amp: 0.0
+  cycle_len: 30
+  cycle_amp: 0.03
   init_demand: 1.0
   init_supply: 1.0
   peak_factor: 1.0
@@ -18,7 +18,7 @@ market:
   season_months:
     peak: [6, 7, 8]
   regions: [US]
-  correlation: 0.0
+  correlation: 0.5
   trend_update_interval: 100
   min_value: 0.5
   max_value: 2.0
@@ -31,8 +31,8 @@ market:
   cross_inv_hi: 0.7
   cross_factor_range: [0.5, 1.5]
   trend: {kind: constant, value: 1.0}
-  demand_shock: {kind: constant, value: 0.0}
-  supply_shock: {kind: constant, value: 0.0}
+  demand_shock: {kind: normal, mean: 0.0, std: 0.04}
+  supply_shock: {kind: normal, mean: 0.0, std: 0.03}
   base_demand: {kind: constant, value: 10.0}
 
 disruption:

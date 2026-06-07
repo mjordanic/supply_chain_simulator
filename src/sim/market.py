@@ -5,7 +5,7 @@ state, seasonal cycle, and trend drift. ``tick()`` mutates that state
 once per simulation step.
 
 Note: ``sample_demand`` has been deleted in Phase 4 (issue 11).
-Use ``demand_multiplier(pid, region, tick)`` instead, which is the
+Use ``demand_multiplier(pid, region)`` instead, which is the
 surface consumed by ``DemandSinkNode.demand_target`` (ADR 0015).
 
 Replaces the previous ``src/environment/environment.py``. The
@@ -251,7 +251,6 @@ class Market:
         self,
         pid: str,
         region: str,
-        tick: int,
     ) -> float:
         """Return the combined demand multiplier for a product in a region at a tick.
 
@@ -278,9 +277,6 @@ class Market:
             ``ItemRegistry``.
         region:
             Region key; must be present in ``self.market_state``.
-        tick:
-            Current simulation tick.  Not consumed in the current
-            implementation but accepted for forward compatibility.
 
         Returns
         -------

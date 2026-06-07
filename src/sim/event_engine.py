@@ -157,7 +157,8 @@ class EventEngine:
         if self.rng.random() < self.params.event_prob:
             self.active.append(self.spawn_event())
 
-        # 4. Fire any callbacks whose ``delay`` step has been reached. (DELIVERY)
+        # 4. Fire any callbacks whose ``delay`` step has been reached. 
+        # THIS HANDLES ORDER DELIVERIES)
         current = market.current_step()
         fired: list[FutureEvent] = []
         for event in self.queued:

@@ -111,7 +111,7 @@ class Simulation:
 
         Steps
         -----
-        1. ``tick_world``        — advance market, events, lifecycle.
+        1. ``tick_world``        — advance market, events.
         2. ``publish_offers``    — all sellers publish live offers.
         3. Phase cascade         — for each level p from 1 to max_level:
                                    shuffle buyers, then per buyer
@@ -355,7 +355,7 @@ class Simulation:
     # ------------------------------------------------------------------
 
     def tick_world(self) -> Any:
-        """Phase 1: advance world state (market, events, lifecycle).
+        """Phase 1: advance world state (market, events).
 
         Also publishes offers to a fresh ``CentralTable`` and stores
         it on ``self._current_table`` for ``tick_decide_and_settle()``
@@ -628,7 +628,7 @@ def _default_sink_action(
 
 
 # ---------------------------------------------------------------------------
-# build_world — module-level factory (was build_graph_world)
+# build_world — module-level factory
 # ---------------------------------------------------------------------------
 
 def build_world(
@@ -779,8 +779,7 @@ class Runner:
                 Shared world-state time series:
                 ``"time"`` (``simulation_step``, ``simulation_date``),
                 ``"market_supply"`` and ``"market_demand"`` per region
-                (length ``n_steps + 1``),
-                ``"products"`` with resolved freshness + lifecycle data.
+                (length ``n_steps + 1``), and ``"events"``.
         """
         # Capture step-0 snapshot before any tick.
         step_series: list[int] = [0]

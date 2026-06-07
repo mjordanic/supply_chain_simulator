@@ -42,6 +42,10 @@ raises `ValueError` on cycles, unreachable nodes, or same-level supplier links. 
 via longest-path-from-any-factory. Topology queries: `suppliers_of(buyer_id)`,
 `buyers_of(supplier_id)`, `lead_time(supplier, buyer, pid)`. Pure structural logic — no imports
 from other `src.sim` modules; safe to import from tests. See ADR 0011 and ADR 0014.
+*Decided, not yet implemented (ADR 0018):* the same-level check is replaced by **type-based**
+validation (supplier ∈ {factory, intermediate}, buyer ∈ {intermediate, sink}, no factory→sink),
+**lateral `intermediate→intermediate` edges become legal**, and `level` becomes a display-only
+hint rather than a scheduling unit.
 
 **EdgeSpec** (`EdgeSpec`, `src/sim/graph.py`)
 Immutable directed supply edge descriptor. Fields: `supplier_id: str`, `buyer_id: str`,
@@ -66,6 +70,17 @@ remaining capacity, `table.commit(...)`, cash transfer (buyer− / seller+), and
 scheduling at `current_tick + lead_time`. Returns `AllocationResult(qty_filled, qty_rejected,
 cash_paid)`. `shuffle_buyers(buyers, allocation_rng)` performs one deterministic per-phase buyer
 shuffle using the `allocation_rng` stream. See ADR 0012 and ADR 0016.
+*Decided, not yet implemented (ADR 0018):* `AllocationResult` gains a `reason` field (the binding
+constraint on a rejection), and buyer routing becomes min-order-aware (skip-and-fall-through to the
+next feasible supplier instead of a silent lost sale).
+
+**Rejection log** (run-log `ticks[i]["rejections"]`, ADR 0018 — *decided, not yet implemented*)
+Always-on per-tick stream for debugging rejected/lost sales. Each entry
+`{tick, buyer_id, supplier_id, pid, qty_requested, qty_filled, qty_rejected, reason}`; `reason` ∈
+{`no_offer`, `below_min_order`, `insufficient_stock`, `insufficient_cash`,
+`insufficient_capacity`, `unmet_demand`}. `unmet_demand` entries (`supplier_id=None`) record demand
+that no feasible supplier could fill — the true lost-sale measure once min-order fall-through avoids
+the avoidable rejections.
 
 **Phase cascade** (tick phasing, `src/sim/runner.py`)
 One tick executes as a deterministic cascade of phases ordered by echelon level: `tick_world`
@@ -75,6 +90,11 @@ decide → `execute_buy` per line → factory produce → deliver (scheduled cal
 demand sinks. Physical lead time still delays delivery — orders placed in phase N arrive at
 `current_tick + lead_time`, not within the same tick. This ensures demand pulls up the chain in
 natural business-day order. See ADR 0014.
+*Decided, not yet implemented (ADR 0018):* the level-bucket cascade is replaced by a **demand-pull
+topological walk** — Kahn's algorithm on the reversed graph (sinks first, factories last), with
+each ready-set of incomparable peers shuffled by `allocation_rng`. Because selling decrements
+seller inventory at sale time, an intermediate then reorders against *complete current-tick*
+demand (`observed_sales`), removing the `prev_tick_sales` one-tick lag.
 
 **Policy** (`NodePolicy` ABC, `src/sim/policy.py`)
 Decision logic attached to a Node. Three type-paired subclass ABCs: `FactoryPolicy.decide(obs_factory)`,
@@ -285,6 +305,8 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0011](docs/adr/0011-multi-echelon-graph.md) — Multi-echelon DAG of typed nodes replaces the single-`Store` flat model. **Accepted.**
 - [ADR 0012](docs/adr/0012-central-table-fcfs-allocation.md) — Central table + sequential FCFS allocation with live offer-book mutation. **Accepted.**
 - [ADR 0013](docs/adr/0013-cash-flow-conservation.md) — Cash flow conservation: sinks create, ops destroy, inter-node trades transfer; factories are zero-margin. **Accepted.**
-- [ADR 0014](docs/adr/0014-tick-phasing-cascade.md) — Tick phasing as upward cascade by echelon level (sinks → intermediates → factories). **Accepted.**
+- [ADR 0014](docs/adr/0014-tick-phasing-cascade.md) — Tick phasing as upward cascade by echelon level (sinks → intermediates → factories). **Accepted — superseded by ADR 0018.**
 - [ADR 0015](docs/adr/0015-demand-sinks-market-multiplier.md) — Demand-sinks own demand sampling; `Market` shrinks to a multiplier engine (`demand_multiplier`). **Accepted.**
 - [ADR 0016](docs/adr/0016-allocation-rng-sub-seed.md) — `allocation` sub-seed added to CRN seeding contract; drives deterministic per-phase buyer shuffle. **Accepted.**
+- [ADR 0017](docs/adr/0017-setup-files-as-deterministic-input.md) — Setup files as deterministic input. **Accepted.**
+- [ADR 0018](docs/adr/0018-lateral-links-demand-pull-scheduling.md) — Lateral supplier links + demand-pull topological scheduling (Kahn on reversed graph); type-based validation; min-order-aware routing; rejection log. **Accepted (supersedes ADR 0014; implementation pending).**

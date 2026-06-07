@@ -153,10 +153,7 @@ class Correlations(BaseModel):
 class ItemFreshness(BaseModel):
     """Per-``Ware`` freshness curve parameters authored by the LLM.
 
-    Distinct from ``StoreTemplateSpec.init_freshness`` (which is a closed
-    enum picking a per-store starting freshness mode). This model
-    parameterises the freshness/hype curve evaluated by
-    ``freshness_curve.multiplier`` for each item:
+    This model parameterises the per-item freshness/hype curve:
 
     - ``alpha = 0`` is the staple override — the curve is identically
       ``1`` regardless of decay (no novelty premium). Use for

@@ -99,7 +99,7 @@ The Parquet files load with just `pandas` + `pyarrow` — no Optuna import neede
 
 ```python
 from src.tuning import TuningConfig, order_up_to_space, run_study, confirm_top_k
-from src.sim.episode_sampler import make_synthetic_catalog
+from src.tuning import make_synthetic_catalog
 
 config = TuningConfig(n_trials=150, n_search_seeds=16)
 catalog = make_synthetic_catalog(config.K_catalog)
@@ -125,7 +125,7 @@ print(summary["headline_uplift"])  # paired (tuned − default) on holdout
 With a setup directory:
 
 ```python
-from src.sim.setup_io import load_catalog_and_market_from_setup
+from src.tuning import load_catalog_and_market_from_setup
 
 catalog, market = load_catalog_and_market_from_setup("setups/my_run")
 config = TuningConfig(n_trials=10, n_search_seeds=4, episode_length=60)
@@ -141,11 +141,10 @@ study = run_study(
 
 ## Analysis notebook
 
-`notebooks/08-tune_textbook_policy.ipynb` walks through a finished study: optimisation trajectory,
-tuned-vs-default headline with bootstrap CIs, parameter-sensitivity scatters, fANOVA importances,
-Pareto front (profit vs service level), and per-capacity-bucket robustness. It loads
-`runs/tuning/order_up_to_v1/` and runs an additional 10-trial live demo against
-`/tmp/demo_tuning/` so the API is exercised end-to-end without re-running the full study.
+`notebooks/05-tune-a-policy.ipynb` walks through a study: optimisation trajectory,
+tuned-vs-default headline with bootstrap CIs, parameter-sensitivity scatters, and the best-trial
+parameters. It runs a small live demo study end-to-end so the API is exercised without committing
+to the full 40–80-minute run.
 
 Headline outputs from a 150-trial study:
 

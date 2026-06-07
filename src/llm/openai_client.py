@@ -60,6 +60,15 @@ class OpenAIClient:
         # ``openai`` to be installed when only the schemas are needed.
         from openai import OpenAI
 
+        # Load a repo-root ``.env`` into ``os.environ`` so the env-var
+        # fallback below picks up a key kept on disk. ``os.getenv`` only
+        # sees vars already in the environment; ``.env`` is inert until
+        # parsed. No-op if already loaded or absent; never overrides a
+        # var already set in the real environment.
+        from dotenv import load_dotenv
+
+        load_dotenv()
+
         # Prefer the kwarg; fall back to the conventional env var.
         key = api_key or os.getenv("OPENAI_API_KEY")
         if not key:
