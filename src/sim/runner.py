@@ -613,6 +613,9 @@ def _default_sink_action(
             break
         if offer.available_qty <= 0:
             continue
+        # Min-order check: skip this supplier if we can't meet its min_order.
+        if offer.min_order > 0 and remaining < offer.min_order:
+            continue
         # Cash check.
         affordable_qty = (
             int(sink.cash / offer.list_price)
