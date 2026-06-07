@@ -11,6 +11,8 @@ Public API
 - ``build_graph``    — authoring entry point: validates then constructs
 - ``validate_dag``   — raises ``ValueError`` on cycles, unreachable nodes, illegal type-based edges
 - ``compute_levels`` — returns ``dict[node_id, int]`` via longest-path-from-any-source
+- ``build_demand_pull_schedule`` — returns ready-sets in reverse-topological order (sinks first,
+                                   factories last); pure, no ``Simulation`` dependency
 """
 
 from __future__ import annotations
@@ -294,6 +296,88 @@ def compute_levels(graph: Graph) -> dict[str, int]:
     nodes = list(graph.nodes)
     adj: dict[str, list[str]] = {n: list(graph.buyers_of(n)) for n in nodes}
     return _compute_levels_from_adj(nodes, adj)
+
+
+# ---------------------------------------------------------------------------
+# Reverse-topological (demand-pull) scheduler — pure, no Simulation dependency
+# ---------------------------------------------------------------------------
+
+def build_demand_pull_schedule(graph: Graph) -> list[list[str]]:
+    """Return the demand-pull ready-sets for *graph*.
+
+    Computes Kahn's algorithm on the **reversed** edge set so that a node
+    becomes ready only once all its downstream buyers have been placed in a
+    prior ready-set.  Graph-terminal buyers (sinks, nodes with no buyers)
+    appear in the first ready-set; source nodes (factories, nodes with no
+    suppliers) appear in the last.
+
+    The returned list is a sequence of *ready-sets*: mutually-incomparable
+    nodes that may be processed in any order within a set.  The caller
+    applies its own shuffle to each set (e.g. using ``allocation_rng``) to
+    produce a deterministic per-tick total order.
+
+    Parameters
+    ----------
+    graph:
+        A :class:`Graph` instance (already validated by :func:`build_graph`).
+
+    Returns
+    -------
+    list[list[str]]
+        Ordered list of ready-sets, each a list of node IDs.  The first set
+        contains the sinks / graph-terminals; the last set contains the
+        source nodes (factories).  Each node appears in exactly one set.
+
+    Notes
+    -----
+    On the reversed graph an edge ``supplier → buyer`` becomes ``buyer →
+    supplier``, so in-degree on the reversed graph counts how many
+    *downstream buyers* a node has.  A node with in-degree 0 on the reversed
+    graph has no buyers — it is a graph-terminal and is "ready" immediately
+    (processed first in demand-pull order).
+    """
+    # Sort for a stable, PYTHONHASHSEED-independent initial ordering.
+    # Without sorting, iteration over frozenset (graph.nodes) is
+    # hash-randomised and produces a different schedule each interpreter
+    # invocation — breaking CRN reproducibility (ADR 0003/0016).
+    nodes = sorted(graph.nodes)
+
+    # Build reversed-graph in-degree: for each node, count its buyers.
+    in_degree: dict[str, int] = {n: 0 for n in nodes}
+    for n in nodes:
+        for buyer in graph.buyers_of(n):
+            # On the reversed graph, n has an edge FROM buyer TO n,
+            # so n's in-degree on the reversed graph = number of its buyers.
+            in_degree[n] += 1
+
+    # Kahn's algorithm on the reversed graph.
+    # Ready = in-degree == 0 on the reversed graph (no buyers yet to process).
+    ready: deque[str] = deque(n for n in nodes if in_degree[n] == 0)
+    schedule: list[list[str]] = []
+
+    remaining = set(nodes)
+    while ready:
+        # Collect the current ready-set (all nodes currently ready).
+        current_set: list[str] = []
+        next_ready: list[str] = []
+        while ready:
+            current_set.append(ready.popleft())
+
+        for node in current_set:
+            remaining.discard(node)
+            # Traverse the reversed graph: neighbours of node are its
+            # suppliers on the original graph.
+            for supplier in sorted(graph.suppliers_of(node)):
+                if supplier not in remaining:
+                    continue
+                in_degree[supplier] -= 1
+                if in_degree[supplier] == 0:
+                    next_ready.append(supplier)
+
+        schedule.append(current_set)
+        ready.extend(next_ready)
+
+    return schedule
 
 
 # ---------------------------------------------------------------------------

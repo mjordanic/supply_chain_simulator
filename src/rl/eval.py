@@ -338,7 +338,7 @@ def _run_rl(
         sim.tick_decide_and_settle(current_tick)
 
         # Update rolling sales history.
-        last_sales = sim._last_tick_sales.get("S", {})
+        last_sales = sim._tick_sales.get("S", {})
         run_slice.sales.append(
             [float(last_sales.get(pid, 0)) for pid in active_subset]
         )
@@ -388,7 +388,7 @@ def _run_baseline(
 
         sim.tick()
 
-        last_sales = sim._last_tick_sales.get("S", {})
+        last_sales = sim._tick_sales.get("S", {})
         run_slice.sales.append(
             [float(last_sales.get(pid, 0)) for pid in active_subset]
         )
@@ -416,7 +416,7 @@ def _record_graph_tick(
     # Sales: use the last-tick sales accumulator from the runner.
     # For the graph engine, "sales" corresponds to units sold downstream.
     # We approximate with 0 here since the graph engine tracks this differently;
-    # the RunSlice records it from _last_tick_sales in _run_rl.
+    # the RunSlice records it from _tick_sales in _run_rl.
     inv = node_s.inventory
 
     run_slice.inventory.append([inv.get(pid, 0) for pid in pids])

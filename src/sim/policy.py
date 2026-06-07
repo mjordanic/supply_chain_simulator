@@ -2069,15 +2069,16 @@ class _SingleSupplierAdapter(IntermediatePolicy):
 
         # The textbook policy needs "sales" to update its rolling log so the
         # rate estimate (and hence the reorder point ``s``) becomes non-zero.
-        # Prefer the runner-injected ``prev_tick_sales`` (exact units sold to
-        # downstream buyers last tick); fall back to 0 only when it is absent.
+        # Prefer the runner-injected ``observed_sales`` (exact units sold to
+        # downstream buyers this tick under demand-pull ordering); fall back
+        # to 0 only when it is absent.
         # Hardcoding 0 here left ``s == 0`` forever, so ``position < s`` never
         # held and the shop never reordered.
-        prev_tick_sales: dict[str, int] = dict(
-            obs_intermediate.get("prev_tick_sales", {})
+        observed_sales: dict[str, int] = dict(
+            obs_intermediate.get("observed_sales", obs_intermediate.get("prev_tick_sales", {}))
         )
         sales_approx: dict[str, int] = {
-            pid: prev_tick_sales.get(pid, 0) for pid in inventory
+            pid: observed_sales.get(pid, 0) for pid in inventory
         }
 
         # Build a Store-compatible observation for the textbook policy.
@@ -2467,16 +2468,21 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
             for pid, qty in sup_pending.items():
                 pending_flat[pid] = pending_flat.get(pid, 0) + qty
 
-        # Use runner-injected prev_tick_sales when available (preferred).
-        # The runner tracks exact units sold by each IntermediateNode to
-        # downstream buyers in the previous tick, giving an accurate demand
-        # signal even on delivery ticks (when inventory-delta would be wrong).
+        # Use runner-injected observed_sales when available (preferred).
+        # Under demand-pull ordering (ADR 0018) the runner populates
+        # ``observed_sales`` with current-tick sales that are complete by the
+        # time this intermediate is processed.
+        # Also accepts the old ``prev_tick_sales`` key for backward compat.
         # Fallback: estimate sales as inventory decrease from previous tick —
         # conservative (delivery ticks give 0) but self-correcting.
-        prev_tick_sales: dict[str, int] = obs_intermediate.get("prev_tick_sales", {})
-        if prev_tick_sales:
+        _sales_signal: dict[str, int] = (
+            obs_intermediate.get("observed_sales")
+            or obs_intermediate.get("prev_tick_sales")
+            or {}
+        )
+        if _sales_signal:
             sales_approx: dict[str, int] = {
-                pid: prev_tick_sales.get(pid, 0) for pid in inventory
+                pid: _sales_signal.get(pid, 0) for pid in inventory
             }
         else:
             # Inventory-delta fallback (used when runner doesn't inject sales).

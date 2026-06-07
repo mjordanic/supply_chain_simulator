@@ -202,7 +202,7 @@ def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, flo
     for _ in range(scenario.n_steps):
         sim.tick()
 
-        sales_this_tick = dict(sim._last_tick_sales.get("S", {}))
+        sales_this_tick = dict(sim._tick_sales.get("S", {}))
         orders_this_tick = dict(sim._last_tick_orders.get("S", {}))
 
         _record_active_subset(

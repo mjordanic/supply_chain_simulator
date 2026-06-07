@@ -12,10 +12,14 @@ Public surface
   Frozen data carrier (kept for import compatibility; graph engine
   does not return TickResult from tick() — the value is ``None``).
 
-Tick structure (ADR 0014):
-  tick_world → publish_offers → for p in 1..max_level: shuffle buyers →
-  per buyer observe → decide → execute_buy per line → produce →
-  deliver (EventEngine callbacks) → consume_demand_sinks
+Tick structure (ADR 0018, supersedes ADR 0014):
+  tick_world → publish_offers → demand-pull walk (reverse-topological order,
+  sinks first; factories last; each ready-set shuffled via allocation_rng) →
+  produce → deliver (EventEngine callbacks) → consume_demand_sinks
+
+The demand-pull schedule structure is computed once in ``build_world`` and
+cached on ``Simulation.schedule``; only the per-tick ready-set shuffle
+re-draws ``allocation_rng``.
 """
 
 from __future__ import annotations
@@ -65,7 +69,9 @@ class Simulation:
     event_engine   — disruption events + order-delivery callbacks.
     graph          — validated topology (``Graph`` instance).
     nodes          — ``{node_id: Node}`` mapping for fast lookup.
-    levels         — ``{node_id: int}`` echelon levels.
+    levels         — ``{node_id: int}`` echelon levels (display-only; ADR 0018).
+    schedule       — demand-pull ready-sets; list[list[node_id]] computed once
+                     at build_world and cached (ADR 0018).
     """
 
     def __init__(
@@ -78,6 +84,7 @@ class Simulation:
         graph: Any,
         nodes: dict,
         levels: dict,
+        schedule: list,
     ) -> None:
         self.scenario = scenario
         self.world_rng = world_rng
@@ -86,19 +93,23 @@ class Simulation:
         self.event_engine = event_engine
         self.graph = graph
         self.nodes = nodes
+        # levels is retained for display-only use (inspect.py); no longer
+        # drives scheduling (ADR 0018 — level-bucket cascade removed).
         self.levels = levels
+        # Demand-pull schedule: list of ready-sets in reverse-topological order.
+        # Computed once at build_world; only the per-tick shuffle re-draws.
+        self.schedule = schedule
         # Removed in issue 01; kept as None so downstream callers that
         # guard ``if registry is not None`` still work without modification.
         self.item_registry = None
         # Per-tick order-quantity accumulator: ``{buyer_id: {pid: qty}}``.
         # Populated during ``tick()`` and consumed by the runner's snapshot.
         self._last_tick_orders: dict[str, dict[str, int]] = {}
-        # Per-tick sales accumulator for intermediate nodes: ``{node_id: {pid: qty}}``.
-        # Tracks how many units each IntermediateNode sold to downstream buyers
-        # in the previous tick.  Passed into the intermediate observation so
-        # the policy's rate estimator sees actual demand, not just inventory
-        # deltas (which are confused by simultaneous deliveries).
-        self._last_tick_sales: dict[str, dict[str, int]] = {}
+        # Current-tick sales accumulator for intermediate nodes: ``{node_id: {pid: qty}}``.
+        # Populated during the demand-pull walk (after each sink/intermediate buys).
+        # Injected into each intermediate's observation as ``observed_sales`` so
+        # the policy sees the current tick's complete demand signal (not lagged).
+        self._tick_sales: dict[str, dict[str, int]] = {}
         # Stashed central table from ``tick_world()`` for use by ``tick_decide_and_settle()``.
         self._current_table: Any = None
 
@@ -107,236 +118,46 @@ class Simulation:
     # ------------------------------------------------------------------
 
     def tick(self) -> None:
-        """Run one full tick of the graph cascade (ADR 0014).
+        """Run one full tick of the graph cascade (ADR 0018).
 
         Steps
         -----
         1. ``tick_world``        — advance market, events.
         2. ``publish_offers``    — all sellers publish live offers.
-        3. Phase cascade         — for each level p from 1 to max_level:
-                                   shuffle buyers, then per buyer
-                                   observe → decide → execute_buy per line.
+        3. Demand-pull walk      — reverse-topological order; sinks first,
+                                   factories last; each ready-set shuffled
+                                   by ``allocation_rng`` (ADR 0016).
         4. ``produce``           — factories produce up to capacity.
         5. ``deliver``           — already scheduled by EventEngine; no-op
                                    here (callbacks fired in tick_world).
         6. ``consume_demand_sinks`` — credit income_rate to each sink.
         """
-        from src.sim.allocation import execute_buy, shuffle_buyers
         from src.sim.central_table import CentralTable, Offer
-        from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
-        from src.sim.observation import (
-            build_factory_obs,
-            build_intermediate_obs,
-            build_sink_obs,
-        )
+        from src.sim.node import FactoryNode, IntermediateNode
 
         # -------------------------------------------------------------------
         # 1. tick_world — advance shared world state.
         # -------------------------------------------------------------------
         self.market.tick()
         self.event_engine.tick(self.market)
-
         current_tick = self.market.current_step()
 
         # -------------------------------------------------------------------
         # 2. publish_offers — all sellers post current inventory to the table.
         # -------------------------------------------------------------------
-        table = CentralTable()
-        for node_id, node in self.nodes.items():
-            if isinstance(node, FactoryNode):
-                pid = node.produces_product_id
-                table.publish(
-                    node_id,
-                    pid,
-                    Offer(
-                        available_qty=node.inventory,
-                        list_price=node.list_price,
-                        min_order=0,
-                    ),
-                )
-            elif isinstance(node, IntermediateNode):
-                for pid in node.carried_products:
-                    qty = node.inventory.get(pid, 0)
-                    price = node.list_prices.get(pid, 0.0)
-                    min_order = node.min_order_imposed.get(pid, 0)
-                    table.publish(
-                        node_id,
-                        pid,
-                        Offer(
-                            available_qty=qty,
-                            list_price=price,
-                            min_order=min_order,
-                        ),
-                    )
+        table = _publish_offers(self.nodes, CentralTable, Offer, FactoryNode, IntermediateNode)
 
         # -------------------------------------------------------------------
-        # 3. Phase cascade — levels 1 .. max_level.
+        # 3. Demand-pull walk.
         # -------------------------------------------------------------------
-        # Reset per-tick accumulators (orders placed by intermediate nodes and
-        # sales made by intermediate nodes to downstream buyers).
         self._last_tick_orders = {}
-        # Capture the completed-tick sales before resetting so the current
-        # tick's intermediate nodes receive the *previous* tick's sales in
-        # their observation.  This is intentional: the policy observes what
-        # was sold in the tick that just ended, not what will be sold now.
-        prev_tick_sales = self._last_tick_sales
-        self._last_tick_sales = {}
-
-        if self.levels:
-            max_level = max(self.levels.values())
-        else:
-            max_level = 0
-
-        for p in range(1, max_level + 1):
-            # Collect all buyers at this echelon level.
-            buyers_at_level = [
-                node
-                for node_id, node in self.nodes.items()
-                if self.levels.get(node_id, 0) == p
-            ]
-            if not buyers_at_level:
-                continue
-
-            # Shuffle buyers deterministically (ADR 0016).
-            buyers_at_level = shuffle_buyers(buyers_at_level, self.allocation_rng)
-
-            for buyer in buyers_at_level:
-                if isinstance(buyer, DemandSinkNode):
-                    # Samples world_rng for every catalog pid in catalog order —
-                    # CRN invariant preserved (ADR 0003).
-                    demand_target = float(
-                        buyer.demand_target(
-                            tick=current_tick,
-                            market=self.market,
-                            catalog=self.scenario.catalog,
-                            world_rng=self.world_rng,
-                        )
-                    )
-                    obs = build_sink_obs(
-                        buyer, tick=current_tick, demand_target=demand_target
-                    )
-                    # Compute the set of direct suppliers for this buyer.
-                    direct_supplier_ids = self.graph.suppliers_of(buyer.id)
-                    # Inject the direct suppliers so an attached policy can
-                    # restrict its buys to them — without this a sink whose
-                    # product is also published by an *indirect* seller (e.g.
-                    # the factory two echelons up) would buy from that seller
-                    # and bypass its own shop, leaving the shop's demand
-                    # signal at zero so it never reorders.
-                    obs["direct_supplier_ids"] = direct_supplier_ids
-                    if buyer.policy is not None:
-                        action = buyer.policy.decide(obs, table)
-                    else:
-                        # Default greedy: buy from cheapest available direct supplier.
-                        action = _default_sink_action(
-                            buyer, demand_target, table,
-                            allowed_supplier_ids=direct_supplier_ids,
-                        )
-
-                    # Execute each buy line.
-                    for supplier_id, qty in action.get("buy", []):
-                        if qty <= 0:
-                            continue
-                        # Safety: only buy from direct suppliers.
-                        if supplier_id not in direct_supplier_ids:
-                            continue
-                        supplier = self.nodes.get(supplier_id)
-                        if supplier is None:
-                            continue
-                        lt = self.graph.lead_time(supplier_id, buyer.id, buyer.product_id)
-                        result = execute_buy(
-                            buyer=buyer,
-                            supplier=supplier,
-                            pid=buyer.product_id,
-                            qty_requested=qty,
-                            table=table,
-                            event_engine=self.event_engine,
-                            current_tick=current_tick,
-                            lead_time=lt,
-                        )
-                        # Track sales for IntermediateNode suppliers so the
-                        # next-tick intermediate observation carries actual
-                        # demand signal for the policy's rate estimator.
-                        if isinstance(supplier, IntermediateNode) and result.qty_filled > 0:
-                            sup_sales = self._last_tick_sales.setdefault(supplier_id, {})
-                            pid_sold = buyer.product_id
-                            sup_sales[pid_sold] = sup_sales.get(pid_sold, 0) + result.qty_filled
-
-                elif isinstance(buyer, IntermediateNode):
-                    obs = build_intermediate_obs(buyer, tick=current_tick)
-                    # Inject the previous-tick sales so the policy's rate
-                    # estimator receives an accurate demand signal even when
-                    # deliveries and demand occur in the same tick (which
-                    # would make the inventory-delta proxy misleading).
-                    obs["prev_tick_sales"] = prev_tick_sales.get(buyer.id, {})
-                    direct_supplier_ids = self.graph.suppliers_of(buyer.id)
-                    # Inject the buyer's direct upstream suppliers so the policy
-                    # routes reorders to them, not to its own published offers
-                    # (a shop publishes its carried inventory for downstream
-                    # sinks, so the central table would otherwise list the shop
-                    # itself as a "supplier" and the lines below would drop it).
-                    obs["direct_supplier_ids"] = direct_supplier_ids
-                    if buyer.policy is not None:
-                        action = buyer.policy.decide(obs, table)
-                    else:
-                        action = {"order": {}, "list_price": {}, "min_order_imposed": {}}
-
-                    orders = action.get("order", {})
-                    buyer_orders = self._last_tick_orders.setdefault(buyer.id, {})
-                    for pid, order_lines in orders.items():
-                        for supplier_id, qty in order_lines:
-                            if qty <= 0:
-                                continue
-                            # Safety: only buy from direct suppliers.
-                            if supplier_id not in direct_supplier_ids:
-                                continue
-                            supplier = self.nodes.get(supplier_id)
-                            if supplier is None:
-                                continue
-                            lt = self.graph.lead_time(supplier_id, buyer.id, pid)
-                            execute_buy(
-                                buyer=buyer,
-                                supplier=supplier,
-                                pid=pid,
-                                qty_requested=qty,
-                                table=table,
-                                event_engine=self.event_engine,
-                                current_tick=current_tick,
-                                lead_time=lt,
-                            )
-                            # Accumulate effective order quantity for this tick.
-                            buyer_orders[pid] = buyer_orders.get(pid, 0) + qty
+        self._tick_sales = {}
+        _run_demand_pull_schedule(self, table, current_tick)
 
         # -------------------------------------------------------------------
         # 4. produce — factories run policy and produce up to capacity.
         # -------------------------------------------------------------------
-        for node_id, node in self.nodes.items():
-            if isinstance(node, FactoryNode):
-                obs = build_factory_obs(node, tick=current_tick)
-                if node.policy is not None:
-                    action = node.policy.decide(obs)
-                else:
-                    # Default: produce up to capacity.
-                    from src.sim.distributions import Distribution
-                    cap = node.capacity_per_tick
-                    if isinstance(cap, Distribution):
-                        produce_qty = int(cap.sample(self.world_rng))
-                    else:
-                        produce_qty = int(cap)
-                    action = {"produce_qty": produce_qty, "list_price": node.unit_cost}
-
-                produce_qty = int(action.get("produce_qty", 0))
-                node.inventory += produce_qty
-                # ADR 0013 rule 3: production absorbs cash at unit_cost
-                # (factories are zero-margin). The factory recovers exactly
-                # this when it later sells at list_price == unit_cost, so the
-                # produce-then-sell cycle nets to zero. Without this leg the
-                # factory accumulated phantom cash from sale revenue alone.
-                node.cash -= node.unit_cost * produce_qty
-                # Update list price if provided.
-                new_price = action.get("list_price")
-                if new_price is not None:
-                    node.list_price = float(new_price)
+        _produce_factories(self, current_tick)
 
         # -------------------------------------------------------------------
         # 5. deliver — EventEngine already fired delivery callbacks in
@@ -346,9 +167,7 @@ class Simulation:
         # -------------------------------------------------------------------
         # 6. consume_demand_sinks — credit income_rate cash to each sink.
         # -------------------------------------------------------------------
-        for node_id, node in self.nodes.items():
-            if isinstance(node, DemandSinkNode):
-                node.cash += node.income_rate
+        _credit_sinks(self.nodes)
 
     # ------------------------------------------------------------------
     # Two-phase tick API — for RL interoperability
@@ -368,37 +187,9 @@ class Simulation:
 
         self.market.tick()
         self.event_engine.tick(self.market)
-
         current_tick = self.market.current_step()
 
-        # publish_offers — all sellers post current inventory to the table.
-        table = CentralTable()
-        for node_id, node in self.nodes.items():
-            if isinstance(node, FactoryNode):
-                pid = node.produces_product_id
-                table.publish(
-                    node_id,
-                    pid,
-                    Offer(
-                        available_qty=node.inventory,
-                        list_price=node.list_price,
-                        min_order=0,
-                    ),
-                )
-            elif isinstance(node, IntermediateNode):
-                for pid in node.carried_products:
-                    qty = node.inventory.get(pid, 0)
-                    price = node.list_prices.get(pid, 0.0)
-                    min_order = node.min_order_imposed.get(pid, 0)
-                    table.publish(
-                        node_id,
-                        pid,
-                        Offer(
-                            available_qty=qty,
-                            list_price=price,
-                            min_order=min_order,
-                        ),
-                    )
+        table = _publish_offers(self.nodes, CentralTable, Offer, FactoryNode, IntermediateNode)
 
         # Stash the table so the encoder can snapshot it and
         # tick_decide_and_settle can reuse it.
@@ -406,7 +197,7 @@ class Simulation:
         return current_tick
 
     def tick_decide_and_settle(self, current_tick: int | None = None) -> None:
-        """Phase 2: run the phase cascade, produce, and settle sinks.
+        """Phase 2: run the demand-pull walk, produce, and settle sinks.
 
         Must be called after ``tick_world()``.  Uses ``self._current_table``
         as the live central table (published by ``tick_world()``).
@@ -416,167 +207,211 @@ class Simulation:
         current_tick:
             If ``None``, reads from ``self.market.current_step()``.
         """
-        from src.sim.allocation import execute_buy, shuffle_buyers
-        from src.sim.central_table import CentralTable, Offer
-        from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
-        from src.sim.observation import (
-            build_factory_obs,
-            build_intermediate_obs,
-            build_sink_obs,
-        )
-
         if current_tick is None:
             current_tick = self.market.current_step()
 
         table = getattr(self, "_current_table", None)
         if table is None:
-            # Fallback: build a fresh table (shouldn't normally happen if
-            # tick_world was called first).
             from src.sim.central_table import CentralTable
             table = CentralTable()
 
-        # Phase cascade (same as tick() but reusing the pre-built table).
         self._last_tick_orders = {}
-        prev_tick_sales = self._last_tick_sales
-        self._last_tick_sales = {}
+        self._tick_sales = {}
+        _run_demand_pull_schedule(self, table, current_tick)
+        _produce_factories(self, current_tick)
+        _credit_sinks(self.nodes)
 
-        if self.levels:
-            max_level = max(self.levels.values())
-        else:
-            max_level = 0
+        # Clean up the stashed table.
+        self._current_table = None
 
-        for p in range(1, max_level + 1):
-            buyers_at_level = [
-                node
-                for node_id, node in self.nodes.items()
-                if self.levels.get(node_id, 0) == p
-            ]
-            if not buyers_at_level:
+
+# ---------------------------------------------------------------------------
+# Internal helpers — shared by tick() and tick_decide_and_settle()
+# ---------------------------------------------------------------------------
+
+def _publish_offers(nodes: dict, CentralTable: Any, Offer: Any, FactoryNode: Any, IntermediateNode: Any) -> Any:
+    """Publish all seller offers to a fresh CentralTable and return it."""
+    table = CentralTable()
+    for node_id, node in nodes.items():
+        if isinstance(node, FactoryNode):
+            pid = node.produces_product_id
+            table.publish(
+                node_id,
+                pid,
+                Offer(
+                    available_qty=node.inventory,
+                    list_price=node.list_price,
+                    min_order=0,
+                ),
+            )
+        elif isinstance(node, IntermediateNode):
+            for pid in node.carried_products:
+                qty = node.inventory.get(pid, 0)
+                price = node.list_prices.get(pid, 0.0)
+                min_order = node.min_order_imposed.get(pid, 0)
+                table.publish(
+                    node_id,
+                    pid,
+                    Offer(
+                        available_qty=qty,
+                        list_price=price,
+                        min_order=min_order,
+                    ),
+                )
+    return table
+
+
+def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) -> None:
+    """Execute the demand-pull walk for one tick.
+
+    Walks ``sim.schedule`` (pre-computed reverse-topological ready-sets) in
+    order — sinks first, factories last — shuffling each ready-set via
+    ``sim.allocation_rng`` (ADR 0016).  For each buyer node: observe →
+    decide → ``execute_buy`` per line.  Accumulates current-tick sales into
+    ``sim._tick_sales`` so intermediates see an un-lagged demand signal when
+    they are processed.
+
+    Factories are not buyers and are skipped here; ``_produce_factories``
+    handles them separately.
+    """
+    from src.sim.allocation import execute_buy, shuffle_buyers
+    from src.sim.node import DemandSinkNode, IntermediateNode, FactoryNode
+    from src.sim.observation import (
+        build_factory_obs,
+        build_intermediate_obs,
+        build_sink_obs,
+    )
+
+    for ready_set in sim.schedule:
+        # Shuffle the ready-set deterministically (ADR 0016).
+        buyers = [sim.nodes[nid] for nid in ready_set if nid in sim.nodes]
+        buyers = shuffle_buyers(buyers, sim.allocation_rng)
+
+        for buyer in buyers:
+            if isinstance(buyer, FactoryNode):
+                # Factories are sources, not buyers; handled by _produce_factories.
                 continue
 
-            buyers_at_level = shuffle_buyers(buyers_at_level, self.allocation_rng)
-
-            for buyer in buyers_at_level:
-                if isinstance(buyer, DemandSinkNode):
-                    demand_target = float(
-                        buyer.demand_target(
-                            tick=current_tick,
-                            market=self.market,
-                            catalog=self.scenario.catalog,
-                            world_rng=self.world_rng,
-                        )
+            if isinstance(buyer, DemandSinkNode):
+                # Samples world_rng for every catalog pid — CRN invariant (ADR 0003).
+                demand_target = float(
+                    buyer.demand_target(
+                        tick=current_tick,
+                        market=sim.market,
+                        catalog=sim.scenario.catalog,
+                        world_rng=sim.world_rng,
                     )
-                    obs = build_sink_obs(
-                        buyer, tick=current_tick, demand_target=demand_target
+                )
+                obs = build_sink_obs(buyer, tick=current_tick, demand_target=demand_target)
+                direct_supplier_ids = sim.graph.suppliers_of(buyer.id)
+                obs["direct_supplier_ids"] = direct_supplier_ids
+                if buyer.policy is not None:
+                    action = buyer.policy.decide(obs, table)
+                else:
+                    action = _default_sink_action(
+                        buyer, demand_target, table,
+                        allowed_supplier_ids=direct_supplier_ids,
                     )
-                    direct_supplier_ids = self.graph.suppliers_of(buyer.id)
-                    # See the cascade above: inject direct suppliers so an
-                    # attached sink policy buys only from its own shops, not
-                    # from an indirect upstream seller of the same product.
-                    obs["direct_supplier_ids"] = direct_supplier_ids
-                    if buyer.policy is not None:
-                        action = buyer.policy.decide(obs, table)
-                    else:
-                        action = _default_sink_action(
-                            buyer, demand_target, table,
-                            allowed_supplier_ids=direct_supplier_ids,
-                        )
 
-                    for supplier_id, qty in action.get("buy", []):
+                for supplier_id, qty in action.get("buy", []):
+                    if qty <= 0:
+                        continue
+                    if supplier_id not in direct_supplier_ids:
+                        continue
+                    supplier = sim.nodes.get(supplier_id)
+                    if supplier is None:
+                        continue
+                    lt = sim.graph.lead_time(supplier_id, buyer.id, buyer.product_id)
+                    result = execute_buy(
+                        buyer=buyer,
+                        supplier=supplier,
+                        pid=buyer.product_id,
+                        qty_requested=qty,
+                        table=table,
+                        event_engine=sim.event_engine,
+                        current_tick=current_tick,
+                        lead_time=lt,
+                    )
+                    # Accumulate sales for the supplier (if intermediate) so that
+                    # when it is processed later in the walk, its observed_sales
+                    # reflects the complete current-tick demand.
+                    if isinstance(supplier, IntermediateNode) and result.qty_filled > 0:
+                        sup_sales = sim._tick_sales.setdefault(supplier_id, {})
+                        pid_sold = buyer.product_id
+                        sup_sales[pid_sold] = sup_sales.get(pid_sold, 0) + result.qty_filled
+
+            elif isinstance(buyer, IntermediateNode):
+                obs = build_intermediate_obs(buyer, tick=current_tick)
+                # Inject current-tick sales (complete by demand-pull ordering):
+                # all downstream buyers of this intermediate have already been
+                # processed before this node is reached.
+                obs["observed_sales"] = sim._tick_sales.get(buyer.id, {})
+                direct_supplier_ids = sim.graph.suppliers_of(buyer.id)
+                obs["direct_supplier_ids"] = direct_supplier_ids
+                if buyer.policy is not None:
+                    action = buyer.policy.decide(obs, table)
+                else:
+                    action = {"order": {}, "list_price": {}, "min_order_imposed": {}}
+
+                orders = action.get("order", {})
+                buyer_orders = sim._last_tick_orders.setdefault(buyer.id, {})
+                for pid, order_lines in orders.items():
+                    for supplier_id, qty in order_lines:
                         if qty <= 0:
                             continue
                         if supplier_id not in direct_supplier_ids:
                             continue
-                        supplier = self.nodes.get(supplier_id)
+                        supplier = sim.nodes.get(supplier_id)
                         if supplier is None:
                             continue
-                        lt = self.graph.lead_time(supplier_id, buyer.id, buyer.product_id)
-                        result = execute_buy(
+                        lt = sim.graph.lead_time(supplier_id, buyer.id, pid)
+                        execute_buy(
                             buyer=buyer,
                             supplier=supplier,
-                            pid=buyer.product_id,
+                            pid=pid,
                             qty_requested=qty,
                             table=table,
-                            event_engine=self.event_engine,
+                            event_engine=sim.event_engine,
                             current_tick=current_tick,
                             lead_time=lt,
                         )
-                        if isinstance(supplier, IntermediateNode) and result.qty_filled > 0:
-                            sup_sales = self._last_tick_sales.setdefault(supplier_id, {})
-                            pid_sold = buyer.product_id
-                            sup_sales[pid_sold] = sup_sales.get(pid_sold, 0) + result.qty_filled
+                        buyer_orders[pid] = buyer_orders.get(pid, 0) + qty
 
-                elif isinstance(buyer, IntermediateNode):
-                    obs = build_intermediate_obs(buyer, tick=current_tick)
-                    obs["prev_tick_sales"] = prev_tick_sales.get(buyer.id, {})
-                    direct_supplier_ids = self.graph.suppliers_of(buyer.id)
-                    # Inject the buyer's direct upstream suppliers so the policy
-                    # routes reorders to them, not to its own published offers
-                    # (a shop publishes its carried inventory for downstream
-                    # sinks, so the central table would otherwise list the shop
-                    # itself as a "supplier" and the lines below would drop it).
-                    obs["direct_supplier_ids"] = direct_supplier_ids
-                    if buyer.policy is not None:
-                        action = buyer.policy.decide(obs, table)
-                    else:
-                        action = {"order": {}, "list_price": {}, "min_order_imposed": {}}
 
-                    orders = action.get("order", {})
-                    buyer_orders = self._last_tick_orders.setdefault(buyer.id, {})
-                    for pid, order_lines in orders.items():
-                        for supplier_id, qty in order_lines:
-                            if qty <= 0:
-                                continue
-                            if supplier_id not in direct_supplier_ids:
-                                continue
-                            supplier = self.nodes.get(supplier_id)
-                            if supplier is None:
-                                continue
-                            lt = self.graph.lead_time(supplier_id, buyer.id, pid)
-                            execute_buy(
-                                buyer=buyer,
-                                supplier=supplier,
-                                pid=pid,
-                                qty_requested=qty,
-                                table=table,
-                                event_engine=self.event_engine,
-                                current_tick=current_tick,
-                                lead_time=lt,
-                            )
-                            buyer_orders[pid] = buyer_orders.get(pid, 0) + qty
+def _produce_factories(sim: "Simulation", current_tick: int) -> None:
+    """Run factory produce step for all FactoryNodes."""
+    from src.sim.node import FactoryNode
+    from src.sim.observation import build_factory_obs
 
-        # Produce — factories run policy and produce up to capacity.
-        for node_id, node in self.nodes.items():
-            if isinstance(node, FactoryNode):
-                obs = build_factory_obs(node, tick=current_tick)
-                if node.policy is not None:
-                    action = node.policy.decide(obs)
+    for node_id, node in sim.nodes.items():
+        if isinstance(node, FactoryNode):
+            obs = build_factory_obs(node, tick=current_tick)
+            if node.policy is not None:
+                action = node.policy.decide(obs)
+            else:
+                from src.sim.distributions import Distribution
+                cap = node.capacity_per_tick
+                if isinstance(cap, Distribution):
+                    produce_qty = int(cap.sample(sim.world_rng))
                 else:
-                    from src.sim.distributions import Distribution
-                    cap = node.capacity_per_tick
-                    if isinstance(cap, Distribution):
-                        produce_qty = int(cap.sample(self.world_rng))
-                    else:
-                        produce_qty = int(cap)
-                    action = {"produce_qty": produce_qty, "list_price": node.unit_cost}
+                    produce_qty = int(cap)
+                action = {"produce_qty": produce_qty, "list_price": node.unit_cost}
 
-                produce_qty = int(action.get("produce_qty", 0))
-                node.inventory += produce_qty
-                # ADR 0013 rule 3: production absorbs cash at unit_cost
-                # (zero-margin factory). Recovered exactly on sale at
-                # list_price == unit_cost, so produce-then-sell nets to zero.
-                node.cash -= node.unit_cost * produce_qty
-                new_price = action.get("list_price")
-                if new_price is not None:
-                    node.list_price = float(new_price)
+            produce_qty = int(action.get("produce_qty", 0))
+            node.inventory += produce_qty
+            # ADR 0013 rule 3: production absorbs cash at unit_cost
+            node.cash -= node.unit_cost * produce_qty
+            new_price = action.get("list_price")
+            if new_price is not None:
+                node.list_price = float(new_price)
 
-        # consume_demand_sinks — credit income_rate cash to each sink.
-        for node_id, node in self.nodes.items():
-            if isinstance(node, DemandSinkNode):
-                node.cash += node.income_rate
 
-        # Clean up the stashed table.
-        self._current_table = None
+def _credit_sinks(nodes: dict) -> None:
+    """Credit income_rate cash to each DemandSinkNode."""
+    from src.sim.node import DemandSinkNode
+    for node_id, node in nodes.items():
+        if isinstance(node, DemandSinkNode):
+            node.cash += node.income_rate
 
 
 def _default_sink_action(
@@ -659,7 +494,7 @@ def build_world(
         A fully-initialised bundle ready for ``Simulation.tick()``.
     """
     from src.sim.episode_sampler import _derive_seed
-    from src.sim.graph import EdgeSpec, build_graph, compute_levels
+    from src.sim.graph import EdgeSpec, build_graph, build_demand_pull_schedule, compute_levels
 
     if not scenario.nodes:
         raise ValueError(
@@ -688,8 +523,12 @@ def build_world(
     node_types: dict[str, str] = {ni.node.id: ni.node._node_type for ni in scenario.nodes}
     graph = build_graph(node_ids, edges, node_types=node_types)
 
-    # Compute echelon levels.
+    # Compute echelon levels (display-only; ADR 0018).
     levels = compute_levels(graph)
+
+    # Compute and cache the demand-pull schedule structure (ADR 0018).
+    # Only the per-tick ready-set shuffle re-draws allocation_rng.
+    schedule = build_demand_pull_schedule(graph)
 
     # Attach policies and build the node lookup dict.
     # We deep-copy each node so that multiple build_world calls on the same
@@ -707,7 +546,7 @@ def build_world(
         # otherwise their shops would be left policy-less and never order.
         policy = overrides.get(node.id, ni.policy if ni.policy is not None else node.policy)
         node.policy = policy
-        # Assign the computed echelon level onto the node.
+        # Assign the computed echelon level onto the node (display-only).
         node.level = levels.get(node.id)
         nodes[node.id] = node
 
@@ -720,6 +559,7 @@ def build_world(
         graph=graph,
         nodes=nodes,
         levels=levels,
+        schedule=schedule,
     )
 
 

@@ -310,8 +310,8 @@ class RLEnv(gym.Env):
         reward: float = cash_after - cash_before
 
         # Update rolling sales history from intermediate node's sales.
-        # The runner tracks _last_tick_sales for IntermediateNode suppliers.
-        last_sales = sim._last_tick_sales.get("S", {})
+        # The runner accumulates _tick_sales for IntermediateNode suppliers.
+        last_sales = sim._tick_sales.get("S", {})
         for pid in self._active_subset:
             qty = last_sales.get(pid, 0)
             if pid in self._sales_history:
