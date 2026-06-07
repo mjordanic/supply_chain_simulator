@@ -110,6 +110,11 @@ class Simulation:
         # Injected into each intermediate's observation as ``observed_sales`` so
         # the policy sees the current tick's complete demand signal (not lagged).
         self._tick_sales: dict[str, dict[str, int]] = {}
+        # Per-tick rejection log (issue 05).  Reset each tick.  Each entry is a
+        # dict with keys: tick, buyer_id, supplier_id, pid, qty_requested,
+        # qty_filled, qty_rejected, reason.  Sink-level unmet_demand entries use
+        # supplier_id=None and reason="unmet_demand".
+        self._tick_rejections: list[dict] = []
         # Stashed central table from ``tick_world()`` for use by ``tick_decide_and_settle()``.
         self._current_table: Any = None
 
@@ -152,6 +157,7 @@ class Simulation:
         # -------------------------------------------------------------------
         self._last_tick_orders = {}
         self._tick_sales = {}
+        self._tick_rejections = []
         _run_demand_pull_schedule(self, table, current_tick)
 
         # -------------------------------------------------------------------
@@ -217,6 +223,7 @@ class Simulation:
 
         self._last_tick_orders = {}
         self._tick_sales = {}
+        self._tick_rejections = []
         _run_demand_pull_schedule(self, table, current_tick)
         _produce_factories(self, current_tick)
         _credit_sinks(self.nodes)
@@ -313,6 +320,8 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                         allowed_supplier_ids=direct_supplier_ids,
                     )
 
+                total_filled = 0
+                pid = buyer.product_id
                 for supplier_id, qty in action.get("buy", []):
                     if qty <= 0:
                         continue
@@ -321,24 +330,51 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                     supplier = sim.nodes.get(supplier_id)
                     if supplier is None:
                         continue
-                    lt = sim.graph.lead_time(supplier_id, buyer.id, buyer.product_id)
+                    lt = sim.graph.lead_time(supplier_id, buyer.id, pid)
                     result = execute_buy(
                         buyer=buyer,
                         supplier=supplier,
-                        pid=buyer.product_id,
+                        pid=pid,
                         qty_requested=qty,
                         table=table,
                         event_engine=sim.event_engine,
                         current_tick=current_tick,
                         lead_time=lt,
                     )
+                    total_filled += result.qty_filled
+                    # Log per-supplier rejections (issue 05).
+                    if result.qty_rejected > 0:
+                        sim._tick_rejections.append({
+                            "tick": current_tick,
+                            "buyer_id": buyer.id,
+                            "supplier_id": supplier_id,
+                            "pid": pid,
+                            "qty_requested": qty,
+                            "qty_filled": result.qty_filled,
+                            "qty_rejected": result.qty_rejected,
+                            "reason": result.reason,
+                        })
                     # Accumulate sales for the supplier (if intermediate) so that
                     # when it is processed later in the walk, its observed_sales
                     # reflects the complete current-tick demand.
                     if isinstance(supplier, IntermediateNode) and result.qty_filled > 0:
                         sup_sales = sim._tick_sales.setdefault(supplier_id, {})
-                        pid_sold = buyer.product_id
-                        sup_sales[pid_sold] = sup_sales.get(pid_sold, 0) + result.qty_filled
+                        sup_sales[pid] = sup_sales.get(pid, 0) + result.qty_filled
+
+                # Log unmet demand: residual the sink could not source from any supplier.
+                # This is the true lost-sale measure after issue 04's fall-through.
+                unmet = int(demand_target) - total_filled
+                if unmet > 0:
+                    sim._tick_rejections.append({
+                        "tick": current_tick,
+                        "buyer_id": buyer.id,
+                        "supplier_id": None,
+                        "pid": buyer.product_id,
+                        "qty_requested": int(demand_target),
+                        "qty_filled": total_filled,
+                        "qty_rejected": unmet,
+                        "reason": "unmet_demand",
+                    })
 
             elif isinstance(buyer, IntermediateNode):
                 obs = build_intermediate_obs(buyer, tick=current_tick)
@@ -365,7 +401,7 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                         if supplier is None:
                             continue
                         lt = sim.graph.lead_time(supplier_id, buyer.id, pid)
-                        execute_buy(
+                        result = execute_buy(
                             buyer=buyer,
                             supplier=supplier,
                             pid=pid,
@@ -376,6 +412,18 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                             lead_time=lt,
                         )
                         buyer_orders[pid] = buyer_orders.get(pid, 0) + qty
+                        # Log per-supplier rejections for intermediate reorders (issue 05).
+                        if result.qty_rejected > 0:
+                            sim._tick_rejections.append({
+                                "tick": current_tick,
+                                "buyer_id": buyer.id,
+                                "supplier_id": supplier_id,
+                                "pid": pid,
+                                "qty_requested": qty,
+                                "qty_filled": result.qty_filled,
+                                "qty_rejected": result.qty_rejected,
+                                "reason": result.reason,
+                            })
 
 
 def _produce_factories(sim: "Simulation", current_tick: int) -> None:
@@ -704,6 +752,7 @@ class Runner:
             "node_inventory": node_inventory,
             "node_pending": node_pending,
             "node_orders": dict(self._sim._last_tick_orders),
+            "rejections": list(self._sim._tick_rejections),
         }
 
 

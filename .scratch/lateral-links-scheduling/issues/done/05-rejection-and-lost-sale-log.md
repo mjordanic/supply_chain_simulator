@@ -1,6 +1,6 @@
 # 05 — Rejection & lost-sale log
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

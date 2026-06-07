@@ -693,3 +693,116 @@ class TestExecuteBuyCashConservation:
         )
 
         assert result.qty_filled == 5
+
+
+# ---------------------------------------------------------------------------
+# AllocationResult.reason — binding-constraint annotation (issue 05)
+# ---------------------------------------------------------------------------
+
+class TestAllocationResultReason:
+    """``AllocationResult.reason`` reports the binding constraint."""
+
+    def test_reason_none_on_full_fill(self):
+        buyer = _make_buyer(cash=9999.0)
+        supplier = _make_supplier()
+        table = _make_table("supplier-1", "P0001", available=100, price=5.0)
+
+        result = execute_buy(
+            buyer=buyer, supplier=supplier, pid="P0001", qty_requested=10,
+            table=table, event_engine=None, current_tick=0, lead_time=1,
+        )
+
+        assert result.reason is None
+
+    def test_reason_no_offer(self):
+        """Supplier published no offer for this pid."""
+        buyer = _make_buyer(cash=9999.0)
+        supplier = _make_supplier()
+        # Publish a different pid so "P0001" has no offer.
+        table = CentralTable()
+        table.publish("supplier-1", "OTHER", Offer(available_qty=100, list_price=5.0, min_order=0))
+
+        result = execute_buy(
+            buyer=buyer, supplier=supplier, pid="P0001", qty_requested=10,
+            table=table, event_engine=None, current_tick=0, lead_time=1,
+        )
+
+        assert result.reason == "no_offer"
+        assert result.qty_filled == 0
+        assert result.qty_rejected == 10
+
+    def test_reason_below_min_order(self):
+        """Order quantity below the supplier's min_order."""
+        buyer = _make_buyer(cash=9999.0)
+        supplier = _make_supplier()
+        table = _make_table("supplier-1", "P0001", available=100, price=5.0, min_order=20)
+
+        result = execute_buy(
+            buyer=buyer, supplier=supplier, pid="P0001", qty_requested=5,
+            table=table, event_engine=None, current_tick=0, lead_time=1,
+        )
+
+        assert result.reason == "below_min_order"
+        assert result.qty_filled == 0
+        assert result.qty_rejected == 5
+
+    def test_reason_insufficient_stock(self):
+        """Supplier has fewer units than requested."""
+        buyer = _make_buyer(cash=9999.0)
+        supplier = _make_supplier()
+        table = _make_table("supplier-1", "P0001", available=3, price=5.0)
+
+        result = execute_buy(
+            buyer=buyer, supplier=supplier, pid="P0001", qty_requested=10,
+            table=table, event_engine=None, current_tick=0, lead_time=1,
+        )
+
+        assert result.reason == "insufficient_stock"
+        assert result.qty_filled == 3
+        assert result.qty_rejected == 7
+
+    def test_reason_insufficient_cash(self):
+        """Buyer's cash limits the fill."""
+        # cash=10, price=5 → affordable=2; requested=10
+        buyer = _make_buyer(cash=10.0)
+        supplier = _make_supplier()
+        table = _make_table("supplier-1", "P0001", available=100, price=5.0)
+
+        result = execute_buy(
+            buyer=buyer, supplier=supplier, pid="P0001", qty_requested=10,
+            table=table, event_engine=None, current_tick=0, lead_time=1,
+        )
+
+        assert result.reason == "insufficient_cash"
+        assert result.qty_filled == 2
+        assert result.qty_rejected == 8
+
+    def test_reason_insufficient_capacity(self):
+        """Buyer capacity limits the fill."""
+        # capacity=5, inventory already has 3 → remaining=2; requested=10
+        buyer = _make_buyer(cash=9999.0, inventory={"P0001": 3}, capacity=5)
+        supplier = _make_supplier()
+        table = _make_table("supplier-1", "P0001", available=100, price=5.0)
+
+        result = execute_buy(
+            buyer=buyer, supplier=supplier, pid="P0001", qty_requested=10,
+            table=table, event_engine=None, current_tick=0, lead_time=1,
+        )
+
+        assert result.reason == "insufficient_capacity"
+        assert result.qty_filled == 2
+        assert result.qty_rejected == 8
+
+    def test_reason_on_zero_fill_due_to_capacity(self):
+        """capacity fully exhausted → reason is insufficient_capacity."""
+        buyer = _make_buyer(cash=9999.0, inventory={"P0001": 10}, capacity=10)
+        supplier = _make_supplier()
+        table = _make_table("supplier-1", "P0001", available=100, price=5.0)
+
+        result = execute_buy(
+            buyer=buyer, supplier=supplier, pid="P0001", qty_requested=5,
+            table=table, event_engine=None, current_tick=0, lead_time=1,
+        )
+
+        assert result.reason == "insufficient_capacity"
+        assert result.qty_filled == 0

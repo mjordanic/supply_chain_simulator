@@ -34,11 +34,17 @@ class AllocationResult:
         or min-order rejection).
     cash_paid:
         Total cash transferred from buyer to seller.
+    reason:
+        The binding constraint that limited the fill, or ``None`` when the
+        order was fully satisfied.  One of: ``"no_offer"``,
+        ``"below_min_order"``, ``"insufficient_stock"``,
+        ``"insufficient_cash"``, ``"insufficient_capacity"``.
     """
 
     qty_filled: int
     qty_rejected: int
     cash_paid: float
+    reason: str | None = None
 
 
 def execute_buy(
@@ -126,6 +132,7 @@ def execute_buy(
             qty_filled=0,
             qty_rejected=qty_requested,
             cash_paid=0.0,
+            reason="no_offer",
         )
 
     # 2. Two-layer min-order check (ADR 0012).
@@ -144,16 +151,20 @@ def execute_buy(
             qty_filled=0,
             qty_rejected=qty_requested,
             cash_paid=0.0,
+            reason="below_min_order",
         )
 
     # 3. Clamp by available inventory.
-    qty_to_fill = min(qty_requested, offer.available_qty)
+    qty_after_stock = min(qty_requested, offer.available_qty)
 
     # 3b. Clamp by buyer's cash (payment at allocation time per ADR 0013).
     list_price = offer.list_price
     if list_price > 0:
         cash_affordable = int(buyer.cash / list_price)
-        qty_to_fill = min(qty_to_fill, cash_affordable)
+        qty_after_cash = min(qty_after_stock, cash_affordable)
+    else:
+        cash_affordable = qty_after_stock
+        qty_after_cash = qty_after_stock
 
     # 3c. Clamp by remaining buyer capacity (for IntermediateNode with finite capacity).
     buyer_capacity = getattr(buyer, "capacity", 0) or 0
@@ -166,17 +177,34 @@ def execute_buy(
         else:
             current_stock = 0
         remaining_capacity = max(0, buyer_capacity - current_stock)
-        qty_to_fill = min(qty_to_fill, remaining_capacity)
+        qty_to_fill = min(qty_after_cash, remaining_capacity)
+    else:
+        remaining_capacity = qty_after_cash
+        qty_to_fill = qty_after_cash
 
     qty_to_fill = max(0, qty_to_fill)
     qty_rejected = qty_requested - qty_to_fill
     cash_paid = qty_to_fill * list_price
+
+    # Determine the binding constraint (for rejection logging).
+    if qty_to_fill < qty_requested:
+        if qty_after_stock < qty_requested:
+            _clamp_reason: str | None = "insufficient_stock"
+        elif qty_after_cash < qty_after_stock:
+            _clamp_reason = "insufficient_cash"
+        elif qty_to_fill < qty_after_cash:
+            _clamp_reason = "insufficient_capacity"
+        else:
+            _clamp_reason = "insufficient_stock"  # clamped to 0 by max(0,...)
+    else:
+        _clamp_reason = None
 
     if qty_to_fill == 0:
         return AllocationResult(
             qty_filled=0,
             qty_rejected=qty_rejected,
             cash_paid=0.0,
+            reason=_clamp_reason,
         )
 
     # 4. Commit to the central table — decrements available_qty and updates EMA.
@@ -221,6 +249,7 @@ def execute_buy(
         qty_filled=qty_to_fill,
         qty_rejected=qty_rejected,
         cash_paid=cash_paid,
+        reason=_clamp_reason,
     )
 
 
