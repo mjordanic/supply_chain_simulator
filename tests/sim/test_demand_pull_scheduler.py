@@ -478,3 +478,224 @@ class TestRunnerLateralGraph:
             conserved = current_total + in_transit
             expected = initial_total + t * income_per_tick
             assert abs(conserved - expected) < 1e-6
+
+
+class TestUnlaggedDemandSignal:
+    """Issue 03: observed_sales carries current-tick (un-lagged) demand.
+
+    The demand-pull walk processes sinks before intermediates, so by the time
+    an intermediate node is processed its ``observed_sales`` already reflects
+    all sales that happened in the same tick.
+    """
+
+    def _build_simple_chain_sim(self, demand: int = 5, init_stock: int = 100):
+        """factory → shop → sink; shop starts with init_stock units."""
+        from src.sim.distributions import Constant
+        from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+        from src.sim.runner import build_world
+        from src.sim.scenario import NodeInstance, Scenario
+
+        catalog = _minimal_catalog()
+        pid = catalog[0].product_id
+
+        factory = FactoryNode(
+            id="factory", region="US", init_seed=1,
+            produces_product_id=pid, unit_cost=1.0,
+            capacity_per_tick=200, inventory=500, list_price=1.0, cash=0.0,
+        )
+        shop = IntermediateNode(
+            id="shop", region="US", init_seed=2,
+            carried_products={pid}, capacity=1000, tags=["shop"],
+            inventory={pid: init_stock}, pending={},
+            list_prices={pid: 2.0}, min_order_imposed={pid: 0}, cash=5000.0,
+        )
+        sink = DemandSinkNode(
+            id="sink", region="US", init_seed=3,
+            product_id=pid, demand_dist=Constant(demand),
+            income_rate=500.0, cash=5000.0,
+        )
+        edges = [
+            EdgeSpec(supplier_id="factory", buyer_id="shop", default_lead_time=1),
+            EdgeSpec(supplier_id="shop", buyer_id="sink", default_lead_time=1),
+        ]
+        scenario = Scenario(
+            catalog=catalog,
+            market=_minimal_market_params(),
+            disruption=_minimal_disruption_params(),
+            item_lifecycle=_minimal_lifecycle_params(),
+            n_steps=10,
+            start_date=datetime(2024, 1, 1),
+            world_seed=42,
+            nodes=[
+                NodeInstance(node=factory, init_seed=1),
+                NodeInstance(node=shop, init_seed=2),
+                NodeInstance(node=sink, init_seed=3),
+            ],
+            edges=edges,
+        )
+        return build_world(scenario), pid
+
+    def test_observed_sales_present_in_intermediate_obs(self):
+        """observed_sales is injected into the intermediate observation each tick."""
+        from src.sim.runner import _run_demand_pull_schedule
+        from src.sim.central_table import CentralTable, Offer
+        from src.sim.node import IntermediateNode, FactoryNode
+        from src.sim.observation import build_intermediate_obs
+
+        sim, pid = self._build_simple_chain_sim(demand=5, init_stock=50)
+
+        # Manually run one tick's world phase to get the table.
+        sim.market.tick()
+        sim.event_engine.tick(sim.market)
+        current_tick = sim.market.current_step()
+
+        # Publish offers.
+        table = CentralTable()
+        for nid, node in sim.nodes.items():
+            if isinstance(node, FactoryNode):
+                table.publish(nid, node.produces_product_id,
+                              Offer(available_qty=node.inventory, list_price=node.list_price, min_order=0))
+            elif isinstance(node, IntermediateNode):
+                for p in node.carried_products:
+                    table.publish(nid, p,
+                                  Offer(available_qty=node.inventory.get(p, 0),
+                                        list_price=node.list_prices.get(p, 0.0), min_order=0))
+
+        # Reset accumulators.
+        sim._last_tick_orders = {}
+        sim._tick_sales = {}
+
+        # Capture observed_sales passed to shop using a spy policy.
+        captured_obs: list[dict] = []
+
+        class SpyPolicy:
+            def decide(self, obs, table):
+                captured_obs.append(dict(obs))
+                return {"order": {}, "list_price": {}, "min_order_imposed": {}}
+
+        sim.nodes["shop"].policy = SpyPolicy()
+
+        _run_demand_pull_schedule(sim, table, current_tick)
+
+        assert len(captured_obs) == 1
+        obs = captured_obs[0]
+        assert "observed_sales" in obs, "observed_sales must be injected into intermediate obs"
+        # Sink buys demand=5 units; shop sold 5 units to sink this tick.
+        assert obs["observed_sales"].get(pid, 0) == 5, (
+            f"expected 5 current-tick sales for pid={pid}, got {obs['observed_sales']}"
+        )
+
+    def test_observed_sales_zero_when_no_downstream_buyers(self):
+        """observed_sales is {} (not lagged) when the shop has no downstream demand."""
+        from src.sim.runner import _run_demand_pull_schedule
+        from src.sim.central_table import CentralTable, Offer
+        from src.sim.node import IntermediateNode, FactoryNode
+
+        # Build a sim where the sink has zero demand.
+        sim, pid = self._build_simple_chain_sim(demand=0, init_stock=50)
+
+        sim.market.tick()
+        sim.event_engine.tick(sim.market)
+        current_tick = sim.market.current_step()
+
+        table = CentralTable()
+        for nid, node in sim.nodes.items():
+            if isinstance(node, FactoryNode):
+                table.publish(nid, node.produces_product_id,
+                              Offer(available_qty=node.inventory, list_price=node.list_price, min_order=0))
+            elif isinstance(node, IntermediateNode):
+                for p in node.carried_products:
+                    table.publish(nid, p,
+                                  Offer(available_qty=node.inventory.get(p, 0),
+                                        list_price=node.list_prices.get(p, 0.0), min_order=0))
+
+        sim._last_tick_orders = {}
+        sim._tick_sales = {}
+
+        captured_obs: list[dict] = []
+
+        class SpyPolicy:
+            def decide(self, obs, table):
+                captured_obs.append(dict(obs))
+                return {"order": {}, "list_price": {}, "min_order_imposed": {}}
+
+        sim.nodes["shop"].policy = SpyPolicy()
+
+        _run_demand_pull_schedule(sim, table, current_tick)
+
+        assert len(captured_obs) == 1
+        assert captured_obs[0].get("observed_sales", {}) == {}, (
+            "observed_sales should be empty dict when no downstream sales occurred"
+        )
+
+    def test_intermediate_reorders_from_same_tick_sales_on_lateral_graph(self):
+        """End-to-end: on a lateral graph, shop reorders in response to same-tick sales.
+
+        factory → wh → sink.  wh starts with exactly one period of stock
+        (init_stock == demand).  After one tick the sink buys all available
+        units; observed_sales for wh equals demand; the textbook policy,
+        seeing sales=demand and position falling to 0, must place a reorder.
+        """
+        from src.sim.distributions import Constant
+        from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+        from src.sim.policy import MultiSupplierTextbookPolicy
+        from src.sim.runner import build_world
+        from src.sim.scenario import NodeInstance, Scenario
+
+        catalog = _minimal_catalog()
+        pid = catalog[0].product_id
+
+        demand = 5
+        factory = FactoryNode(
+            id="factory", region="US", init_seed=1,
+            produces_product_id=pid, unit_cost=1.0,
+            capacity_per_tick=200, inventory=500, list_price=1.0, cash=0.0,
+        )
+        wh = IntermediateNode(
+            id="wh", region="US", init_seed=2,
+            carried_products={pid}, capacity=2000, tags=["warehouse"],
+            inventory={pid: demand},  # exactly one tick's worth of stock
+            pending={},
+            list_prices={pid: 2.0}, min_order_imposed={pid: 0}, cash=50_000.0,
+        )
+        sink = DemandSinkNode(
+            id="sink", region="US", init_seed=3,
+            product_id=pid, demand_dist=Constant(demand),
+            income_rate=5000.0, cash=50_000.0,
+        )
+        # Attach a textbook policy to wh that will reorder once it sees sales.
+        wh_policy = MultiSupplierTextbookPolicy(
+            delivery_lag=1,
+            unit_cost=1.0,
+            list_price_out=2.0,
+            cover_horizon_ticks=5,
+            safety_lead_pct_of_lag=0.0,
+        )
+        edges = [
+            EdgeSpec(supplier_id="factory", buyer_id="wh", default_lead_time=1),
+            EdgeSpec(supplier_id="wh", buyer_id="sink", default_lead_time=1),
+        ]
+        scenario = Scenario(
+            catalog=catalog,
+            market=_minimal_market_params(),
+            disruption=_minimal_disruption_params(),
+            item_lifecycle=_minimal_lifecycle_params(),
+            n_steps=5,
+            start_date=datetime(2024, 1, 1),
+            world_seed=7,
+            nodes=[
+                NodeInstance(node=factory, init_seed=1),
+                NodeInstance(node=wh, init_seed=2, policy=wh_policy),
+                NodeInstance(node=sink, init_seed=3),
+            ],
+            edges=edges,
+        )
+        sim = build_world(scenario)
+        sim.tick()
+
+        # After tick 1, the sink bought from wh; wh should have placed a reorder.
+        orders_tick1 = sim._last_tick_orders.get("wh", {})
+        assert orders_tick1.get(pid, 0) > 0, (
+            f"wh must place a reorder on tick 1 after observing same-tick sales; "
+            f"got orders={orders_tick1}"
+        )

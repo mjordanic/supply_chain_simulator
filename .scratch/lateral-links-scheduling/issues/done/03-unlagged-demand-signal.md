@@ -1,6 +1,6 @@
 # 03 — Un-lagged demand signal (`observed_sales`)
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

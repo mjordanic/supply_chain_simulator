@@ -2069,13 +2069,11 @@ class _SingleSupplierAdapter(IntermediatePolicy):
 
         # The textbook policy needs "sales" to update its rolling log so the
         # rate estimate (and hence the reorder point ``s``) becomes non-zero.
-        # Prefer the runner-injected ``observed_sales`` (exact units sold to
-        # downstream buyers this tick under demand-pull ordering); fall back
-        # to 0 only when it is absent.
-        # Hardcoding 0 here left ``s == 0`` forever, so ``position < s`` never
-        # held and the shop never reordered.
+        # ``observed_sales`` is injected by the runner under demand-pull ordering
+        # (ADR 0018) and reflects complete current-tick sales.  Zero is the
+        # correct signal when no downstream buyers transacted this tick.
         observed_sales: dict[str, int] = dict(
-            obs_intermediate.get("observed_sales", obs_intermediate.get("prev_tick_sales", {}))
+            obs_intermediate.get("observed_sales", {})
         )
         sales_approx: dict[str, int] = {
             pid: observed_sales.get(pid, 0) for pid in inventory
@@ -2339,12 +2337,6 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
         self.list_price_out = list_price_out
         self.per_supplier_min_order_floor = per_supplier_min_order_floor
         self.routing_strategy = routing_strategy
-        # Per-pid inventory snapshot from the previous decide call.  Used by
-        # ``decide`` to compute approximate sales as the inventory decrease
-        # between consecutive ticks (``max(0, prev_inv - curr_inv)``).
-        # Inventory increases (deliveries) give 0 sales — conservative but
-        # correct: the rate estimate self-corrects once depletion cycles begin.
-        self._last_inventory: dict[str, int] = {}
         self._inner = self._make_inner_policy(
             cover_horizon_ticks=cover_horizon_ticks,
             safety_lead_pct_of_lag=safety_lead_pct_of_lag,
@@ -2468,30 +2460,13 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
             for pid, qty in sup_pending.items():
                 pending_flat[pid] = pending_flat.get(pid, 0) + qty
 
-        # Use runner-injected observed_sales when available (preferred).
-        # Under demand-pull ordering (ADR 0018) the runner populates
-        # ``observed_sales`` with current-tick sales that are complete by the
-        # time this intermediate is processed.
-        # Also accepts the old ``prev_tick_sales`` key for backward compat.
-        # Fallback: estimate sales as inventory decrease from previous tick —
-        # conservative (delivery ticks give 0) but self-correcting.
-        _sales_signal: dict[str, int] = (
-            obs_intermediate.get("observed_sales")
-            or obs_intermediate.get("prev_tick_sales")
-            or {}
-        )
-        if _sales_signal:
-            sales_approx: dict[str, int] = {
-                pid: _sales_signal.get(pid, 0) for pid in inventory
-            }
-        else:
-            # Inventory-delta fallback (used when runner doesn't inject sales).
-            sales_approx = {
-                pid: max(0, self._last_inventory.get(pid, 0) - inventory.get(pid, 0))
-                for pid in inventory
-            }
-        # Snapshot the current inventory for the fallback path in the next call.
-        self._last_inventory = dict(inventory)
+        # ``observed_sales`` is injected by the runner under demand-pull ordering
+        # (ADR 0018) and reflects complete current-tick sales.  Zero is correct
+        # when no downstream buyers transacted this tick (e.g. cold-start).
+        _sales_signal: dict[str, int] = obs_intermediate.get("observed_sales") or {}
+        sales_approx: dict[str, int] = {
+            pid: _sales_signal.get(pid, 0) for pid in inventory
+        }
 
         node_capacity = int(obs_intermediate.get("capacity", 0)) or 10_000
 
