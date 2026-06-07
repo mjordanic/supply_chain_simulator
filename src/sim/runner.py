@@ -682,7 +682,8 @@ def build_world(
     # Build the Graph topology.
     node_ids = [ni.node.id for ni in scenario.nodes]
     edges: list[EdgeSpec] = list(scenario.edges)
-    graph = build_graph(node_ids, edges)
+    node_types: dict[str, str] = {ni.node.id: ni.node._node_type for ni in scenario.nodes}
+    graph = build_graph(node_ids, edges, node_types=node_types)
 
     # Compute echelon levels.
     levels = compute_levels(graph)

@@ -9,7 +9,7 @@ Public API
 - ``EdgeSpec``       — immutable edge descriptor with default + per-product lead times
 - ``Graph``          — validated DAG with topology queries
 - ``build_graph``    — authoring entry point: validates then constructs
-- ``validate_dag``   — raises ``ValueError`` on cycles, unreachable nodes, same-level links
+- ``validate_dag``   — raises ``ValueError`` on cycles, unreachable nodes, illegal type-based edges
 - ``compute_levels`` — returns ``dict[node_id, int]`` via longest-path-from-any-source
 """
 
@@ -99,15 +99,40 @@ class Graph:
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_dag(nodes: list[str], edges: list[EdgeSpec]) -> None:
+def validate_dag(
+    nodes: list[str],
+    edges: list[EdgeSpec],
+    *,
+    node_types: dict[str, str] | None = None,
+) -> None:
     """Validate that *nodes* and *edges* form a legal DAG.
+
+    Parameters
+    ----------
+    nodes:
+        List of node IDs in the graph.
+    edges:
+        List of directed supply edges.
+    node_types:
+        Optional mapping of ``{node_id: node_type}`` where each value is one of
+        ``"factory"``, ``"intermediate"``, or ``"demand_sink"``.  When supplied,
+        **type-based edge rules** are enforced instead of the old BFS same-level
+        check:
+
+        - Supplier must be ``factory`` or ``intermediate`` (sinks don't sell).
+        - Buyer must be ``intermediate`` or ``demand_sink`` (factories don't buy;
+          flow must pass through ≥1 intermediate so ``factory→demand_sink`` is
+          illegal).
+
+        When *None* (default), no type-based check is performed (backward-compat
+        mode for callers that haven't yet plumbed node types through).
 
     Raises
     ------
     ValueError
         - If the graph contains a **cycle** (including self-loops).
         - If any node is **unreachable** from the connected component (isolated).
-        - If any edge links two nodes at the **same echelon level**.
+        - If *node_types* is supplied and any edge violates the type rules above.
     """
     node_set = set(nodes)
 
@@ -156,31 +181,41 @@ def validate_dag(nodes: list[str], edges: list[EdgeSpec]) -> None:
             )
 
     # ------------------------------------------------------------------
-    # 3. Same-level supplier-link detection
+    # 3. Edge-type validation (only when node_types is supplied)
     #
-    # Uses BFS shortest-path levels from all source nodes (nodes with no
-    # incoming edges). An edge A→B is a same-level peer link when
-    # BFS-level[A] == BFS-level[B]. This correctly identifies horizontal
-    # flows (e.g. shop supplying another shop at the same echelon) while
-    # allowing all valid top-down links.
+    # Replaces the old BFS same-level check.  Rules:
+    #   - Supplier ∈ {factory, intermediate}   (sinks don't sell)
+    #   - Buyer   ∈ {intermediate, demand_sink} (factories don't buy;
+    #     factory→sink is forbidden — flow must pass through ≥1 intermediate)
     #
-    # Why shortest-path (not longest-path)?  Shortest-path assigns a node
-    # the echelon of its *closest* upstream factory, which is its natural
-    # tier. A "peer" edge between two nodes sharing the same closest-factory
-    # distance has the same BFS level.  A legitimate downward edge always
-    # goes from a lower BFS level to a higher BFS level.
+    # Lateral intermediate→intermediate edges are explicitly legal here.
     # ------------------------------------------------------------------
-    bfs_levels = _compute_bfs_levels(nodes, adj)
-    for edge in edges:
-        sup_level = bfs_levels[edge.supplier_id]
-        buy_level = bfs_levels[edge.buyer_id]
-        if sup_level == buy_level:
-            raise ValueError(
-                f"Same-level supplier link detected: '{edge.supplier_id}' → "
-                f"'{edge.buyer_id}' — both are at echelon level "
-                f"{sup_level} (shortest-path from sources). "
-                "Supplier links must cross echelon boundaries."
-            )
+    if node_types is not None:
+        for edge in edges:
+            sup_type = node_types.get(edge.supplier_id)
+            buy_type = node_types.get(edge.buyer_id)
+            # Rule: sinks don't sell (demand_sink as supplier is illegal)
+            if sup_type == "demand_sink":
+                raise ValueError(
+                    f"Illegal edge '{edge.supplier_id}' → '{edge.buyer_id}': "
+                    f"supplier node '{edge.supplier_id}' is a demand_sink "
+                    f"(rule: sinks don't sell)."
+                )
+            # Rule: factories don't buy (factory as buyer is illegal)
+            if buy_type == "factory":
+                raise ValueError(
+                    f"Illegal edge '{edge.supplier_id}' → '{edge.buyer_id}': "
+                    f"buyer node '{edge.buyer_id}' is a factory "
+                    f"(rule: factories don't buy)."
+                )
+            # Rule: factory→sink is illegal; flow must pass through ≥1 intermediate
+            if sup_type == "factory" and buy_type == "demand_sink":
+                raise ValueError(
+                    f"Illegal edge '{edge.supplier_id}' → '{edge.buyer_id}': "
+                    f"factory→sink edge is not allowed — flow must pass through "
+                    f"at least one intermediate node "
+                    f"(rule: factory→sink bypasses intermediates)."
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -265,11 +300,29 @@ def compute_levels(graph: Graph) -> dict[str, int]:
 # Authoring entry point
 # ---------------------------------------------------------------------------
 
-def build_graph(nodes: list[str], edges: list[EdgeSpec]) -> Graph:
+def build_graph(
+    nodes: list[str],
+    edges: list[EdgeSpec],
+    *,
+    node_types: dict[str, str] | None = None,
+) -> Graph:
     """Validate *nodes* + *edges* and return a :class:`Graph`.
 
+    Parameters
+    ----------
+    nodes:
+        List of node IDs.
+    edges:
+        List of directed supply edges.
+    node_types:
+        Optional ``{node_id: node_type}`` mapping (values: ``"factory"``,
+        ``"intermediate"``, ``"demand_sink"``).  When supplied, type-based edge
+        validation is performed (lateral ``intermediate→intermediate`` edges are
+        legal; ``factory→sink``, ``→factory``, and ``sink→*`` edges are
+        rejected).  When *None*, no type check is performed (backward compat).
+
     Raises ``ValueError`` if the topology is invalid (cycle, unreachable node,
-    same-level link).
+    or illegal edge type when *node_types* is given).
     """
-    validate_dag(nodes, edges)
+    validate_dag(nodes, edges, node_types=node_types)
     return Graph(nodes, edges)

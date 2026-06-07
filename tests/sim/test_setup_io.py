@@ -821,6 +821,17 @@ def test_unknown_policy_name_raises(tmp_path):
               name: unknown_policy_xyz
               params: {}
 
+          - id: wh-1
+            type: intermediate
+            region: US
+            carried_products: [P0001]
+            capacity: 200
+            inventory: {P0001: 0}
+            list_prices: {P0001: 6.0}
+            policy:
+              name: base_stock
+              params: {S: 10}
+
           - id: sink-1
             type: demand_sink
             region: US
@@ -830,6 +841,9 @@ def test_unknown_policy_name_raises(tmp_path):
 
         edges:
           - supplier: factory-1
+            buyer: wh-1
+            lead_time: 1
+          - supplier: wh-1
             buyer: sink-1
             lead_time: 1
         """),

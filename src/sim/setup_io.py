@@ -581,9 +581,10 @@ def load_setup(setup_dir: str | Path) -> Any:
         _parse_edge(er, i, seen_node_ids) for i, er in enumerate(edges_raw)
     ]
 
-    # --- Validate DAG topology (cycles, unreachable, same-level) ----------
+    # --- Validate DAG topology (cycles, unreachable, type-based edge rules) --
+    node_types: dict[str, str] = {n.id: n._node_type for n in raw_nodes}
     try:
-        build_graph(list(seen_node_ids), edges)
+        build_graph(list(seen_node_ids), edges, node_types=node_types)
     except ValueError as exc:
         raise ValueError(f"setup.yaml graph topology error: {exc}") from exc
 

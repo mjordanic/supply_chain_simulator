@@ -296,6 +296,15 @@ def test_write_setup_related_products_round_trip(tmp_path):
         list_price: 4.0
         cash: 0.0
 
+      - id: shop-1
+        type: intermediate
+        region: US
+        carried_products: [P0001]
+        capacity: 200
+        inventory: {P0001: 5}
+        list_prices: {P0001: 7.0}
+        cash: 500.0
+
       - id: sink-1
         type: demand_sink
         region: US
@@ -306,6 +315,9 @@ def test_write_setup_related_products_round_trip(tmp_path):
 
     edges:
       - supplier: factory-1
+        buyer: shop-1
+        lead_time: 1
+      - supplier: shop-1
         buyer: sink-1
         lead_time: 1
     """)
@@ -549,11 +561,17 @@ def test_write_catalog_and_market_catalog_round_trip(tmp_path):
         {"id": "factory-1", "type": "factory", "region": "US",
          "produces_product_id": "P0001", "unit_cost": 4.0, "capacity_per_tick": 10,
          "inventory": 0, "list_price": 4.0, "cash": 0.0},
+        {"id": "shop-1", "type": "intermediate", "region": "US",
+         "carried_products": ["P0001"], "capacity": 100,
+         "inventory": {"P0001": 0}, "list_prices": {"P0001": 6.0}, "cash": 500.0},
         {"id": "sink-1", "type": "demand_sink", "region": "US",
          "product_id": "P0001", "demand_dist": {"kind": "constant", "value": 5.0},
          "income_rate": 50.0, "cash": 500.0},
     ]
-    doc["edges"] = [{"supplier": "factory-1", "buyer": "sink-1", "lead_time": 1}]
+    doc["edges"] = [
+        {"supplier": "factory-1", "buyer": "shop-1", "lead_time": 1},
+        {"supplier": "shop-1", "buyer": "sink-1", "lead_time": 1},
+    ]
     (out_dir / "setup.yaml").write_text(yaml.safe_dump(doc))
 
     reloaded = load_setup(out_dir)
