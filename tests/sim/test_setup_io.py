@@ -354,6 +354,223 @@ def test_load_setup_distribution_demand_dist(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# IntermediateNode economic parameters (holding_rate / order_fee)
+# ---------------------------------------------------------------------------
+
+
+def test_intermediate_economic_params_default_when_omitted(tmp_path):
+    """An intermediate node that omits holding_rate/order_fee gets the canonical default."""
+    from src.sim.node import DEFAULT_HOLDING_RATE, DEFAULT_ORDER_FEE, IntermediateNode
+
+    setup_dir = _write_minimal_setup(tmp_path)
+    scenario = load_setup(setup_dir)
+    shop = next(
+        ni.node for ni in scenario.nodes if isinstance(ni.node, IntermediateNode)
+    )
+    assert shop.holding_rate == DEFAULT_HOLDING_RATE
+    assert shop.order_fee == DEFAULT_ORDER_FEE
+
+
+def test_intermediate_economic_params_parsed(tmp_path):
+    """Per-node holding_rate/order_fee in setup.yaml are parsed onto the node."""
+    from src.sim.node import IntermediateNode
+
+    yaml_content = textwrap.dedent("""\
+    run:
+      n_steps: 2
+      start_date: "2024-01-01"
+      world_seed: 7
+
+    market:
+      cycle_len: 365
+      cycle_amp: 0.0
+      init_demand: 1.0
+      init_supply: 1.0
+      peak_factor: 1.0
+      off_factor: 1.0
+      season_months: {}
+      regions: [US]
+      correlation: 0.0
+      trend_update_interval: 100
+      min_value: 0.5
+      max_value: 2.0
+      stage_multipliers: {}
+      price_elasticity: 0.0
+      promo_multiplier: 1.0
+      demand_factor_min: 0.1
+      supply_factor_min: 0.01
+      cross_inv_lo: 0.3
+      cross_inv_hi: 0.7
+      cross_factor_range: [0.5, 1.5]
+      trend: {kind: constant, value: 1.0}
+      demand_shock: {kind: constant, value: 0.0}
+      supply_shock: {kind: constant, value: 0.0}
+      base_demand: {kind: constant, value: 8.0}
+
+    disruption:
+      event_prob: 0.0
+      types: [natural_disaster]
+      regions: [US]
+      severity: {kind: constant, value: 0.0}
+      duration: {kind: constant, value: 1}
+
+    nodes:
+      - id: factory-1
+        type: factory
+        region: US
+        produces_product_id: P0001
+        unit_cost: 4.0
+        capacity_per_tick: 30
+        inventory: 50
+        list_price: 4.0
+
+      - id: shop-1
+        type: intermediate
+        region: US
+        carried_products: [P0001]
+        capacity: 200
+        inventory: {P0001: 10}
+        list_prices: {P0001: 7.0}
+        holding_rate: 0.05
+        order_fee: 12.5
+
+      - id: sink-1
+        type: demand_sink
+        region: US
+        product_id: P0001
+        demand_dist: {kind: constant, value: 5.0}
+        income_rate: 100.0
+
+    edges:
+      - supplier: factory-1
+        buyer: shop-1
+        lead_time: 2
+      - supplier: shop-1
+        buyer: sink-1
+        lead_time: 1
+    """)
+    setup_dir = _write_minimal_setup(tmp_path, yaml=yaml_content)
+    scenario = load_setup(setup_dir)
+    shop = next(
+        ni.node for ni in scenario.nodes if isinstance(ni.node, IntermediateNode)
+    )
+    assert shop.holding_rate == 0.05
+    assert shop.order_fee == 12.5
+
+
+def test_intermediate_economic_params_roundtrip(tmp_path):
+    """holding_rate/order_fee survive a load -> write_setup -> load round-trip per node."""
+    from src.sim.node import IntermediateNode
+    from src.sim.setup_io import write_setup
+
+    yaml_content = textwrap.dedent("""\
+    run:
+      n_steps: 2
+      start_date: "2024-01-01"
+      world_seed: 7
+
+    market:
+      cycle_len: 365
+      cycle_amp: 0.0
+      init_demand: 1.0
+      init_supply: 1.0
+      peak_factor: 1.0
+      off_factor: 1.0
+      season_months: {}
+      regions: [US]
+      correlation: 0.0
+      trend_update_interval: 100
+      min_value: 0.5
+      max_value: 2.0
+      stage_multipliers: {}
+      price_elasticity: 0.0
+      promo_multiplier: 1.0
+      demand_factor_min: 0.1
+      supply_factor_min: 0.01
+      cross_inv_lo: 0.3
+      cross_inv_hi: 0.7
+      cross_factor_range: [0.5, 1.5]
+      trend: {kind: constant, value: 1.0}
+      demand_shock: {kind: constant, value: 0.0}
+      supply_shock: {kind: constant, value: 0.0}
+      base_demand: {kind: constant, value: 8.0}
+
+    disruption:
+      event_prob: 0.0
+      types: [natural_disaster]
+      regions: [US]
+      severity: {kind: constant, value: 0.0}
+      duration: {kind: constant, value: 1}
+
+    nodes:
+      - id: factory-1
+        type: factory
+        region: US
+        produces_product_id: P0001
+        unit_cost: 4.0
+        capacity_per_tick: 30
+        inventory: 50
+        list_price: 4.0
+
+      - id: shop-1
+        type: intermediate
+        region: US
+        carried_products: [P0001]
+        capacity: 200
+        inventory: {P0001: 10}
+        list_prices: {P0001: 7.0}
+        holding_rate: 0.05
+        order_fee: 12.5
+
+      - id: shop-2
+        type: intermediate
+        region: US
+        carried_products: [P0001]
+        capacity: 200
+        inventory: {P0001: 10}
+        list_prices: {P0001: 7.0}
+
+      - id: sink-1
+        type: demand_sink
+        region: US
+        product_id: P0001
+        demand_dist: {kind: constant, value: 5.0}
+        income_rate: 100.0
+
+    edges:
+      - supplier: factory-1
+        buyer: shop-1
+        lead_time: 2
+      - supplier: factory-1
+        buyer: shop-2
+        lead_time: 2
+      - supplier: shop-1
+        buyer: sink-1
+        lead_time: 1
+      - supplier: shop-2
+        buyer: sink-1
+        lead_time: 1
+    """)
+    setup_dir = _write_minimal_setup(tmp_path, yaml=yaml_content)
+
+    scenario = load_setup(setup_dir)
+    out_dir = tmp_path / "roundtrip"
+    write_setup(scenario, out_dir)
+    reloaded = load_setup(out_dir)
+
+    def _econ(scen):
+        return {
+            ni.node.id: (ni.node.holding_rate, ni.node.order_fee)
+            for ni in scen.nodes
+            if isinstance(ni.node, IntermediateNode)
+        }
+
+    expected = {"shop-1": (0.05, 12.5), "shop-2": (0.01, 50.0)}
+    assert _econ(scenario) == expected
+    assert _econ(reloaded) == expected
+
+
+# ---------------------------------------------------------------------------
 # Determinism: identical setup dir → bit-identical run logs
 # ---------------------------------------------------------------------------
 

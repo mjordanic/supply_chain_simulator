@@ -38,6 +38,15 @@ if TYPE_CHECKING:
     from src.sim.scenario import Ware
 
 
+# Canonical default economic parameters for an ``IntermediateNode`` (ADR 0019
+# Rule 4). Applied wherever a setup does not specify them. Single source of
+# truth — the setup IO and scenario-JSON layers reference these same constants
+# when a field is absent, so the default lives on the node, not in the tuning
+# config.
+DEFAULT_HOLDING_RATE = 0.01
+DEFAULT_ORDER_FEE = 50.0
+
+
 @dataclass
 class Node(ABC):
     """Abstract base for all node types in the supply-chain graph.
@@ -143,6 +152,14 @@ class IntermediateNode(Node):
         Minimum order size this node accepts from buyers, per product:
         ``{pid: min_qty}``. Orders below this threshold are rejected by
         the allocator.
+    holding_rate:
+        Per-tick holding cost as a fraction of catalog ``unit_cost``, charged
+        on closing on-hand inventory (ADR 0019 Rule 1). Defaults to
+        ``DEFAULT_HOLDING_RATE``. Carried with the scenario through save/load.
+    order_fee:
+        Fixed fee charged once per ``(node, supplier)`` purchase order
+        (ADR 0019 Rule 2). Defaults to ``DEFAULT_ORDER_FEE``. Carried with the
+        scenario through save/load.
     """
 
     carried_products: set[str] = field(default_factory=set)
@@ -153,6 +170,8 @@ class IntermediateNode(Node):
     list_prices: dict[str, float] = field(default_factory=dict)
     min_order_imposed: dict[str, int] = field(default_factory=dict)
     cash: float = 0.0
+    holding_rate: float = DEFAULT_HOLDING_RATE
+    order_fee: float = DEFAULT_ORDER_FEE
 
     @property
     def _node_type(self) -> str:

@@ -1,6 +1,6 @@
 # 01 — Economic parameters on IntermediateNode
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

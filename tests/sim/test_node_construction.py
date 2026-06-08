@@ -233,6 +233,34 @@ class TestIntermediateNode:
         node = _make_intermediate(init_seed=1)
         assert node.min_order_imposed == {"P0001": 1, "P0002": 1}
 
+    def test_holding_rate_default(self):
+        """holding_rate defaults to the canonical value when unspecified."""
+        from src.sim.node import DEFAULT_HOLDING_RATE
+
+        node = _make_intermediate(init_seed=1)
+        assert node.holding_rate == DEFAULT_HOLDING_RATE
+
+    def test_order_fee_default(self):
+        """order_fee defaults to the canonical value when unspecified."""
+        from src.sim.node import DEFAULT_ORDER_FEE
+
+        node = _make_intermediate(init_seed=1)
+        assert node.order_fee == DEFAULT_ORDER_FEE
+
+    def test_economic_params_custom(self):
+        """holding_rate and order_fee accept per-node overrides."""
+        node = IntermediateNode(
+            id="intermediate-2",
+            region="US",
+            init_seed=1,
+            carried_products={"P0001"},
+            capacity=100,
+            holding_rate=0.05,
+            order_fee=12.5,
+        )
+        assert node.holding_rate == 0.05
+        assert node.order_fee == 12.5
+
 
 # ---------------------------------------------------------------------------
 # DemandSinkNode field tests

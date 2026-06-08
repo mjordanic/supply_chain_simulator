@@ -365,7 +365,11 @@ def _parse_factory_node(raw: dict, path: str, world_seed: int) -> Any:
 
 def _parse_intermediate_node(raw: dict, path: str, world_seed: int) -> Any:
     """Parse an intermediate node dict into an ``IntermediateNode`` instance."""
-    from src.sim.node import IntermediateNode
+    from src.sim.node import (
+        DEFAULT_HOLDING_RATE,
+        DEFAULT_ORDER_FEE,
+        IntermediateNode,
+    )
     from src.sim.distributions import Distribution
 
     node_id = _require(raw, "id", path)
@@ -388,6 +392,10 @@ def _parse_intermediate_node(raw: dict, path: str, world_seed: int) -> Any:
     min_order_imposed_raw = raw.get("min_order_imposed", {})
     min_order_imposed = {k: int(v) for k, v in min_order_imposed_raw.items()} if min_order_imposed_raw else {}
 
+    # Economic parameters — canonical default applied when a setup omits them.
+    holding_rate = float(raw["holding_rate"]) if "holding_rate" in raw else DEFAULT_HOLDING_RATE
+    order_fee = float(raw["order_fee"]) if "order_fee" in raw else DEFAULT_ORDER_FEE
+
     return IntermediateNode(
         id=node_id,
         region=region,
@@ -399,6 +407,8 @@ def _parse_intermediate_node(raw: dict, path: str, world_seed: int) -> Any:
         list_prices=list_prices,
         min_order_imposed=min_order_imposed,
         cash=float(raw.get("cash", 10000.0)),
+        holding_rate=holding_rate,
+        order_fee=order_fee,
     )
 
 
@@ -748,6 +758,8 @@ def _write_node_block(node_instance: Any) -> dict:
         d["list_prices"] = {k: float(v) for k, v in node.list_prices.items()}
         d["min_order_imposed"] = {k: int(v) for k, v in node.min_order_imposed.items()}
         d["cash"] = float(node.cash)
+        d["holding_rate"] = float(node.holding_rate)
+        d["order_fee"] = float(node.order_fee)
     elif isinstance(node, DemandSinkNode):
         d["type"] = "demand_sink"
         d["product_id"] = node.product_id
