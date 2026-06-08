@@ -158,6 +158,8 @@ def _build_tuning_graph_scenario(
         list_prices=list_prices,
         min_order_imposed=min_order_imposed,
         cash=balance,
+        holding_rate=holding_rate,
+        order_fee=order_fee,
     )
     node_instances.append(NodeInstance(node=intermediate, init_seed=init_seed + len(active_subset), policy=None))
 

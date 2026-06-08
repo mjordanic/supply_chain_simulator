@@ -1,6 +1,6 @@
 # 07 — Consumer refactors: tuning + RL drop bespoke collectors
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
