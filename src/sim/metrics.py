@@ -19,6 +19,26 @@ business_metrics(flow_frame, node_timeseries_df, scenario) → pd.DataFrame
 
     Selling nodes are those with at least one non-null ``price`` entry in
     the flow frame (demand sinks never sell).
+
+profit_decomposition(flow_frame, purchase_frame, closing_inventory_frame,
+                     scenario) → pd.DataFrame
+    Per-node profit decomposition for ``IntermediateNode``s (ADR 0019 Rule 3).
+
+    Columns: node_id, revenue, order_cost, holding_cost, order_fees,
+             net_profit.
+
+    - ``revenue``      = Σ price × sales for this node (selling rows only).
+    - ``order_cost``   = Σ cash_paid for all purchases where buyer == node
+                         (real cash transferred, not catalog unit_cost).
+    - ``holding_cost`` = Σ_tick Σ_pid closing_qty × holding_rate × unit_cost
+                         (derived from closing inventory frame + node rates).
+    - ``order_fees``   = Σ_tick n_distinct_suppliers_ordered_from × order_fee
+                         (derived from purchase frame + node order_fee).
+    - ``net_profit``   = revenue − order_cost − holding_cost − order_fees.
+
+    ``net_profit`` reconciles to the node's Δcash over the episode by
+    construction (ADR 0019 Rule 3).  The full equity reconciliation identity
+    is: net_profit + Δ(inventory_value + outstanding_value) = Δequity.
 """
 
 from __future__ import annotations
@@ -147,6 +167,126 @@ def _node_kpis(
     }
 
 
+def profit_decomposition(
+    flow_frame: "pd.DataFrame",
+    purchase_frame: "pd.DataFrame",
+    closing_inventory_frame: "pd.DataFrame",
+    scenario: Any,
+) -> "pd.DataFrame":
+    """Return per-node profit decomposition for IntermediateNodes.
+
+    Parameters
+    ----------
+    flow_frame:
+        Output of ``inspect.flow_frame(run_log)`` — used to compute revenue
+        (``price × sales`` for selling rows).
+    purchase_frame:
+        Output of ``inspect.purchase_frame(run_log)`` — used to compute order
+        cost (``sum(cash_paid)`` where ``buyer_id == node``) and order fees
+        (count of distinct suppliers per tick × ``order_fee``).
+    closing_inventory_frame:
+        Output of ``inspect.closing_inventory_frame(run_log)`` — per
+        ``(tick, node_id, pid)`` closing on-hand qty, used to derive holding
+        cost.
+    scenario:
+        The ``Scenario`` used for the run.  Provides ``unit_cost`` per product
+        (from ``scenario.catalog``) and ``holding_rate`` / ``order_fee`` per
+        ``IntermediateNode`` (from ``scenario.nodes``).
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``node_id, revenue, order_cost, holding_cost, order_fees,
+        net_profit``.
+        One row per ``IntermediateNode`` in the scenario.
+
+    Notes
+    -----
+    - ``net_profit`` reconciles to Δcash (the node's change in cash balance
+      over the episode) by construction (ADR 0019 Rule 3).
+    - Factories and demand sinks are excluded: factories are zero-margin
+      bookkeeping nodes; sinks hold no inventory and never pay order fees.
+    """
+    from src.sim.node import IntermediateNode
+
+    # Build unit-cost lookup from catalog.
+    unit_cost: dict[str, float] = {
+        w.product_id: float(w.unit_cost) for w in scenario.catalog
+    }
+
+    # Build IntermediateNode rate lookup: {node_id: (holding_rate, order_fee)}.
+    node_rates: dict[str, tuple[float, float]] = {}
+    for ni in scenario.nodes:
+        if isinstance(ni.node, IntermediateNode):
+            node_rates[ni.node.id] = (
+                float(ni.node.holding_rate),
+                float(ni.node.order_fee),
+            )
+
+    if not node_rates:
+        return pd.DataFrame(
+            columns=[
+                "node_id", "revenue", "order_cost",
+                "holding_cost", "order_fees", "net_profit",
+            ]
+        )
+
+    rows: list[dict] = []
+    for node_id, (holding_rate, order_fee) in node_rates.items():
+        # --- Revenue: sum(price * sales) for this selling node ---
+        node_ff = flow_frame[
+            (flow_frame["node_id"] == node_id) & flow_frame["price"].notna()
+        ]
+        revenue = float((node_ff["price"] * node_ff["sales"]).sum())
+
+        # --- Order cost: real cash paid by this node to its suppliers ---
+        node_pf = purchase_frame[purchase_frame["buyer_id"] == node_id]
+        order_cost = float(node_pf["cash_paid"].sum())
+
+        # --- Holding cost: derived from closing inventory + rates ---
+        node_inv = closing_inventory_frame[
+            closing_inventory_frame["node_id"] == node_id
+        ]
+        holding_cost = float(
+            (
+                node_inv["qty"]
+                * node_inv["pid"].map(unit_cost).fillna(0.0)
+                * holding_rate
+            ).sum()
+        )
+
+        # --- Order fees: distinct (buyer, supplier) pairs per tick × fee ---
+        if node_pf.empty or order_fee == 0.0:
+            order_fees = 0.0
+        else:
+            # Count distinct supplier_id values per tick for this buyer.
+            suppliers_per_tick = (
+                node_pf.groupby("tick")["supplier_id"].nunique()
+            )
+            order_fees = float(suppliers_per_tick.sum() * order_fee)
+
+        net_profit = revenue - order_cost - holding_cost - order_fees
+        rows.append(
+            {
+                "node_id": node_id,
+                "revenue": revenue,
+                "order_cost": order_cost,
+                "holding_cost": holding_cost,
+                "order_fees": order_fees,
+                "net_profit": net_profit,
+            }
+        )
+
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "node_id", "revenue", "order_cost",
+            "holding_cost", "order_fees", "net_profit",
+        ],
+    )
+
+
 __all__ = [
     "business_metrics",
+    "profit_decomposition",
 ]

@@ -14,6 +14,8 @@ Public API
   price, stockout).
 - ``purchase_frame(run_log)`` — per-(buyer, supplier, pid, tick) purchase rows
   (qty_filled, cash_paid).
+- ``closing_inventory_frame(run_log)`` — per-(tick, node_id, pid) closing
+  on-hand inventory for non-factory nodes.
 
 The flow / purchase builders own *all* run-log flow-schema knowledge so that
 ``metrics.py`` can stay schema-free and DataFrame-native (ADR 0019).
@@ -323,6 +325,45 @@ def purchase_frame(run_log: dict[str, Any]) -> pd.DataFrame:
     )
 
 
+def closing_inventory_frame(run_log: dict[str, Any]) -> pd.DataFrame:
+    """Per-(tick, node_id, pid) closing on-hand inventory.
+
+    Extracts the post-settle closing inventory for every non-factory node
+    (i.e. every entry in ``node_inventory`` that does NOT use the
+    ``_total`` synthetic key).  Factory nodes expose only ``_total`` and
+    never pay holding cost, so they are excluded; the caller must pass
+    ``IntermediateNode``-only node_ids when using this frame to derive
+    holding cost.
+
+    Columns
+    -------
+    tick        int
+    node_id     str
+    pid         str
+    qty         int   — closing on-hand units for this (node, pid, tick).
+    """
+    rows: list[dict[str, Any]] = []
+    for tick_log in run_log["ticks"]:
+        tick = tick_log["tick"]
+        for node_id, inv_dict in tick_log.get("node_inventory", {}).items():
+            for pid, qty in inv_dict.items():
+                if pid == "_total":
+                    continue
+                rows.append(
+                    {
+                        "tick": tick,
+                        "node_id": node_id,
+                        "pid": pid,
+                        "qty": qty,
+                    }
+                )
+
+    return pd.DataFrame(
+        rows,
+        columns=["tick", "node_id", "pid", "qty"],
+    )
+
+
 __all__ = [
     "node_timeseries_df",
     "global_timeseries_df",
@@ -330,4 +371,5 @@ __all__ = [
     "node_equity",
     "flow_frame",
     "purchase_frame",
+    "closing_inventory_frame",
 ]
