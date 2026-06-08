@@ -63,6 +63,7 @@
       "Bash(awk '/^FILE: notebooks\\\\/06a/{p=1} p' /tmp/all_nbs.txt)"
     ],
     "deny": [
+      "Bash(git push*)",
       "Bash(git pull*)",
       "Bash(git fetch*)",
       "Bash(git remote*)",
