@@ -279,6 +279,40 @@ Canonical home for `RunSlice`, `aggregate_episode(run_slice) -> dict[str, float]
 helpers. Pure data + math; no runtime deps on `src.tuning` or `src.rl`. For graph-engine runs,
 `net_profit` is computed from the tracked `IntermediateNode` ("S")'s cumulative `cash_delta`.
 
+**Business metrics** (first-class sim concern, not tuning/RL-only)
+The operational + economic KPIs (`service_level`, `stockout_rate`, `inventory_turnover`,
+`mean_price_pct_of_msrp`, and a profit decomposition) must be derivable from any run's saved
+artifacts — see notebooks 02 / 02a — independent of `src.tuning` / `src.rl`. The metric *math*
+already lives in `src/sim/metrics.py`; the coupling to tuning is in (a) trace production — only
+`src/tuning/rollout.py` and `src/rl/eval.py` build a `RunSlice` — and (b) economic parameters in
+`src/tuning/config.py`. The target architecture: the core `Runner` emits the per-tick **flow** data
+(sales, demand, price, stockout); `metrics.py` derives KPIs from a tidy per-`(node, pid, tick)`
+DataFrame; tuning/RL are consumers.
+
+Representation decision: the list-of-lists `RunSlice` is **retired** in favour of a tidy
+DataFrame (a `node_id` column lets a `groupby` produce per-node *and* system-wide KPIs — `RunSlice`
+was structurally single-node). `metrics.py` becomes DataFrame-native; `src/tuning/rollout.py`'s
+`_TrackingDemandSinkNode`/`_record_active_subset` and `src/rl/eval.py`'s inline trace collectors
+are deleted in favour of building the frame from the run log. The rewrite must be **value-
+preserving**: existing KPI test values are the tuner/RL objective and must not shift.
+
+**Realized profit** (the single profit number, once holding/fee charging is implemented — ADR 0019)
+= change in **equity** (cash + inventory-at-cost + in-transit-at-cost). Exact, conserved by the
+cash-flow model (ADR 0013). Headline profit in 02 / 02a. ADR 0013 Rules 4–5 already mandate that
+`IntermediateNode` **holding cost** and **order fee** are charged against the node's balance and "go
+to the void" (credited to no node) — but the engine does **not yet implement this** (a conformance
+gap; `src/sim/node.py` charges neither, and no test asserts the Rule 5 identity, which holds
+trivially while both are 0). ADR 0019 closes the gap with these mechanics:
+- **Holding cost** — each tick, `cash -= Σ_pid closing_on_hand[pid] × holding_rate × unit_cost[pid]`,
+  on the end-of-tick snapshot, valued at catalog `unit_cost`, charged in the final tick phase.
+- **Order fee** — `order_fee` once per `(node, supplier)` purchase order per tick (a multi-SKU PO to
+  one supplier = one fee; two suppliers = two fees).
+- **Order cost** — the **real** cash paid (`execute_buy.cash_paid` = `qty_filled × supplier
+  list_price`), so the decomposition reconciles to the cent even across lateral links (ADR 0018).
+- `holding_rate` / `order_fee` are per-`IntermediateNode` params (from `setup.yaml`, hence
+  policy-observable in future). `metrics.py`'s `revenue − order_cost − holding − order_fees` becomes
+  a real **decomposition of realized cash flow**, aligned to use the same closing-inventory basis.
+
 **WorldBuilder** (`src/llm/world_builder.py`)
 LLM-driven generator producing a `(catalog, market)` pair. Three stages: taxonomy → catalog →
 market domain params. The canonical entry point is `WorldBuilder.build_setup(n_items, setup_dir)`,
