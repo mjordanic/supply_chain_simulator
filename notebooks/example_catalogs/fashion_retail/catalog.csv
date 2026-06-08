@@ -1,0 +1,9 @@
+product_id,name,category,base_price,unit_cost,seasonality,related_products,init_stock_share
+P0000,Satin Rose Wrap Dress,Women's Apparel,78.0,42.0,spring/summer,,1.0
+P0001,Ribbed Sage Lounge Set,Women's Apparel,64.0,34.0,all_season,,1.0
+P0002,Cropped Denim Shacket,Women's Apparel,74.0,45.0,fall,,1.0
+P0003,Performance Oxford Button-Down,Men's Apparel,58.0,30.0,spring,,1.0
+P0004,Velvet-Snap School Hoodie,Kids & Baby Clothing,36.0,18.0,fall/winter,,1.0
+P0005,CloudStep Running Sneakers,Shoes & Footwear,92.0,54.0,all_season,,1.0
+P0006,Gilded Arc Mini Crossbody Bag,Accessories & Bags,68.0,36.0,summer,,1.0
+P0007,Seamless Sculpt Sports Bra,Activewear & Athleisure,44.0,22.0,all_season,,1.0
