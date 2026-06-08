@@ -280,7 +280,7 @@ two-phase tick API in the seam between phases:
 1. `sim.tick_world()` — advance market / events; publish all seller offers to the central table.
 2. `encode_observation(node_S, market, registry, central_table, …)` — read the trainable node's state plus the central-table snapshot.
 3. `decode_action(...)` → `RLIntermediatePolicy.set_pending_action(...)` — inject the agent's pre-decoded per-supplier order/price action.
-4. `sim.tick_decide_and_settle(...)` — run the phase cascade: `S.policy.decide()` returns the pending action, the FCFS allocator settles trades against the central table, deliveries schedule at `current_tick + lead_time`, and demand sinks consume.
+4. `sim.tick_decide_and_settle(...)` — run the demand-pull topological walk: `S.policy.decide()` returns the pending action, the FCFS allocator settles trades against the central table, deliveries schedule at `current_tick + lead_time`, and demand sinks consume.
 
 Demand is sampled for *every* catalog product each tick (not only the active subset), so swapping
 policies leaves the world stream untouched — the CRN cleanliness property.

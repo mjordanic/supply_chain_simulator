@@ -23,7 +23,7 @@ A single clear ``ValueError`` is raised for:
 - Missing required node / edge field
 - Malformed Distribution tag
 - Duplicate node id
-- Graph errors (cycles, unreachable nodes, same-level links)
+- Graph errors (cycles, unreachable nodes, illegal edge types)
 
 ``write_setup`` is deliberately out of scope for this slice —
 it lands with the LLM generator (issue 04). The reproducibility

@@ -123,7 +123,7 @@ class Simulation:
     # ------------------------------------------------------------------
 
     def tick(self) -> None:
-        """Run one full tick of the graph cascade (ADR 0018).
+        """Run one full tick via the demand-pull topological walk (ADR 0018).
 
         Steps
         -----

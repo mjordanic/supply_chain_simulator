@@ -59,7 +59,8 @@ class Node(ABC):
     level:
         Echelon level in the DAG (0 = factory, increasing toward sink).
         Computed by ``Graph.compute_levels`` after graph construction;
-        ``None`` until set.
+        ``None`` until set. Display-only — carries no scheduling meaning
+        under demand-pull (ADR 0018).
     """
 
     id: str

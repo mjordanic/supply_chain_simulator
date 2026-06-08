@@ -53,7 +53,14 @@
       "Bash(python3 *)",
       "Bash(MPLBACKEND=Agg uv run python /tmp/06a_validate.py)",
       "Bash(echo \"EXIT=$?\")",
-      "Bash(git push*)"
+      "Bash(git push*)",
+      "Bash(awk '/^FILE: notebooks\\\\/02-run-and-inspect/{p=1} /^FILE: notebooks\\\\/03-topology/{p=0} p' /tmp/all_nbs.txt)",
+      "Bash(awk '/^FILE: notebooks\\\\/03-topology/{p=1} /^FILE: notebooks\\\\/04-policy/{p=0} p' /tmp/all_nbs.txt)",
+      "Read(//tmp/**)",
+      "Bash(awk '/^FILE: notebooks\\\\/\\(01|04|05|05a|06|06a\\)/{f=$2} {print f\": \"$0}' /tmp/all_nbs.txt)",
+      "Bash(awk '/^FILE: notebooks\\\\/05a/{p=1} /^FILE: notebooks\\\\/06-rl/{p=0} p' /tmp/all_nbs.txt)",
+      "Bash(awk '/^FILE: notebooks\\\\/06-rl/{p=1} /^FILE: notebooks\\\\/06a/{p=0} p' /tmp/all_nbs.txt)",
+      "Bash(awk '/^FILE: notebooks\\\\/06a/{p=1} p' /tmp/all_nbs.txt)"
     ],
     "deny": [
       "Bash(git pull*)",

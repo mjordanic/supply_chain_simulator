@@ -17,7 +17,7 @@ Design notes
     assortment_seed  — which K products are active
     world_seed       — market / event / lifecycle draws (world_rng)
     init_seed        — step-0 store state initialisation (init_rng)
-    allocation_seed  — buyer-shuffle order in the graph cascade
+    allocation_seed  — ready-set shuffle order in the demand-pull walk
                        (allocation_rng = Random(_derive_seed(world_seed,
                        "allocation"))).  Added in issue 13 to reflect the
                        graph engine's per-phase shuffle introduced in

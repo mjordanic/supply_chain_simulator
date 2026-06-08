@@ -334,7 +334,7 @@ def _run_rl(
         # Inject action into RLIntermediatePolicy shim.
         rl_policy.set_pending_action(action_dict)
 
-        # Phase 2: phase cascade (S.policy.decide() returns pending action).
+        # Phase 2: demand-pull walk (S.policy.decide() returns pending action).
         sim.tick_decide_and_settle(current_tick)
 
         # Update rolling sales history.

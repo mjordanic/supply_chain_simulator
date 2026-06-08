@@ -234,8 +234,8 @@ class RLEnv(gym.Env):
         2. Encode observation from node "S" + central table.
         3. Decode action and set it on ``RLIntermediatePolicy`` via
            ``set_pending_action``.
-        4. ``sim.tick_decide_and_settle()`` — run the full phase cascade
-           (node S's policy.decide() returns the pending action).
+        4. ``sim.tick_decide_and_settle()`` — run the demand-pull
+           topological walk (node S's policy.decide() returns the pending action).
         5. Compute reward from cash delta on node "S".
         6. Build next observation and check for episode termination.
 
@@ -302,7 +302,7 @@ class RLEnv(gym.Env):
         )
         rl_policy.set_pending_action(action_dict)
 
-        # --- Phase 2: run phase cascade (S's policy.decide() called here) ---
+        # --- Phase 2: run demand-pull walk (S's policy.decide() called here) ---
         sim.tick_decide_and_settle(current_tick)
 
         # Reward = cash delta of node "S" for this tick.

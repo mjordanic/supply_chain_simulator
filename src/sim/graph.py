@@ -224,42 +224,6 @@ def validate_dag(
 # Level computation
 # ---------------------------------------------------------------------------
 
-def _compute_bfs_levels(nodes: list[str], adj: dict[str, list[str]]) -> dict[str, int]:
-    """BFS shortest-path level from all source nodes (nodes with no in-edges).
-
-    Used for same-level peer-link detection.  A node's BFS level is its
-    minimum distance from any source — its "natural echelon."
-    Nodes unreachable from any source (e.g. orphaned nodes that escaped
-    the unreachable check) get level 0 (treated as additional sources).
-    """
-    # Compute in-degree
-    in_degree: dict[str, int] = {n: 0 for n in nodes}
-    for n in nodes:
-        for neighbour in adj[n]:
-            in_degree[neighbour] += 1
-
-    level: dict[str, int] = {}
-    queue: deque[str] = deque()
-    for n in nodes:
-        if in_degree[n] == 0:
-            level[n] = 0
-            queue.append(n)
-
-    while queue:
-        node = queue.popleft()
-        for neighbour in adj[node]:
-            if neighbour not in level:
-                level[neighbour] = level[node] + 1
-                queue.append(neighbour)
-
-    # Assign level 0 to any remaining nodes (should be caught earlier)
-    for n in nodes:
-        if n not in level:
-            level[n] = 0
-
-    return level
-
-
 def _compute_levels_from_adj(nodes: list[str], adj: dict[str, list[str]]) -> dict[str, int]:
     """Longest-path level computation on a DAG given an adjacency mapping.
 

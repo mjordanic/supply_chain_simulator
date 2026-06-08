@@ -11,8 +11,8 @@ Two tests pin the bit-identity contract that the graph engine must honour.
    runs with the same ``world_seed`` produce identical run-log output,
    confirming end-to-end determinism.
 
-The canonical scenario uses a 2-node chain (factory → sink) so it is
-small and fast while still exercising the full graph cascade.
+The canonical scenario uses a small factory → shop → sink chain so it is
+small and fast while still exercising the full demand-pull walk.
 """
 
 from __future__ import annotations
