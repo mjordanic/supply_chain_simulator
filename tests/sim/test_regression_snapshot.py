@@ -43,7 +43,10 @@ from src.sim.scenario import (
 
 # Bump this constant when simulator numerics change intentionally. A
 # failing assertion prints the observed digest so it can be copied here.
-EXPECTED_HASH = "a1a83c317bc6d018af7bc062a220186e26bae0ded355f57d0e071ffdc2f247ca"
+# Re-baselined for ADR 0019: each tick snapshot now carries the per-tick flow
+# log (``node_flows`` + ``purchases``); the underlying cash/inventory numerics
+# are unchanged.
+EXPECTED_HASH = "5d6e24a4dfec5a5f85b5b03397710f3223859286a9011670cd7e385dd7d3e323"
 
 
 N_STEPS = 30

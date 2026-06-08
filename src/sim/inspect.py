@@ -10,6 +10,13 @@ Public API
 - ``per_product_df(run_log, scenario, node_id)`` — per-(tick, pid) for one node.
 - ``node_equity(run_log, scenario, node_id)`` — cash + inventory + outstanding
   at cost, per tick.
+- ``flow_frame(run_log)`` — tidy per-(node, pid, tick) flow log (sales, demand,
+  price, stockout).
+- ``purchase_frame(run_log)`` — per-(buyer, supplier, pid, tick) purchase rows
+  (qty_filled, cash_paid).
+
+The flow / purchase builders own *all* run-log flow-schema knowledge so that
+``metrics.py`` can stay schema-free and DataFrame-native (ADR 0019).
 """
 
 from __future__ import annotations
@@ -230,9 +237,97 @@ def node_equity(
     return pd.DataFrame(rows)
 
 
+def flow_frame(run_log: dict[str, Any]) -> pd.DataFrame:
+    """Tidy long-form per-product flow log: one row per ``(node, pid, tick)``.
+
+    This is the deep builder every downstream consumer of the per-tick flow
+    log shares (ADR 0019).  It reads the ``node_flows`` records the engine
+    logs each tick and emits a tidy frame so ``metrics.py`` never has to know
+    the run-log schema.
+
+    Columns
+    -------
+    tick        int
+    node_id     str
+    pid         str
+    sales       int     — units the node sold as a supplier this tick.
+    demand      int     — units requested of it; for a ``DemandSinkNode`` the
+                          exogenous ``demand_target``.
+    price       float   — the node's ``list_price`` at decision time (``NaN``
+                          for demand sinks, which do not sell).
+    stockout    bool    — decision-time on-hand == 0 (captured during the walk,
+                          not inferred from the closing snapshot).
+    """
+    rows: list[dict[str, Any]] = []
+    for tick_log in run_log["ticks"]:
+        tick = tick_log["tick"]
+        for f in tick_log.get("node_flows", []):
+            rows.append(
+                {
+                    "tick": tick,
+                    "node_id": f["node_id"],
+                    "pid": f["pid"],
+                    "sales": f["sales"],
+                    "demand": f["demand"],
+                    "price": f["price"],
+                    "stockout": f["stockout"],
+                }
+            )
+
+    return pd.DataFrame(
+        rows,
+        columns=["tick", "node_id", "pid", "sales", "demand", "price", "stockout"],
+    )
+
+
+def purchase_frame(run_log: dict[str, Any]) -> pd.DataFrame:
+    """Per-(buyer, supplier, pid, tick) purchase rows from the flow log.
+
+    These are the realised allocations behind every ``execute_buy`` call —
+    the rows the old ``node_orders`` aggregate is derived from (ADR 0019).
+
+    Columns
+    -------
+    tick          int
+    buyer_id      str
+    supplier_id   str
+    pid           str
+    qty_filled    int     — units actually allocated.
+    cash_paid     float   — ``qty_filled × supplier list_price``.
+    """
+    rows: list[dict[str, Any]] = []
+    for tick_log in run_log["ticks"]:
+        tick = tick_log["tick"]
+        for p in tick_log.get("purchases", []):
+            rows.append(
+                {
+                    "tick": tick,
+                    "buyer_id": p["buyer_id"],
+                    "supplier_id": p["supplier_id"],
+                    "pid": p["pid"],
+                    "qty_filled": p["qty_filled"],
+                    "cash_paid": p["cash_paid"],
+                }
+            )
+
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "tick",
+            "buyer_id",
+            "supplier_id",
+            "pid",
+            "qty_filled",
+            "cash_paid",
+        ],
+    )
+
+
 __all__ = [
     "node_timeseries_df",
     "global_timeseries_df",
     "per_product_df",
     "node_equity",
+    "flow_frame",
+    "purchase_frame",
 ]

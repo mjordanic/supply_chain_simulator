@@ -115,6 +115,16 @@ class Simulation:
         # qty_filled, qty_rejected, reason.  Sink-level unmet_demand entries use
         # supplier_id=None and reason="unmet_demand".
         self._tick_rejections: list[dict] = []
+        # Per-tick flow log (ADR 0019).  All reset each tick.
+        #   _tick_purchases   — per-(buyer, supplier, pid) execute_buy rows, each a
+        #                       dict {buyer_id, supplier_id, pid, qty_requested,
+        #                       qty_filled, cash_paid}.
+        #   _tick_sink_demand — {sink_id: {pid: demand_target}} exogenous demand.
+        #   _tick_decision_state — {node_id: {pid: {on_hand, price}}} captured at
+        #                       publish time (decision-time on-hand for stockout).
+        self._tick_purchases: list[dict] = []
+        self._tick_sink_demand: dict[str, dict[str, int]] = {}
+        self._tick_decision_state: dict[str, dict[str, dict]] = {}
         # Stashed central table from ``tick_world()`` for use by ``tick_decide_and_settle()``.
         self._current_table: Any = None
 
@@ -150,7 +160,8 @@ class Simulation:
         # -------------------------------------------------------------------
         # 2. publish_offers — all sellers post current inventory to the table.
         # -------------------------------------------------------------------
-        table = _publish_offers(self.nodes, CentralTable, Offer, FactoryNode, IntermediateNode)
+        table, decision_state = _publish_offers(self.nodes, CentralTable, Offer, FactoryNode, IntermediateNode)
+        self._tick_decision_state = decision_state
 
         # -------------------------------------------------------------------
         # 3. Demand-pull walk.
@@ -158,6 +169,8 @@ class Simulation:
         self._last_tick_orders = {}
         self._tick_sales = {}
         self._tick_rejections = []
+        self._tick_purchases = []
+        self._tick_sink_demand = {}
         _run_demand_pull_schedule(self, table, current_tick)
 
         # -------------------------------------------------------------------
@@ -195,11 +208,12 @@ class Simulation:
         self.event_engine.tick(self.market)
         current_tick = self.market.current_step()
 
-        table = _publish_offers(self.nodes, CentralTable, Offer, FactoryNode, IntermediateNode)
+        table, decision_state = _publish_offers(self.nodes, CentralTable, Offer, FactoryNode, IntermediateNode)
 
         # Stash the table so the encoder can snapshot it and
         # tick_decide_and_settle can reuse it.
         self._current_table = table
+        self._tick_decision_state = decision_state
         return current_tick
 
     def tick_decide_and_settle(self, current_tick: int | None = None) -> None:
@@ -224,6 +238,8 @@ class Simulation:
         self._last_tick_orders = {}
         self._tick_sales = {}
         self._tick_rejections = []
+        self._tick_purchases = []
+        self._tick_sink_demand = {}
         _run_demand_pull_schedule(self, table, current_tick)
         _produce_factories(self, current_tick)
         _credit_sinks(self.nodes)
@@ -237,8 +253,17 @@ class Simulation:
 # ---------------------------------------------------------------------------
 
 def _publish_offers(nodes: dict, CentralTable: Any, Offer: Any, FactoryNode: Any, IntermediateNode: Any) -> Any:
-    """Publish all seller offers to a fresh CentralTable and return it."""
+    """Publish all seller offers to a fresh CentralTable.
+
+    Returns ``(table, decision_state)`` where ``decision_state`` is
+    ``{node_id: {pid: {"on_hand": int, "price": float}}}`` for every selling
+    node, captured *before* the demand-pull walk consumes any stock.  This is
+    the decision-time on-hand / price the flow log records (ADR 0019) — the
+    ``stockout`` boolean must reflect this, not the closing snapshot that a
+    same-tick sale would drive to zero.
+    """
     table = CentralTable()
+    decision_state: dict[str, dict[str, dict[str, Any]]] = {}
     for node_id, node in nodes.items():
         if isinstance(node, FactoryNode):
             pid = node.produces_product_id
@@ -251,8 +276,15 @@ def _publish_offers(nodes: dict, CentralTable: Any, Offer: Any, FactoryNode: Any
                     min_order=0,
                 ),
             )
+            decision_state[node_id] = {
+                pid: {"on_hand": int(node.inventory), "price": float(node.list_price)}
+            }
         elif isinstance(node, IntermediateNode):
-            for pid in node.carried_products:
+            state: dict[str, dict[str, Any]] = {}
+            # Sort so the published-offer and flow-log row order is
+            # deterministic across processes (``carried_products`` is a set,
+            # whose iteration order is PYTHONHASHSEED-dependent).
+            for pid in sorted(node.carried_products):
                 qty = node.inventory.get(pid, 0)
                 price = node.list_prices.get(pid, 0.0)
                 min_order = node.min_order_imposed.get(pid, 0)
@@ -265,7 +297,9 @@ def _publish_offers(nodes: dict, CentralTable: Any, Offer: Any, FactoryNode: Any
                         min_order=min_order,
                     ),
                 )
-    return table
+                state[pid] = {"on_hand": int(qty), "price": float(price)}
+            decision_state[node_id] = state
+    return table, decision_state
 
 
 def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) -> None:
@@ -309,6 +343,8 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                         world_rng=sim.world_rng,
                     )
                 )
+                # Persist the exogenous demand target for the flow log (ADR 0019).
+                sim._tick_sink_demand.setdefault(buyer.id, {})[buyer.product_id] = int(demand_target)
                 obs = build_sink_obs(buyer, tick=current_tick, demand_target=demand_target)
                 direct_supplier_ids = sim.graph.suppliers_of(buyer.id)
                 obs["direct_supplier_ids"] = direct_supplier_ids
@@ -342,6 +378,15 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                         lead_time=lt,
                     )
                     total_filled += result.qty_filled
+                    # Persist the realised purchase row for the flow log (ADR 0019).
+                    sim._tick_purchases.append({
+                        "buyer_id": buyer.id,
+                        "supplier_id": supplier_id,
+                        "pid": pid,
+                        "qty_requested": int(qty),
+                        "qty_filled": int(result.qty_filled),
+                        "cash_paid": float(result.cash_paid),
+                    })
                     # Log per-supplier rejections (issue 05).
                     if result.qty_rejected > 0:
                         sim._tick_rejections.append({
@@ -412,6 +457,15 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                             lead_time=lt,
                         )
                         buyer_orders[pid] = buyer_orders.get(pid, 0) + qty
+                        # Persist the realised purchase row for the flow log (ADR 0019).
+                        sim._tick_purchases.append({
+                            "buyer_id": buyer.id,
+                            "supplier_id": supplier_id,
+                            "pid": pid,
+                            "qty_requested": int(qty),
+                            "qty_filled": int(result.qty_filled),
+                            "cash_paid": float(result.cash_paid),
+                        })
                         # Log per-supplier rejections for intermediate reorders (issue 05).
                         if result.qty_rejected > 0:
                             sim._tick_rejections.append({
@@ -746,12 +800,83 @@ class Runner:
                         pending_totals[pid] = pending_totals.get(pid, 0) + qty
                 node_pending[node_id] = pending_totals
 
+        # ------------------------------------------------------------------
+        # Flow log (ADR 0019): per-(node, pid) flows + per-(buyer, supplier,
+        # pid) purchase rows.  ``node_orders`` is now *derived* from the
+        # purchase rows (it superseded the old aggregate) so existing readers
+        # stay green.
+        # ------------------------------------------------------------------
+        purchases = self._sim._tick_purchases
+        decision_state = self._sim._tick_decision_state
+        sink_demand = self._sim._tick_sink_demand
+
+        # Aggregate sales (filled) and demand (requested) per (supplier, pid).
+        sales_by: dict[tuple[str, str], int] = {}
+        demand_by: dict[tuple[str, str], int] = {}
+        for p in purchases:
+            key = (p["supplier_id"], p["pid"])
+            sales_by[key] = sales_by.get(key, 0) + p["qty_filled"]
+            demand_by[key] = demand_by.get(key, 0) + p["qty_requested"]
+
+        node_flows: list[dict[str, Any]] = []
+        # Selling nodes (factories + intermediates): one row per offered pid,
+        # using decision-time price / on-hand captured at publish time.
+        for node_id, pidmap in decision_state.items():
+            for pid, st in pidmap.items():
+                key = (node_id, pid)
+                node_flows.append({
+                    "node_id": node_id,
+                    "pid": pid,
+                    "sales": sales_by.get(key, 0),
+                    "demand": demand_by.get(key, 0),
+                    "price": st["price"],
+                    "stockout": st["on_hand"] == 0,
+                })
+        # Demand sinks: exogenous demand_target (they sell nothing).
+        for sink_id, pidmap in sink_demand.items():
+            for pid, dt in pidmap.items():
+                node_flows.append({
+                    "node_id": sink_id,
+                    "pid": pid,
+                    "sales": 0,
+                    "demand": int(dt),
+                    "price": None,
+                    "stockout": False,
+                })
+
+        # Derive the legacy node_orders aggregate (intermediate buyers, requested
+        # qty) from the purchase rows.  Every IntermediateNode gets an entry —
+        # even one that ordered nothing — matching the old setdefault semantics.
+        node_orders: dict[str, dict[str, int]] = {
+            nid: {}
+            for nid, n in self._sim.nodes.items()
+            if isinstance(n, IntermediateNode)
+        }
+        for p in purchases:
+            buyer = self._sim.nodes.get(p["buyer_id"])
+            if isinstance(buyer, IntermediateNode):
+                d = node_orders[p["buyer_id"]]
+                d[p["pid"]] = d.get(p["pid"], 0) + p["qty_requested"]
+
+        purchases_log = [
+            {
+                "buyer_id": p["buyer_id"],
+                "supplier_id": p["supplier_id"],
+                "pid": p["pid"],
+                "qty_filled": p["qty_filled"],
+                "cash_paid": p["cash_paid"],
+            }
+            for p in purchases
+        ]
+
         return {
             "tick": self._sim.market.current_step(),
             "node_cash": node_cash,
             "node_inventory": node_inventory,
             "node_pending": node_pending,
-            "node_orders": dict(self._sim._last_tick_orders),
+            "node_orders": node_orders,
+            "node_flows": node_flows,
+            "purchases": purchases_log,
             "rejections": list(self._sim._tick_rejections),
         }
 

@@ -197,8 +197,9 @@ See `setups/three_node_chain/` and `setups/two_factories_two_shops/` for complet
 
 `Runner(scenario).run()` returns a run log with top-level keys `n_steps`, `ticks`, `global`:
 
-- `ticks` — one entry per tick: `tick`, `node_cash`, `node_inventory` (per-node `{pid: qty}`; factories use `{"_total": qty}`), `node_pending` (per-node `{pid: in_transit}` summed across suppliers), `node_orders`, and `rejections` (see below).
+- `ticks` — one entry per tick: `tick`, `node_cash`, `node_inventory` (per-node `{pid: qty}`; factories use `{"_total": qty}`), `node_pending` (per-node `{pid: in_transit}` summed across suppliers), `node_orders`, `node_flows`, `purchases` (the flow log, see below), and `rejections` (see below).
 - `global` — `time` (`simulation_step`, `simulation_date`), `market_supply` / `market_demand` per region, and `events`.
+- `node_flows` / `purchases` (per-tick flow log, ADR 0019) — `node_flows` is one record per `(node, pid)`: `sales` (units sold as supplier), `demand` (units requested of it; a sink's exogenous `demand_target`), `price` (decision-time `list_price`; `null` for sinks), and `stockout` (decision-time on-hand == 0). `purchases` is one record per `(buyer, supplier, pid)`: `qty_filled` and `cash_paid` (= `qty_filled × supplier list_price`). `node_orders` is derived from these purchase rows. Build tidy DataFrames with `inspect.flow_frame` / `inspect.purchase_frame`.
 - `rejections` (per-tick, always-on, ADR 0018) — an observability stream for unfilled or partially-filled orders. Each entry is `{tick, buyer_id, supplier_id, pid, qty_requested, qty_filled, qty_rejected, reason}`, where `reason` ∈ {`no_offer`, `below_min_order`, `insufficient_stock`, `insufficient_cash`, `insufficient_capacity`}. Demand that no feasible supplier could fill is recorded as an `unmet_demand` entry (`supplier_id=None`) — the true lost-sale measure once min-order fall-through removes the avoidable rejections.
 
 `DataExporter(scenario, run_log).export_all(output_folder)` writes (relative to `--output`, default `data/<setup-dir-name>/`):

@@ -18,10 +18,12 @@ from datetime import datetime
 import pytest
 
 from src.sim.inspect import (
+    flow_frame,
     global_timeseries_df,
     node_equity,
     node_timeseries_df,
     per_product_df,
+    purchase_frame,
 )
 
 
@@ -481,3 +483,120 @@ def test_node_equity_arithmetic_sink():
     assert row["inventory_value"] == pytest.approx(0.0)
     assert row["outstanding_value"] == pytest.approx(0.0)
     assert row["equity"] == pytest.approx(row["cash"])
+
+
+# ---------------------------------------------------------------------------
+# flow_frame / purchase_frame builders (ADR 0019)
+# ---------------------------------------------------------------------------
+
+
+def _make_flow_run_log(pid: str) -> dict:
+    """Hand-crafted run log carrying node_flows + purchases for two ticks.
+
+    Tick 1: the warehouse sells 5 of 8 demanded units at price 7.0 with stock
+            on hand (no stockout); the sink demanded 8.
+    Tick 2: the warehouse has 0 on hand at decision time (stockout) and sells 0.
+    """
+    ticks = [
+        {
+            "tick": 1,
+            "node_flows": [
+                {"node_id": "fac", "pid": pid, "sales": 5, "demand": 5,
+                 "price": 4.0, "stockout": False},
+                {"node_id": "wh", "pid": pid, "sales": 5, "demand": 8,
+                 "price": 7.0, "stockout": False},
+                {"node_id": "sink", "pid": pid, "sales": 0, "demand": 8,
+                 "price": None, "stockout": False},
+            ],
+            "purchases": [
+                {"buyer_id": "sink", "supplier_id": "wh", "pid": pid,
+                 "qty_filled": 5, "cash_paid": 35.0},
+                {"buyer_id": "wh", "supplier_id": "fac", "pid": pid,
+                 "qty_filled": 5, "cash_paid": 20.0},
+            ],
+        },
+        {
+            "tick": 2,
+            "node_flows": [
+                {"node_id": "fac", "pid": pid, "sales": 0, "demand": 0,
+                 "price": 4.0, "stockout": False},
+                {"node_id": "wh", "pid": pid, "sales": 0, "demand": 6,
+                 "price": 7.0, "stockout": True},
+                {"node_id": "sink", "pid": pid, "sales": 0, "demand": 6,
+                 "price": None, "stockout": False},
+            ],
+            "purchases": [],
+        },
+    ]
+    return {"n_steps": 2, "ticks": ticks, "global": {}}
+
+
+def test_flow_frame_columns():
+    """flow_frame returns exactly the documented column contract."""
+    df = flow_frame(_make_flow_run_log("P0000"))
+    assert list(df.columns) == [
+        "tick", "node_id", "pid", "sales", "demand", "price", "stockout",
+    ]
+
+
+def test_flow_frame_row_grain():
+    """One row per (node, pid, tick): 3 node_flows × 2 ticks = 6 rows."""
+    df = flow_frame(_make_flow_run_log("P0000"))
+    assert len(df) == 6
+    # Grain is unique on (node_id, pid, tick).
+    assert not df.duplicated(subset=["node_id", "pid", "tick"]).any()
+
+
+def test_flow_frame_values_sales_demand_price():
+    """sales / demand / price are read straight through from the flow log."""
+    df = flow_frame(_make_flow_run_log("P0000"))
+    wh_t1 = df[(df["node_id"] == "wh") & (df["tick"] == 1)].iloc[0]
+    assert wh_t1["sales"] == 5
+    assert wh_t1["demand"] == 8
+    assert wh_t1["price"] == pytest.approx(7.0)
+    # Sink carries the exogenous demand_target; it sells nothing.
+    sink_t1 = df[(df["node_id"] == "sink") & (df["tick"] == 1)].iloc[0]
+    assert sink_t1["demand"] == 8
+    assert sink_t1["sales"] == 0
+
+
+def test_flow_frame_stockout_is_decision_time():
+    """stockout reflects decision-time on-hand, independent of sales."""
+    df = flow_frame(_make_flow_run_log("P0000"))
+    # Tick 1: warehouse sold its stock but had units at decision time.
+    assert not df[(df["node_id"] == "wh") & (df["tick"] == 1)].iloc[0]["stockout"]
+    # Tick 2: warehouse had 0 on hand at decision time -> stockout.
+    assert df[(df["node_id"] == "wh") & (df["tick"] == 2)].iloc[0]["stockout"]
+
+
+def test_purchase_frame_columns_and_grain():
+    """purchase_frame exposes the per-(buyer, supplier, pid) purchase rows."""
+    df = purchase_frame(_make_flow_run_log("P0000"))
+    assert list(df.columns) == [
+        "tick", "buyer_id", "supplier_id", "pid", "qty_filled", "cash_paid",
+    ]
+    # Two purchase rows on tick 1, none on tick 2.
+    assert len(df) == 2
+    assert (df["tick"] == 1).all()
+
+
+def test_purchase_frame_cash_paid_values():
+    """cash_paid is carried through verbatim (= qty_filled × supplier price)."""
+    df = purchase_frame(_make_flow_run_log("P0000"))
+    sink_buy = df[df["buyer_id"] == "sink"].iloc[0]
+    assert sink_buy["qty_filled"] == 5
+    assert sink_buy["cash_paid"] == pytest.approx(35.0)  # 5 × 7.0
+
+
+def test_flow_frame_empty_run_log_has_columns():
+    """An empty run log still yields the documented columns (no rows)."""
+    empty = {"n_steps": 0, "ticks": []}
+    fdf = flow_frame(empty)
+    pdf = purchase_frame(empty)
+    assert list(fdf.columns) == [
+        "tick", "node_id", "pid", "sales", "demand", "price", "stockout",
+    ]
+    assert list(pdf.columns) == [
+        "tick", "buyer_id", "supplier_id", "pid", "qty_filled", "cash_paid",
+    ]
+    assert len(fdf) == 0 and len(pdf) == 0

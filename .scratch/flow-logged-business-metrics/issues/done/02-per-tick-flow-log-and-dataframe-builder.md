@@ -1,6 +1,6 @@
 # 02 — Per-tick flow log + flow DataFrame builder
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

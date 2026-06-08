@@ -22,10 +22,12 @@ import pandas as pd
 
 from src.sim.data_exporter import DataExporter
 from src.sim.inspect import (
+    flow_frame,
     global_timeseries_df,
     node_equity,
     node_timeseries_df,
     per_product_df,
+    purchase_frame,
 )
 from src.sim.runner import Runner
 from src.sim.setup_io import load_setup
@@ -68,6 +70,15 @@ def test_saved_run_reloads_to_identical_inspect_frames(tmp_path: Path) -> None:
     pd.testing.assert_frame_equal(
         global_timeseries_df(fresh_log),
         global_timeseries_df(loaded_log),
+    )
+    # The flow log (ADR 0019) must round-trip identically too.
+    pd.testing.assert_frame_equal(
+        flow_frame(fresh_log),
+        flow_frame(loaded_log),
+    )
+    pd.testing.assert_frame_equal(
+        purchase_frame(fresh_log),
+        purchase_frame(loaded_log),
     )
     for nid in node_ids:
         pd.testing.assert_frame_equal(
