@@ -44,12 +44,53 @@ import numpy as np
 from src.rl.configs.default import RLConfig
 from src.rl.encoders import compute_effective_rate, decode_action, encode_observation
 from src.rl.episode_sampler import RLEpisodeSpec, sample_episode
-from src.sim.metrics import (
-    RunSlice,
-    inventory_turnover,
-    mean_price_pct_of_msrp,
-    stockout_rate,
-)
+# Legacy RunSlice + helpers — TODO issue 07 removes these once rl/eval.py
+# is refactored to consume the shared DataFrame metrics path.
+from dataclasses import dataclass as _dc, field as _field
+from typing import List as _List
+
+
+@_dc
+class RunSlice:
+    """Per-active-SKU per-tick traces (legacy list-of-lists representation)."""
+    sales: _List[_List[float]] = _field(default_factory=list)
+    demand: _List[_List[float]] = _field(default_factory=list)
+    inventory: _List[_List[float]] = _field(default_factory=list)
+    price: _List[_List[float]] = _field(default_factory=list)
+    msrp: _List[_List[float]] = _field(default_factory=list)
+    revenue: _List[_List[float]] = _field(default_factory=list)
+    holding_cost: _List[_List[float]] = _field(default_factory=list)
+    order_cost: _List[_List[float]] = _field(default_factory=list)
+    order_fee: _List[_List[float]] = _field(default_factory=list)
+    active_pids: _List[str] = _field(default_factory=list)
+
+
+def _flat(m):
+    out = []
+    for row in m:
+        out.extend(row)
+    return out
+
+
+def _safe_mean(v):
+    return float(sum(v) / len(v)) if v else 0.0
+
+
+def stockout_rate(rs: RunSlice) -> float:
+    flat_inv = _flat(rs.inventory)
+    return float(sum(1 for v in flat_inv if v == 0.0)) / float(len(flat_inv)) if flat_inv else 0.0
+
+
+def mean_price_pct_of_msrp(rs: RunSlice) -> float:
+    fp, fm = _flat(rs.price), _flat(rs.msrp)
+    if not fp or not fm:
+        return 1.0
+    return _safe_mean([p / max(1e-9, m) for p, m in zip(fp, fm)])
+
+
+def inventory_turnover(rs: RunSlice) -> float:
+    total_sales = float(sum(_flat(rs.sales)))
+    return total_sales / max(1.0, _safe_mean(_flat(rs.inventory)))
 from src.sim.policy import (
     IntermediatePolicy,
     OrderUpToPolicy,

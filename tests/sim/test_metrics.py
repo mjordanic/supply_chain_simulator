@@ -1,64 +1,56 @@
-"""Tests for src/sim/metrics.py.
+"""Tests for src/sim/metrics.py — DataFrame-native operational metrics (ADR 0019).
 
 Covers:
-  - service_level: hand-crafted slice with known sales/demand
-  - stockout_rate: hand-crafted inventory with known zero-inventory fraction
-  - profit_decomposition: net total adds back to balance delta from same slice
-  - empty/zero-demand slices: no divide-by-zero, finite values
-  - aggregate_episode: keys match documented schema; values agree with individual calls
-  - mean_price_pct_of_msrp and inventory_turnover: formula correctness
+  - business_metrics: per-node and system-wide KPI rows returned
+  - service_level: known sales/demand ratio
+  - stockout_rate: uses the decision-time stockout boolean
+  - inventory_turnover: sum(sales) / max(1, mean(inventory_total))
+  - mean_price_pct_of_msrp: price / base_price mean
+  - value-preserving: KPI values equal the RunSlice-era values for the same scenario
+  - system roll-up: aggregates all selling nodes correctly
+  - empty frame: returns empty DataFrame without exception
 """
 
 from __future__ import annotations
 
 import math
+from datetime import datetime
 
+import pandas as pd
 import pytest
 
-from src.sim.metrics import (
-    RunSlice,
-    aggregate_episode,
-    inventory_turnover,
-    mean_price_pct_of_msrp,
-    profit_decomposition,
-    service_level,
-    stockout_rate,
-)
+from src.sim.metrics import business_metrics
 
 
 # ---------------------------------------------------------------------------
-# Helpers to build minimal RunSlice objects
+# Helpers to build minimal flow_frame and node_timeseries_df
 # ---------------------------------------------------------------------------
 
 
-def _simple_slice(
-    n_ticks: int = 5,
-    n_skus: int = 2,
-    sales_val: float = 10.0,
-    demand_val: float = 15.0,
-    inventory_val: float = 20.0,
-    price_val: float = 18.0,
-    msrp_val: float = 20.0,
-    revenue_val: float | None = None,
-    holding_val: float = 1.0,
-    order_cost_val: float = 5.0,
-    fee_val: float = 2.0,
-) -> RunSlice:
-    """Build a RunSlice with constant values across all (tick, sku) pairs."""
-    if revenue_val is None:
-        revenue_val = sales_val * price_val
+def _make_flow_frame(rows: list[dict]) -> pd.DataFrame:
+    cols = ["tick", "node_id", "pid", "sales", "demand", "price", "stockout"]
+    return pd.DataFrame(rows, columns=cols)
 
-    return RunSlice(
-        sales=[[sales_val] * n_skus for _ in range(n_ticks)],
-        demand=[[demand_val] * n_skus for _ in range(n_ticks)],
-        inventory=[[inventory_val] * n_skus for _ in range(n_ticks)],
-        price=[[price_val] * n_skus for _ in range(n_ticks)],
-        msrp=[[msrp_val] * n_skus for _ in range(n_ticks)],
-        revenue=[[revenue_val] * n_skus for _ in range(n_ticks)],
-        holding_cost=[[holding_val] * n_skus for _ in range(n_ticks)],
-        order_cost=[[order_cost_val] * n_skus for _ in range(n_ticks)],
-        order_fee=[[fee_val] * n_skus for _ in range(n_ticks)],
-    )
+
+def _make_ts_df(rows: list[dict]) -> pd.DataFrame:
+    cols = ["tick", "node_id", "node_type", "region", "level", "cash",
+            "inventory_total", "pending_total", "orders_total"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+class _FakeWare:
+    def __init__(self, product_id, base_price):
+        self.product_id = product_id
+        self.base_price = base_price
+
+
+class _FakeScenario:
+    def __init__(self, catalog):
+        self.catalog = catalog
+
+
+def _simple_scenario():
+    return _FakeScenario([_FakeWare("P0001", 20.0), _FakeWare("P0002", 30.0)])
 
 
 # ---------------------------------------------------------------------------
@@ -67,170 +59,87 @@ def _simple_slice(
 
 
 def test_service_level_known_values():
-    """sales=10, demand=15 across 5 ticks x 2 SKUs -> 100/150 ~= 0.6667."""
-    rs = _simple_slice(n_ticks=5, n_skus=2, sales_val=10.0, demand_val=15.0)
-    sl = service_level(rs)
-    assert sl == pytest.approx(10.0 / 15.0, abs=1e-6)
+    """sales=10, demand=15 -> service_level ~= 0.6667 for node A."""
+    sc = _simple_scenario()
+    ff = _make_flow_frame([
+        {"tick": t, "node_id": "A", "pid": "P0001",
+         "sales": 10, "demand": 15, "price": 18.0, "stockout": False}
+        for t in range(1, 6)
+    ])
+    ts = _make_ts_df([
+        {"tick": t, "node_id": "A", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 20, "pending_total": 0, "orders_total": 0}
+        for t in range(1, 6)
+    ])
+    result = business_metrics(ff, ts, sc)
+    row_a = result[result["node_id"] == "A"].iloc[0]
+    assert row_a["service_level"] == pytest.approx(10.0 / 15.0, abs=1e-6)
 
 
 def test_service_level_perfect_fulfillment():
     """sales == demand -> service_level == 1.0."""
-    rs = _simple_slice(sales_val=10.0, demand_val=10.0)
-    assert service_level(rs) == pytest.approx(1.0)
-
-
-def test_service_level_zero_demand():
-    """Zero demand -> service_level uses max(1, demand) => no divide-by-zero."""
-    rs = _simple_slice(sales_val=0.0, demand_val=0.0)
-    sl = service_level(rs)
-    assert math.isfinite(sl)
-    assert sl == pytest.approx(0.0)
-
-
-def test_service_level_empty_slice():
-    """Empty RunSlice -> service_level returns 0.0 (finite)."""
-    rs = RunSlice()
-    sl = service_level(rs)
-    assert math.isfinite(sl)
-    assert sl == pytest.approx(0.0)
+    sc = _simple_scenario()
+    ff = _make_flow_frame([
+        {"tick": 1, "node_id": "A", "pid": "P0001",
+         "sales": 5, "demand": 5, "price": 10.0, "stockout": False}
+    ])
+    ts = _make_ts_df([
+        {"tick": 1, "node_id": "A", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 10, "pending_total": 0, "orders_total": 0}
+    ])
+    result = business_metrics(ff, ts, sc)
+    row_a = result[result["node_id"] == "A"].iloc[0]
+    assert row_a["service_level"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
-# stockout_rate
+# stockout_rate -- uses the stockout boolean, not inventory == 0
 # ---------------------------------------------------------------------------
 
 
-def test_stockout_rate_known_fraction():
-    """K of T ticks have inventory=0; rate should be K/(T*n_skus)."""
-    n_ticks = 10
-    n_skus = 2
-    # 3 ticks have zero inventory for ALL SKUs -> 3*2 zeros out of 10*2=20
-    inv_rows: list[list[float]] = []
-    for t in range(n_ticks):
-        if t < 3:
-            inv_rows.append([0.0] * n_skus)
-        else:
-            inv_rows.append([10.0] * n_skus)
-    rs = RunSlice(inventory=inv_rows)
-    rate = stockout_rate(rs)
-    assert rate == pytest.approx(6.0 / 20.0, abs=1e-6)
-
-
-def test_stockout_rate_partial_skus():
-    """Only some SKUs have zero inventory in a tick."""
-    # 1 tick, 3 SKUs: [0, 5, 0] -> 2 zeros / 3 total
-    rs = RunSlice(inventory=[[0.0, 5.0, 0.0]])
-    assert stockout_rate(rs) == pytest.approx(2.0 / 3.0, abs=1e-6)
+def test_stockout_rate_uses_boolean():
+    """stockout_rate is the fraction of (node, pid, tick) rows where stockout==True."""
+    sc = _simple_scenario()
+    rows = [
+        {"tick": 1, "node_id": "A", "pid": "P0001",
+         "sales": 0, "demand": 5, "price": 10.0, "stockout": True},
+        {"tick": 2, "node_id": "A", "pid": "P0001",
+         "sales": 5, "demand": 5, "price": 10.0, "stockout": False},
+        {"tick": 3, "node_id": "A", "pid": "P0001",
+         "sales": 5, "demand": 5, "price": 10.0, "stockout": False},
+        {"tick": 4, "node_id": "A", "pid": "P0001",
+         "sales": 0, "demand": 5, "price": 10.0, "stockout": True},
+    ]
+    ff = _make_flow_frame(rows)
+    ts = _make_ts_df([
+        {"tick": t, "node_id": "A", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 10, "pending_total": 0, "orders_total": 0}
+        for t in range(1, 5)
+    ])
+    result = business_metrics(ff, ts, sc)
+    row_a = result[result["node_id"] == "A"].iloc[0]
+    # 2 out of 4 rows have stockout == True.
+    assert row_a["stockout_rate"] == pytest.approx(0.5, abs=1e-6)
 
 
 def test_stockout_rate_no_stockouts():
-    """All positive inventory -> stockout_rate == 0.0."""
-    rs = _simple_slice(inventory_val=10.0)
-    assert stockout_rate(rs) == pytest.approx(0.0)
-
-
-def test_stockout_rate_empty_slice():
-    """Empty RunSlice -> stockout_rate returns 0.0 (finite)."""
-    rs = RunSlice()
-    rate = stockout_rate(rs)
-    assert math.isfinite(rate)
-    assert rate == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
-# profit_decomposition
-# ---------------------------------------------------------------------------
-
-
-def test_profit_decomposition_net_equals_balance_delta():
-    """net_profit == sum(revenue) - sum(holding_cost + order_cost + order_fee).
-
-    We simulate the balance evolution manually and verify the net_profit
-    from profit_decomposition equals the total balance change.
-    """
-    n_ticks = 4
-    n_skus = 3
-    revenue_per_cell = 30.0
-    holding_per_cell = 2.0
-    order_cost_per_cell = 8.0
-    fee_per_cell = 5.0
-
-    rs = _simple_slice(
-        n_ticks=n_ticks,
-        n_skus=n_skus,
-        revenue_val=revenue_per_cell,
-        holding_val=holding_per_cell,
-        order_cost_val=order_cost_per_cell,
-        fee_val=fee_per_cell,
-    )
-
-    decomp = profit_decomposition(rs)
-    n_cells = n_ticks * n_skus
-    expected_revenue = revenue_per_cell * n_cells
-    expected_holding = holding_per_cell * n_cells
-    expected_order_cost = order_cost_per_cell * n_cells
-    expected_fees = fee_per_cell * n_cells
-    expected_net = expected_revenue - (expected_holding + expected_order_cost + expected_fees)
-
-    assert decomp["revenue"] == pytest.approx(expected_revenue, abs=1e-6)
-    assert decomp["holding_cost"] == pytest.approx(expected_holding, abs=1e-6)
-    assert decomp["order_cost"] == pytest.approx(expected_order_cost, abs=1e-6)
-    assert decomp["order_fees"] == pytest.approx(expected_fees, abs=1e-6)
-    assert decomp["net_profit"] == pytest.approx(expected_net, abs=1e-6)
-
-    # Balance delta == sum of per-tick balance changes = sum(revenue - total_cost)
-    balance_delta = (
-        expected_revenue
-        - expected_holding
-        - expected_order_cost
-        - expected_fees
-    )
-    assert decomp["net_profit"] == pytest.approx(balance_delta, abs=1e-6)
-
-
-def test_profit_decomposition_keys():
-    """profit_decomposition always returns exactly the expected keys."""
-    rs = _simple_slice()
-    keys = set(profit_decomposition(rs).keys())
-    assert keys == {"revenue", "holding_cost", "order_cost", "order_fees", "net_profit"}
-
-
-def test_profit_decomposition_empty_slice():
-    """Empty RunSlice -> all values are 0.0 (finite), no exceptions."""
-    rs = RunSlice()
-    decomp = profit_decomposition(rs)
-    for k, v in decomp.items():
-        assert math.isfinite(v), f"key={k} value={v} not finite"
-    assert decomp["net_profit"] == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
-# mean_price_pct_of_msrp
-# ---------------------------------------------------------------------------
-
-
-def test_mean_price_pct_of_msrp_known_value():
-    """price=18, msrp=20 -> 18/20=0.9 for all cells -> mean=0.9."""
-    rs = _simple_slice(price_val=18.0, msrp_val=20.0)
-    assert mean_price_pct_of_msrp(rs) == pytest.approx(0.9, abs=1e-6)
-
-
-def test_mean_price_pct_varying():
-    """Mix of price/msrp ratios: mean computed correctly."""
-    # Tick 0: [1.0, 0.5]; Tick 1: [0.5, 1.0]  -> mean = (1+0.5+0.5+1)/4 = 0.75
-    rs = RunSlice(
-        price=[[10.0, 5.0], [5.0, 10.0]],
-        msrp=[[10.0, 10.0], [10.0, 10.0]],
-    )
-    assert mean_price_pct_of_msrp(rs) == pytest.approx(0.75, abs=1e-6)
-
-
-def test_mean_price_pct_empty_slice():
-    """Empty RunSlice -> returns 1.0 (graceful fallback, finite)."""
-    rs = RunSlice()
-    v = mean_price_pct_of_msrp(rs)
-    assert math.isfinite(v)
-    assert v == pytest.approx(1.0)
+    """All stockout==False -> stockout_rate == 0.0."""
+    sc = _simple_scenario()
+    ff = _make_flow_frame([
+        {"tick": 1, "node_id": "A", "pid": "P0001",
+         "sales": 5, "demand": 5, "price": 10.0, "stockout": False},
+    ])
+    ts = _make_ts_df([
+        {"tick": 1, "node_id": "A", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 10, "pending_total": 0, "orders_total": 0}
+    ])
+    result = business_metrics(ff, ts, sc)
+    row_a = result[result["node_id"] == "A"].iloc[0]
+    assert row_a["stockout_rate"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -239,106 +148,186 @@ def test_mean_price_pct_empty_slice():
 
 
 def test_inventory_turnover_known_value():
-    """sales=10 per cell, inventory=5 per cell; 5 ticks x 2 SKUs.
-    total_sales = 100; mean_inv = 5.0 -> turnover = 100/5 = 20.
+    """total_sales=50, mean_inventory=5 -> turnover=10."""
+    sc = _simple_scenario()
+    ff = _make_flow_frame([
+        {"tick": t, "node_id": "A", "pid": "P0001",
+         "sales": 10, "demand": 10, "price": 10.0, "stockout": False}
+        for t in range(1, 6)
+    ])
+    ts = _make_ts_df([
+        {"tick": t, "node_id": "A", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 5, "pending_total": 0, "orders_total": 0}
+        for t in range(1, 6)
+    ])
+    result = business_metrics(ff, ts, sc)
+    row_a = result[result["node_id"] == "A"].iloc[0]
+    # total_sales=50, mean_inv=5 -> 50/5=10.
+    assert row_a["inventory_turnover"] == pytest.approx(10.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# mean_price_pct_of_msrp
+# ---------------------------------------------------------------------------
+
+
+def test_mean_price_pct_known_value():
+    """price=18, msrp=20 (base_price) -> mean_price_pct ~= 0.9."""
+    sc = _FakeScenario([_FakeWare("P0001", 20.0)])
+    ff = _make_flow_frame([
+        {"tick": t, "node_id": "A", "pid": "P0001",
+         "sales": 5, "demand": 5, "price": 18.0, "stockout": False}
+        for t in range(1, 4)
+    ])
+    ts = _make_ts_df([
+        {"tick": t, "node_id": "A", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 10, "pending_total": 0, "orders_total": 0}
+        for t in range(1, 4)
+    ])
+    result = business_metrics(ff, ts, sc)
+    row_a = result[result["node_id"] == "A"].iloc[0]
+    assert row_a["mean_price_pct_of_msrp"] == pytest.approx(0.9, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# System-wide roll-up
+# ---------------------------------------------------------------------------
+
+
+def test_system_row_exists():
+    """business_metrics always returns a '_system' roll-up row."""
+    sc = _simple_scenario()
+    ff = _make_flow_frame([
+        {"tick": 1, "node_id": "A", "pid": "P0001",
+         "sales": 5, "demand": 10, "price": 10.0, "stockout": False},
+    ])
+    ts = _make_ts_df([
+        {"tick": 1, "node_id": "A", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 10, "pending_total": 0, "orders_total": 0}
+    ])
+    result = business_metrics(ff, ts, sc)
+    assert "_system" in result["node_id"].values
+
+
+def test_system_service_level_aggregates():
+    """'_system' service_level is total_sales / total_demand across all nodes."""
+    sc = _simple_scenario()
+    ff = _make_flow_frame([
+        {"tick": 1, "node_id": "A", "pid": "P0001",
+         "sales": 5, "demand": 10, "price": 10.0, "stockout": False},
+        {"tick": 1, "node_id": "B", "pid": "P0001",
+         "sales": 8, "demand": 10, "price": 10.0, "stockout": False},
+    ])
+    ts = _make_ts_df([
+        {"tick": 1, "node_id": n, "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 10, "pending_total": 0, "orders_total": 0}
+        for n in ["A", "B"]
+    ])
+    result = business_metrics(ff, ts, sc)
+    system = result[result["node_id"] == "_system"].iloc[0]
+    # total_sales=13, total_demand=20 -> 0.65
+    assert system["service_level"] == pytest.approx(13.0 / 20.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Demand sinks are excluded (price is None)
+# ---------------------------------------------------------------------------
+
+
+def test_demand_sinks_excluded_from_selling_nodes():
+    """Rows with price==None (demand sinks) do not appear in KPI output."""
+    sc = _simple_scenario()
+    ff = _make_flow_frame([
+        {"tick": 1, "node_id": "shop", "pid": "P0001",
+         "sales": 5, "demand": 10, "price": 10.0, "stockout": False},
+        {"tick": 1, "node_id": "sink", "pid": "P0001",
+         "sales": 0, "demand": 10, "price": None, "stockout": False},
+    ])
+    ts = _make_ts_df([
+        {"tick": 1, "node_id": n, "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 10, "pending_total": 0, "orders_total": 0}
+        for n in ["shop", "sink"]
+    ])
+    result = business_metrics(ff, ts, sc)
+    assert "sink" not in result["node_id"].values
+    assert "shop" in result["node_id"].values
+
+
+# ---------------------------------------------------------------------------
+# Empty frame
+# ---------------------------------------------------------------------------
+
+
+def test_empty_flow_frame_returns_empty_dataframe():
+    """Empty flow_frame -> empty result with correct columns, no exception."""
+    sc = _simple_scenario()
+    ff = _make_flow_frame([])
+    ts = _make_ts_df([])
+    result = business_metrics(ff, ts, sc)
+    assert isinstance(result, pd.DataFrame)
+    assert set(result.columns) == {
+        "node_id", "service_level", "stockout_rate",
+        "inventory_turnover", "mean_price_pct_of_msrp",
+    }
+    assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# Value-preserving regression: compare against the RunSlice-era values
+# ---------------------------------------------------------------------------
+
+
+def test_value_preserving_vs_run_slice_era():
+    """KPI values match the RunSlice-era values for the same hand-checkable scenario.
+
+    Scenario: single selling node, 1 product, 5 ticks.
+      sales=10, demand=15, price=18, stockout=False, inventory=20 each tick.
+    Expected (same as old RunSlice formulas):
+      service_level  = 50/75 ~= 0.6667
+      stockout_rate  = 0/5 = 0.0
+      inventory_turn = 50/20 = 2.5
+      price_pct_msrp = 18/20 = 0.9
     """
-    rs = _simple_slice(n_ticks=5, n_skus=2, sales_val=10.0, inventory_val=5.0)
-    assert inventory_turnover(rs) == pytest.approx(100.0 / 5.0, abs=1e-6)
+    sc = _FakeScenario([_FakeWare("P0001", 20.0)])
+    n_ticks = 5
+    ff = _make_flow_frame([
+        {"tick": t, "node_id": "shop", "pid": "P0001",
+         "sales": 10, "demand": 15, "price": 18.0, "stockout": False}
+        for t in range(1, n_ticks + 1)
+    ])
+    ts = _make_ts_df([
+        {"tick": t, "node_id": "shop", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 20, "pending_total": 0, "orders_total": 0}
+        for t in range(1, n_ticks + 1)
+    ])
+    result = business_metrics(ff, ts, sc)
+    row = result[result["node_id"] == "shop"].iloc[0]
+
+    assert row["service_level"] == pytest.approx(50.0 / 75.0, abs=1e-6)
+    assert row["stockout_rate"] == pytest.approx(0.0, abs=1e-6)
+    assert row["inventory_turnover"] == pytest.approx(50.0 / 20.0, abs=1e-6)
+    assert row["mean_price_pct_of_msrp"] == pytest.approx(18.0 / 20.0, abs=1e-6)
 
 
-def test_inventory_turnover_zero_inventory():
-    """Zero mean inventory -> uses max(1, mean_inv) = 1 -> turnover = total_sales."""
-    rs = _simple_slice(n_ticks=2, n_skus=1, sales_val=7.0, inventory_val=0.0)
-    assert inventory_turnover(rs) == pytest.approx(14.0 / 1.0, abs=1e-6)
-
-
-def test_inventory_turnover_empty_slice():
-    """Empty RunSlice -> returns 0.0 (finite)."""
-    rs = RunSlice()
-    v = inventory_turnover(rs)
-    assert math.isfinite(v)
-    assert v == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
-# aggregate_episode
-# ---------------------------------------------------------------------------
-
-
-_EXPECTED_AGGREGATE_KEYS = {
-    "service_level",
-    "stockout_rate",
-    "mean_price_pct_of_msrp",
-    "inventory_turnover",
-    "revenue",
-    "holding_cost",
-    "order_cost",
-    "order_fees",
-    "net_profit",
-}
-
-
-def test_aggregate_episode_keys():
-    """aggregate_episode returns exactly the documented keys."""
-    rs = _simple_slice()
-    assert set(aggregate_episode(rs).keys()) == _EXPECTED_AGGREGATE_KEYS
-
-
-def test_aggregate_episode_values_agree_with_individual_calls():
-    """aggregate_episode values match individual function calls on same slice."""
-    rs = _simple_slice(
-        n_ticks=6,
-        n_skus=3,
-        sales_val=8.0,
-        demand_val=12.0,
-        inventory_val=15.0,
-        price_val=17.0,
-        msrp_val=20.0,
-        holding_val=1.5,
-        order_cost_val=4.0,
-        fee_val=3.0,
-    )
-    agg = aggregate_episode(rs)
-    decomp = profit_decomposition(rs)
-
-    assert agg["service_level"] == pytest.approx(service_level(rs))
-    assert agg["stockout_rate"] == pytest.approx(stockout_rate(rs))
-    assert agg["mean_price_pct_of_msrp"] == pytest.approx(mean_price_pct_of_msrp(rs))
-    assert agg["inventory_turnover"] == pytest.approx(inventory_turnover(rs))
-    assert agg["revenue"] == pytest.approx(decomp["revenue"])
-    assert agg["holding_cost"] == pytest.approx(decomp["holding_cost"])
-    assert agg["order_cost"] == pytest.approx(decomp["order_cost"])
-    assert agg["order_fees"] == pytest.approx(decomp["order_fees"])
-    assert agg["net_profit"] == pytest.approx(decomp["net_profit"])
-
-
-def test_aggregate_episode_empty_slice_all_finite():
-    """Empty RunSlice -> all aggregate values are finite (no NaN/inf)."""
-    rs = RunSlice()
-    for k, v in aggregate_episode(rs).items():
-        assert math.isfinite(v), f"aggregate key={k} value={v} not finite"
-
-
-# ---------------------------------------------------------------------------
-# Zero-demand edge cases (no divide-by-zero)
-# ---------------------------------------------------------------------------
-
-
-def test_all_zero_demand_no_exception():
-    """Slice where all demand is 0 -- must not raise."""
-    rs = RunSlice(
-        sales=[[0.0, 0.0]] * 10,
-        demand=[[0.0, 0.0]] * 10,
-        inventory=[[0.0, 0.0]] * 10,
-        price=[[20.0, 20.0]] * 10,
-        msrp=[[20.0, 20.0]] * 10,
-        revenue=[[0.0, 0.0]] * 10,
-        holding_cost=[[0.0, 0.0]] * 10,
-        order_cost=[[0.0, 0.0]] * 10,
-        order_fee=[[0.0, 0.0]] * 10,
-    )
-    agg = aggregate_episode(rs)
-    for k, v in agg.items():
-        assert math.isfinite(v), f"key={k} value={v} not finite on zero-demand slice"
-    assert agg["service_level"] == pytest.approx(0.0)
-    assert agg["stockout_rate"] == pytest.approx(1.0)  # all inventory=0 -> all stockouts
+def test_all_values_are_finite():
+    """All KPI values in the output are finite (no NaN/inf)."""
+    sc = _simple_scenario()
+    ff = _make_flow_frame([
+        {"tick": 1, "node_id": "A", "pid": "P0001",
+         "sales": 0, "demand": 0, "price": 0.0, "stockout": True},
+    ])
+    ts = _make_ts_df([
+        {"tick": 1, "node_id": "A", "node_type": "IntermediateNode",
+         "region": "US", "level": 1, "cash": 0.0,
+         "inventory_total": 0, "pending_total": 0, "orders_total": 0}
+    ])
+    result = business_metrics(ff, ts, sc)
+    for col in ["service_level", "stockout_rate", "inventory_turnover", "mean_price_pct_of_msrp"]:
+        for val in result[col]:
+            assert math.isfinite(val), f"column {col} has non-finite value {val}"

@@ -18,8 +18,90 @@ conversion is needed.
 from __future__ import annotations
 
 from src.tuning.episode import TuningEpisodeSpec
-from src.sim.metrics import RunSlice, aggregate_episode
 from src.sim.policy import Policy
+
+# ---------------------------------------------------------------------------
+# Legacy RunSlice + aggregate_episode — TODO issue 07 removes these once
+# tuning/rollout.py is refactored to consume the shared DataFrame path.
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass as _dc, field as _field
+from typing import Dict as _Dict, List as _List
+
+
+@_dc
+class RunSlice:
+    """Per-active-SKU per-tick traces (legacy list-of-lists representation)."""
+    sales: _List[_List[float]] = _field(default_factory=list)
+    demand: _List[_List[float]] = _field(default_factory=list)
+    inventory: _List[_List[float]] = _field(default_factory=list)
+    price: _List[_List[float]] = _field(default_factory=list)
+    msrp: _List[_List[float]] = _field(default_factory=list)
+    revenue: _List[_List[float]] = _field(default_factory=list)
+    holding_cost: _List[_List[float]] = _field(default_factory=list)
+    order_cost: _List[_List[float]] = _field(default_factory=list)
+    order_fee: _List[_List[float]] = _field(default_factory=list)
+    active_pids: _List[str] = _field(default_factory=list)
+
+
+def _flat(matrix: _List[_List[float]]) -> _List[float]:
+    out: list[float] = []
+    for row in matrix:
+        out.extend(row)
+    return out
+
+
+def _safe_sum(v: _List[float]) -> float:
+    return float(sum(v)) if v else 0.0
+
+
+def _safe_mean(v: _List[float]) -> float:
+    return float(sum(v) / len(v)) if v else 0.0
+
+
+def _service_level(rs: RunSlice) -> float:
+    return _safe_sum(_flat(rs.sales)) / max(1.0, _safe_sum(_flat(rs.demand)))
+
+
+def _stockout_rate(rs: RunSlice) -> float:
+    flat_inv = _flat(rs.inventory)
+    return float(sum(1 for v in flat_inv if v == 0.0)) / float(len(flat_inv)) if flat_inv else 0.0
+
+
+def _mean_price_pct(rs: RunSlice) -> float:
+    fp, fm = _flat(rs.price), _flat(rs.msrp)
+    if not fp or not fm:
+        return 1.0
+    return _safe_mean([p / max(1e-9, m) for p, m in zip(fp, fm)])
+
+
+def _inventory_turnover(rs: RunSlice) -> float:
+    return _safe_sum(_flat(rs.sales)) / max(1.0, _safe_mean(_flat(rs.inventory)))
+
+
+def _profit_decomposition(rs: RunSlice) -> _Dict[str, float]:
+    revenue = _safe_sum(_flat(rs.revenue))
+    holding = _safe_sum(_flat(rs.holding_cost))
+    order_cost = _safe_sum(_flat(rs.order_cost))
+    fees = _safe_sum(_flat(rs.order_fee))
+    return {
+        "revenue": revenue,
+        "holding_cost": holding,
+        "order_cost": order_cost,
+        "order_fees": fees,
+        "net_profit": revenue - (holding + order_cost + fees),
+    }
+
+
+def aggregate_episode(rs: RunSlice) -> _Dict[str, float]:
+    decomp = _profit_decomposition(rs)
+    return {
+        "service_level": _service_level(rs),
+        "stockout_rate": _stockout_rate(rs),
+        "mean_price_pct_of_msrp": _mean_price_pct(rs),
+        "inventory_turnover": _inventory_turnover(rs),
+        **decomp,
+    }
 
 
 # ---------------------------------------------------------------------------
