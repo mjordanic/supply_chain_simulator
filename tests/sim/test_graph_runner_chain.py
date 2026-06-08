@@ -363,7 +363,14 @@ class TestGraphRunnerChain:
             total_cash(t) - Σ_factory(cash(t) - cash(0))
                 == total_cash(0) + t * sum(income_rates)
         """
+        from src.sim.node import IntermediateNode as _IN
         scenario = _build_chain_scenario(n_steps=50)
+        # Zero holding/fee so void charges don't appear in this balance;
+        # full void-accounting Rule-5 conservation is tested in issue 06.
+        for ni in scenario.nodes:
+            if isinstance(ni.node, _IN):
+                ni.node.holding_rate = 0.0
+                ni.node.order_fee = 0.0
         gsim = build_graph_world(scenario)
 
         # Record initial total cash before any ticks.

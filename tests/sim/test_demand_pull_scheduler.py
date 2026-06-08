@@ -345,10 +345,21 @@ class TestRunnerDemandPullIntegration:
         assert len(sim.schedule) > 0
 
     def test_cash_conservation(self):
-        """Cash + inventory-in-transit must equal initial + income (ADR 0013)."""
-        from src.sim.node import FactoryNode
+        """Cash + inventory-in-transit must equal initial + income (ADR 0013).
+
+        Uses zero holding_rate and order_fee so void charges do not appear in
+        the balance.  The full void-accounting conservation identity (ADR 0013
+        Rule 5) is tested separately in issue 06.
+        """
+        from src.sim.node import FactoryNode, IntermediateNode
         from src.sim.runner import build_world
         scenario = self._build_chain_scenario(n_steps=30)
+        # Zero out holding/fee so this classic conservation test stays valid;
+        # void charges are tested by the Rule-5 identity test in issue 06.
+        for ni in scenario.nodes:
+            if isinstance(ni.node, IntermediateNode):
+                ni.node.holding_rate = 0.0
+                ni.node.order_fee = 0.0
         sim = build_world(scenario)
         initial_total = sum(getattr(n, "cash", 0.0) for n in sim.nodes.values())
         income_per_tick = sum(
@@ -456,9 +467,15 @@ class TestRunnerLateralGraph:
                         assert qty >= 0
 
     def test_lateral_graph_cash_conservation(self):
-        from src.sim.node import FactoryNode
+        from src.sim.node import FactoryNode, IntermediateNode
         from src.sim.runner import build_world
         scenario = self._build_lateral_scenario(n_steps=20)
+        # Zero out holding/fee so void charges don't appear in this balance;
+        # full void-accounting Rule-5 conservation is tested in issue 06.
+        for ni in scenario.nodes:
+            if isinstance(ni.node, IntermediateNode):
+                ni.node.holding_rate = 0.0
+                ni.node.order_fee = 0.0
         sim = build_world(scenario)
         initial_total = sum(getattr(n, "cash", 0.0) for n in sim.nodes.values())
         income_per_tick = sum(

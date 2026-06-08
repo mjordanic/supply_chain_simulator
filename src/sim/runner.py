@@ -110,6 +110,12 @@ class Simulation:
         # Injected into each intermediate's observation as ``observed_sales`` so
         # the policy sees the current tick's complete demand signal (not lagged).
         self._tick_sales: dict[str, dict[str, int]] = {}
+        # Unit-cost lookup derived from the scenario catalog: ``{pid: unit_cost}``.
+        # Used by ``_charge_intermediates`` to value closing inventory for the
+        # holding-cost charge (ADR 0019 Rule 1).  Built once at construction.
+        self._unit_cost_lookup: dict[str, float] = {
+            w.product_id: float(w.unit_cost) for w in scenario.catalog
+        }
         # Per-tick rejection log (issue 05).  Reset each tick.  Each entry is a
         # dict with keys: tick, buyer_id, supplier_id, pid, qty_requested,
         # qty_filled, qty_rejected, reason.  Sink-level unmet_demand entries use
@@ -184,9 +190,12 @@ class Simulation:
         # -------------------------------------------------------------------
 
         # -------------------------------------------------------------------
-        # 6. consume_demand_sinks — credit income_rate cash to each sink.
+        # 6. consume_demand_sinks — credit income_rate cash to each sink;
+        #    charge holding cost + order fee to each IntermediateNode
+        #    (ADR 0019 Rules 1–2, final tick phase per ADR 0014).
         # -------------------------------------------------------------------
         _credit_sinks(self.nodes)
+        _charge_intermediates(self.nodes, self._tick_purchases, self._unit_cost_lookup)
 
     # ------------------------------------------------------------------
     # Two-phase tick API — for RL interoperability
@@ -243,6 +252,7 @@ class Simulation:
         _run_demand_pull_schedule(self, table, current_tick)
         _produce_factories(self, current_tick)
         _credit_sinks(self.nodes)
+        _charge_intermediates(self.nodes, self._tick_purchases, self._unit_cost_lookup)
 
         # Clean up the stashed table.
         self._current_table = None
@@ -514,6 +524,56 @@ def _credit_sinks(nodes: dict) -> None:
     for node_id, node in nodes.items():
         if isinstance(node, DemandSinkNode):
             node.cash += node.income_rate
+
+
+def _charge_intermediates(
+    nodes: dict,
+    tick_purchases: list,
+    unit_cost_lookup: dict,
+) -> None:
+    """Charge holding cost + order fee to each IntermediateNode (ADR 0019).
+
+    **Holding cost** (Rule 1): each intermediate pays
+    ``holding_rate × Σ_pid closing_on_hand[pid] × unit_cost[pid]``
+    where closing on-hand is the *post-sell, post-deliver* inventory
+    snapshot (charged at end-of-tick per ADR 0013 Rule 4).
+
+    **Order fee** (Rule 2): one ``order_fee`` per distinct ``(node,
+    supplier)`` purchase-order pair for *this* intermediate in this tick.
+    A multi-SKU PO to one supplier is one fee; ordering from two suppliers
+    incurs two fees.
+
+    Both charges go to the void — no other node receives the cash (ADR
+    0013 Rule 5 accounts for them as void terms in the conservation
+    identity).
+    """
+    from src.sim.node import IntermediateNode
+
+    # Count distinct (buyer_id, supplier_id) pairs per buyer so we charge
+    # one fee per PO regardless of how many SKUs the PO covers.
+    order_fee_counts: dict[str, int] = {}
+    for p in tick_purchases:
+        buyer = nodes.get(p["buyer_id"])
+        if isinstance(buyer, IntermediateNode):
+            key = (p["buyer_id"], p["supplier_id"])
+            # Use a set per buyer to deduplicate (buyer, supplier) pairs.
+            order_fee_counts.setdefault(p["buyer_id"], set()).add(key)  # type: ignore[arg-type]
+
+    for node_id, node in nodes.items():
+        if not isinstance(node, IntermediateNode):
+            continue
+
+        # --- Holding cost ---
+        holding = 0.0
+        for pid, qty in node.inventory.items():
+            uc = unit_cost_lookup.get(pid, 0.0)
+            holding += qty * node.holding_rate * uc
+        node.cash -= holding
+
+        # --- Order fee ---
+        supplier_set = order_fee_counts.get(node_id, set())
+        fee_total = len(supplier_set) * node.order_fee
+        node.cash -= fee_total
 
 
 def _default_sink_action(

@@ -43,10 +43,9 @@ from src.sim.scenario import (
 
 # Bump this constant when simulator numerics change intentionally. A
 # failing assertion prints the observed digest so it can be copied here.
-# Re-baselined for ADR 0019: each tick snapshot now carries the per-tick flow
-# log (``node_flows`` + ``purchases``); the underlying cash/inventory numerics
-# are unchanged.
-EXPECTED_HASH = "5d6e24a4dfec5a5f85b5b03397710f3223859286a9011670cd7e385dd7d3e323"
+# Re-baselined for ADR 0019 issue 03: engine now charges holding cost and
+# order fee each tick on IntermediateNodes, changing cash/equity trajectories.
+EXPECTED_HASH = "085cb4904b59c0dc537762a872c38ea1829062bbea709a86f0dd0f67bbba7d90"
 
 
 N_STEPS = 30
