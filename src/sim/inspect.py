@@ -16,6 +16,8 @@ Public API
   (qty_filled, cash_paid).
 - ``closing_inventory_frame(run_log)`` — per-(tick, node_id, pid) closing
   on-hand inventory for non-factory nodes.
+- ``conservation_identity_terms(run_log, scenario)`` — the four ADR 0013
+  Rule 5 terms for the cash-conservation identity.
 
 The flow / purchase builders own *all* run-log flow-schema knowledge so that
 ``metrics.py`` can stay schema-free and DataFrame-native (ADR 0019).
@@ -364,6 +366,136 @@ def closing_inventory_frame(run_log: dict[str, Any]) -> pd.DataFrame:
     )
 
 
+def conservation_identity_terms(
+    run_log: dict[str, Any],
+    scenario: Any,
+) -> dict[str, float]:
+    """Compute the ADR 0013 Rule 5 cash-conservation identity terms.
+
+    Rule 5 (amended by ADR 0019) states that, for a system with no active
+    factory production:
+
+        initial_cash + sink_cash_created == node_cash_total + cumulative_void
+
+    where
+
+    - ``initial_cash``      is the total cash across all nodes *before* any
+                            tick (not returned here — callers supply it from
+                            a pre-run ``build_world`` snapshot; see examples
+                            in the integration tests).
+    - ``sink_cash_created`` = ``n_steps × income_rate`` for each
+                            ``DemandSinkNode`` (the only source of new cash
+                            per ADR 0013 Rule 1).
+    - ``node_cash_total``   = Σ node cash balances at end of run.
+    - ``cumulative_void``   = Σ holding-cost + Σ order-fee charged to
+                            ``IntermediateNode``s over all ticks (derived
+                            from the logged flows + the node rates per
+                            ADR 0019 Rule 5 — not logged per tick).
+    - ``in_transit_value``  = Σ pending units × unit_cost at end of run
+                            (paid-for but not-yet-delivered inventory,
+                            returned for diagnostic purposes but NOT part
+                            of the identity — payment is at allocation time
+                            per ADR 0012, so the cash is already in the
+                            seller's balance).
+
+    Parameters
+    ----------
+    run_log:
+        Output of ``Runner.run()`` — the dict with ``"n_steps"`` and
+        ``"ticks"`` keys.
+    scenario:
+        The ``Scenario`` used for the run.  Provides ``DemandSinkNode``
+        ``income_rate``s, ``IntermediateNode`` ``holding_rate``/
+        ``order_fee``s, and the catalog ``unit_cost`` per product.
+
+    Returns
+    -------
+    dict[str, float]
+        Keys: ``"sink_cash_created"``, ``"node_cash_total"``,
+        ``"cumulative_void"``, ``"in_transit_value"``.
+
+    Notes
+    -----
+    The identity holds when factory nodes have zero net production over the
+    episode (``capacity_per_tick == 0`` or all produced units are sold).
+    With active production the factory injects inventory value into the
+    system outside the cash-conservation scope; the graph-runner integration
+    test uses a zero-production factory scenario so the identity holds
+    exactly.
+
+    Payment is at allocation time (ADR 0012 — ``execute_buy`` transfers
+    cash immediately).  In-transit goods are therefore already paid for and
+    the seller's cash already reflects the payment.  The ``in_transit_value``
+    term is provided for diagnostic use but is NOT included in the identity
+    check.
+    """
+    from src.sim.node import DemandSinkNode, IntermediateNode
+
+    unit_cost: dict[str, float] = {
+        w.product_id: float(w.unit_cost) for w in scenario.catalog
+    }
+
+    # Collect node-rate lookup for IntermediateNodes.
+    intermediate_rates: dict[str, tuple[float, float]] = {}
+    sink_income_rates: dict[str, float] = {}
+    for ni in scenario.nodes:
+        if isinstance(ni.node, IntermediateNode):
+            intermediate_rates[ni.node.id] = (
+                float(ni.node.holding_rate),
+                float(ni.node.order_fee),
+            )
+        elif isinstance(ni.node, DemandSinkNode):
+            sink_income_rates[ni.node.id] = float(ni.node.income_rate)
+
+    n_steps: int = int(run_log["n_steps"])
+
+    # --- sink_cash_created: income_rate × n_steps per sink ---
+    sink_cash_created = sum(
+        rate * n_steps for rate in sink_income_rates.values()
+    )
+
+    # --- Cumulate void over all ticks ---
+    cumulative_void = 0.0
+    for tick_log in run_log["ticks"]:
+        purchases_this_tick = tick_log.get("purchases", [])
+
+        for node_id, (holding_rate, order_fee) in intermediate_rates.items():
+            # Holding cost: closing_qty × holding_rate × unit_cost per pid.
+            inv_dict = tick_log.get("node_inventory", {}).get(node_id, {})
+            for pid, qty in inv_dict.items():
+                if pid == "_total":
+                    continue
+                uc = unit_cost.get(pid, 0.0)
+                cumulative_void += qty * holding_rate * uc
+
+            # Order fee: one per distinct (buyer, supplier) pair for this buyer.
+            if order_fee > 0.0:
+                suppliers_this_tick = {
+                    p["supplier_id"]
+                    for p in purchases_this_tick
+                    if p["buyer_id"] == node_id
+                }
+                cumulative_void += len(suppliers_this_tick) * order_fee
+
+    # --- Final tick: node_cash_total and in_transit_value ---
+    last_tick = run_log["ticks"][-1]
+
+    node_cash_total = sum(last_tick.get("node_cash", {}).values())
+
+    in_transit_value = sum(
+        qty * unit_cost.get(pid, 0.0)
+        for node_id, pend in last_tick.get("node_pending", {}).items()
+        for pid, qty in pend.items()
+    )
+
+    return {
+        "sink_cash_created": sink_cash_created,
+        "node_cash_total": node_cash_total,
+        "cumulative_void": cumulative_void,
+        "in_transit_value": in_transit_value,
+    }
+
+
 __all__ = [
     "node_timeseries_df",
     "global_timeseries_df",
@@ -372,4 +504,5 @@ __all__ = [
     "flow_frame",
     "purchase_frame",
     "closing_inventory_frame",
+    "conservation_identity_terms",
 ]
