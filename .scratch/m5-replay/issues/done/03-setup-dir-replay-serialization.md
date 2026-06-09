@@ -1,6 +1,6 @@
 # 03: Setup-dir serialization of replay scenarios
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
