@@ -1,6 +1,6 @@
 # 06: M5 setup-dir emission + README
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
