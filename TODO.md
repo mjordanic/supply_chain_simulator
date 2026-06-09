@@ -160,3 +160,46 @@ example to `notebooks/06-rl-train-and-eval.ipynb` once shipped, and update `src/
 (which currently points here).
 
 
+---
+
+## 8. Price-elastic demand and store competition  — PLANNED
+
+Make price actually affect demand. Today it does nothing on the demand side: textbook policies
+emit `list_price == base_price` flat, and `MarketParams.price_elasticity` / `promo_multiplier`
+are parsed but **never read** by the graph engine — `demand_target` is only `demand_dist ×
+seasonal × regional` (`node.py:298`, `market.py:305`). All of the below is synthetic and does
+**not** depend on real data.
+
+Two price roles: per-product **reference** (`base_price`, the yardstick) and per-(store,product)
+**selling** (`list_prices`, the lever). They must be able to diverge — demand responds to the
+ratio. Four things to build:
+
+- **Pricing lever.** A policy that sets `selling` off `base` (markup / promo discount). Today no
+  graph node prices off base, so there's nothing to react to.
+- **Category elasticity (sink-only).** Add a factor to `demand_target`:
+  `demand × (p_market / base) ** elasticity`. Sink-only — mid-graph nodes have no price-elastic
+  demand (their order qty is inventory-policy-driven). `p_market = min(list_price)` over the
+  **sink's direct suppliers only** (the sink already filters to direct suppliers, `runner.py:597`).
+  All stores cheap → pool grows. `promo_multiplier` rides the same ratio.
+- **Soft-share competition (sink-only).** Substitution already exists as hard cheapest-first at
+  every buyer (`_split_across_suppliers`, `_default_sink_action` `runner.py:603`) — winner-take-all
+  up to capacity, so a tiny price gap swings 100% of share. Replace the **sink** allocator with a
+  soft-share (logit/attraction) split so a cheaper store *gradually* attracts more orders. Leave
+  intermediate sourcing cheapest-first (a warehouse isn't a shopper).
+- The two effects reinforce: a store cutting price both grows the pool and wins more share.
+
+Wiring is small — one factor in `demand_target`, thread the faced `p_market` in (offers are
+published before sinks act, so it's available), a pricing policy, and a sink routing-strategy swap.
+
+**Open questions for grilling.** Soft-share functional form (logit temperature? attraction
+weights?) and how it degrades to the current cheapest-first. Where the pricing lever lives
+(new policy vs extend existing). Whether `base_price` should ever drift (a slow "regular price"
+schedule) or stay static. Interaction with the existing affordability cap (`sink.cash /
+list_price`) and CRN draw count (§6).
+
+*(Real-data note: this machinery also enables an M5 replay mode later — declare `base = observed
+price`, set `selling = base` so elasticity goes inert (M5 demand already embeds the real price
+response — re-applying it would double-count), one sink per (item, store) so soft-share can't
+re-split data that's already per-store. Separate effort; see the M5 feasibility study.)*
+
+
