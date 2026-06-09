@@ -128,25 +128,8 @@ ADR 0003 and define the seeding scheme.
 
 ---
 
-## 7. Replace tuning's `RandomSampler` with `TPESampler`  — PLANNED
 
-`run_study` in `src/tuning/study.py` currently creates the Optuna study with
-`optuna.samplers.RandomSampler(seed=tuning_config.sampler_seed)`; the `TPESampler(seed=...)`
-line directly above it is commented out. This contradicts ADR 0009(e), which specifies TPE
-("well-suited to 4-D mostly-integer spaces in the 100-trial range") as the sampler. Random
-search spreads the trial budget uniformly — TPE concentrates samples in the high-value region
-of the search space, which is the whole reason ADR 0009(b) rejected grid search.
-
-**To do.** Re-enable the `TPESampler` line and delete the `RandomSampler` line in `run_study`.
-`sampler_seed` and the rest of the study API are unchanged. Re-run a study and confirm
-`best_value` is at least as good as the random-search baseline at equal `--trials`; refresh the
-headline numbers / images in `src/tuning/README.md` and `notebooks/05-tune-a-policy.ipynb` if
-they shift. RandomSampler was kept during development for cheaper, fully-reproducible smoke runs;
-switch before quoting any "headroom over defaults" figure as authoritative.
-
----
-
-## 8. Run a trained RL policy inside a multi-echelon graph  — PLANNED
+## 7. Run a trained RL policy inside a multi-echelon graph  — PLANNED
 
 Both tuning and RL optimise a single `IntermediateNode` ("S") in a degenerate 3-node graph
 (`factory → S → sink`; see ADR 0004 and ADR 0009). A *tuned* textbook policy is a plain
@@ -177,5 +160,3 @@ example to `notebooks/06-rl-train-and-eval.ipynb` once shipped, and update `src/
 (which currently points here).
 
 
-
-In evaluate functions there is no service level. Why is that? Please make sure that we can evaluate service level and other common metrics as specified in README.
