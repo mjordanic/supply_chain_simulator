@@ -12,9 +12,10 @@ domain randomisation across capacity and balance; the objective is mean `net_pro
 2. [Quickstart](#quickstart)
 3. [Output layout](#output-layout)
 4. [Programmatic use](#programmatic-use)
-5. [Analysis notebook](#analysis-notebook)
-6. [CRN guarantee](#crn-guarantee)
-7. [CLI flags](#cli-flags)
+5. [Deploying a tuned policy in a multi-echelon graph](#deploying-a-tuned-policy-in-a-multi-echelon-graph)
+6. [Analysis notebook](#analysis-notebook)
+7. [CRN guarantee](#crn-guarantee)
+8. [CLI flags](#cli-flags)
 
 ## Layout
 
@@ -138,6 +139,37 @@ study = run_study(
     market_params=market,
 )
 ```
+
+## Deploying a tuned policy in a multi-echelon graph
+
+Tuning optimises a single `IntermediateNode` in the degenerate 3-node
+`factory → "S" → sink-per-product` graph described above — **never your authored multi-echelon
+scenario**. But the result is just an `OrderUpToPolicy` (an ordinary `IntermediatePolicy`), so
+deploying it into a real multi-echelon graph is a one-liner: **attach it to whichever node you
+want via `Runner`'s `policy_overrides`; every other node keeps its own policy.** Rebuild the
+tuned policy from the study's `best_params` with the same search-space factory (this maps the
+categorical `routing_strategy` string back to its callable, exactly as `confirm_top_k` does):
+
+```python
+import optuna
+from src.sim.setup_io import load_setup
+from src.sim.runner import Runner
+from src.tuning import order_up_to_space
+
+# `study` from run_study(...), or best_params loaded from study.json on disk.
+tuned = order_up_to_space(optuna.trial.FixedTrial(study.best_params))
+
+scenario = load_setup("setups/two_factories_two_shops")  # f-lo,f-hi → shop-1,shop-2 → sink-1,sink-2
+runner = Runner(scenario, policy_overrides={"shop-1": tuned})  # shop-2 keeps its setup.yaml policy
+run_log = runner.run()
+```
+
+The tuned policy was searched across log-uniform capacity/balance randomisation and a randomised
+SKU assortment (ADR 0009), so it is node-agnostic — the same kwargs drop onto a small shop or a
+flagship warehouse. It still decides only from *local* observation (its own inventory / cash /
+sales plus the central-table offers from its direct suppliers); there is no joint cross-node
+optimisation. `notebooks/05-tune-a-policy.ipynb` demonstrates this end-to-end. (A *trained RL*
+actor is not portable this way yet — see `TODO.md` §8.)
 
 ## Analysis notebook
 

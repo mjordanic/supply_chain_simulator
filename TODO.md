@@ -126,6 +126,56 @@ needs a re-baseline); loses the "latent demand for all products" side-data the l
 worth standalone churn while current paired-eval tests are green. A new ADR should supersede
 ADR 0003 and define the seeding scheme.
 
+---
+
+## 7. Replace tuning's `RandomSampler` with `TPESampler`  — PLANNED
+
+`run_study` in `src/tuning/study.py` currently creates the Optuna study with
+`optuna.samplers.RandomSampler(seed=tuning_config.sampler_seed)`; the `TPESampler(seed=...)`
+line directly above it is commented out. This contradicts ADR 0009(e), which specifies TPE
+("well-suited to 4-D mostly-integer spaces in the 100-trial range") as the sampler. Random
+search spreads the trial budget uniformly — TPE concentrates samples in the high-value region
+of the search space, which is the whole reason ADR 0009(b) rejected grid search.
+
+**To do.** Re-enable the `TPESampler` line and delete the `RandomSampler` line in `run_study`.
+`sampler_seed` and the rest of the study API are unchanged. Re-run a study and confirm
+`best_value` is at least as good as the random-search baseline at equal `--trials`; refresh the
+headline numbers / images in `src/tuning/README.md` and `notebooks/05-tune-a-policy.ipynb` if
+they shift. RandomSampler was kept during development for cheaper, fully-reproducible smoke runs;
+switch before quoting any "headroom over defaults" figure as authoritative.
+
+---
+
+## 8. Run a trained RL policy inside a multi-echelon graph  — PLANNED
+
+Both tuning and RL optimise a single `IntermediateNode` ("S") in a degenerate 3-node graph
+(`factory → S → sink`; see ADR 0004 and ADR 0009). A *tuned* textbook policy is a plain
+`IntermediatePolicy`, so deploying it into a real multi-echelon graph is trivial — attach it to
+any one node via `Runner(scenario, policy_overrides={"shop-1": tuned}).run()` (demonstrated in
+`notebooks/05-tune-a-policy.ipynb`). A *trained RL actor* is not portable that way yet.
+
+**Why it doesn't work today.** `RLIntermediatePolicy` is a shim: its `decide()` just returns an
+action pre-decoded and injected via `set_pending_action()`, which only the env's two-phase loop
+(`tick_world` → `encode_observation` → actor → `set_pending_action` → `tick_decide_and_settle`)
+ever calls. A normal node's `decide(obs_intermediate, central_table)` is *not* handed `market` or
+`item_registry`, but `encode_observation` needs them (seasonality + lifecycle features, obs slots
+6–13). So a checkpoint cannot be dropped onto a node and run through `Runner.run()` the way a
+textbook policy can. The RL eval path (`src/rl/eval._run_rl`) sidesteps this by driving the
+*whole* graph with the two-phase API itself — but it is hardwired to the 3-node `sample_episode`
+graph.
+
+**To re-add.** Two options. (a) A self-contained inference policy (`src/rl/inference.py`) that
+holds references to `market` / `registry` and the per-node bookkeeping (`slot_perm`, rolling
+`sales_history`, `active_subset`, `supplier_ids_for`, `initial_cash`) and runs
+encode→actor→decode inside `decide()` — attachable like any `IntermediatePolicy`, but it must
+reach world state the current `decide()` contract doesn't pass (so likely also a small engine
+change to forward `market`/`registry`). (b) A generic two-phase driver that steps an arbitrary
+multi-echelon graph and calls `set_pending_action()` on one chosen RL node while the other nodes
+run their own policies — generalising `_run_rl` to any graph, no `decide()`-contract change.
+Either way the RL node must carry exactly `K_active` SKUs (the actor's fixed input width). Add an
+example to `notebooks/06-rl-train-and-eval.ipynb` once shipped, and update `src/rl/README.md`
+(which currently points here).
+
 
 
 In evaluate functions there is no service level. Why is that? Please make sure that we can evaluate service level and other common metrics as specified in README.
