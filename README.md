@@ -154,11 +154,15 @@ Full reference: [`src/tuning/README.md`](src/tuning/README.md)
 
 ### Reinforcement learning (`src/rl/`)
 
-A PPO training loop on top of a Gymnasium wrapper around the simulator. The agent learns
-continuous pricing and ordering decisions on a randomised slice of SKUs, and per-episode node
-capacity is sampled across two orders of magnitude so one trained policy covers a wide size range.
-Evaluation pairs it head-to-head against the textbook baseline on bit-identical worlds — any
-uplift is the policy, not seed luck.
+A PPO training stack with a **shared-weight per-product policy** (ADR 0021): one policy
+manages any catalog size up to `K_max = 32`, with K sampled per episode. The agent learns
+continuous pricing and ordering decisions; **implicit assortment** — ordering zero for a
+product is stopping it — removes the need for a discrete carry/drop head. A deterministic
+Arbiter reconciles the joint proposal against node capacity and the cash budget before
+orders reach the engine. Per-episode node capacity is sampled across two orders of
+magnitude so one trained policy covers a wide size range. Evaluation pairs it head-to-head
+against the textbook baseline on bit-identical worlds (CRN) — any uplift is the policy, not
+seed luck.
 
 ![RL vs OrderUpToPolicy KPIs](docs/images/rl_vs_baseline_kpis.png)
 

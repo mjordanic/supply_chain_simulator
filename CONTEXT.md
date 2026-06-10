@@ -181,31 +181,30 @@ the demand-pull ordering, ADR 0018), which replaced the old `prev_tick_sales` on
 by `Simulation._observe_node()`.
 
 **Active subset**
-The K (default 5) product ids drawn per episode for RL training. Frozen for the episode duration.
-The assortment is encoded via slot-shuffled observations. Distinct from the full catalog
-(world_rng demand draws happen for every catalog product to preserve CRN cleanliness). See ADR 0003.
-Planned (variable-K redesign, TODO §9): K becomes variable per episode (sampled from [1, 20],
-padded to `K_max = 32` with a mask channel); K stays frozen *within* an episode — no mid-episode
-entry/exit. Slot-shuffle is deleted; permutation invariance becomes structural (shared-weight
+The K product ids drawn per episode for RL training. K is sampled from `[1, 20]` per episode
+(ADR 0021); the observation tensor is padded to `K_max = 32` with a mask channel; K stays
+frozen *within* an episode — no mid-episode entry/exit. Distinct from the full catalog
+(world_rng demand draws happen for every catalog product to preserve CRN cleanliness). See ADR 0003,
+ADR 0021. Slot-shuffle is deleted; permutation invariance is structural (shared-weight
 per-product actor).
 
-**Arbiter** (planned, variable-K redesign)
+**Arbiter** (`src/rl/arbiter.py`)
 The deterministic reconciliation step between the per-product action proposals and the engine:
 projects the joint order proposal onto the feasible set defined by node capacity *and* the cash
 budget (node cash × configured fraction, costed at central-table offer prices), so within-tick
 resource exhaustion is decided by the arbiter — visible to the policy — rather than by arbitrary
 pid-iteration order in the engine. Two variants behind a config switch: **proportional fair-share**
-(scale all proposals by the binding feasibility ratio; extends today's `fair_share_allocate`) and
-**priority greedy** (fill in order of the actor's learned per-product priority scalar until
-resources exhaust). Default: proportional. Engine-side clipping in `execute_buy` remains as a
-backstop and should be a no-op. From the actor's perspective the arbiter is environment dynamics.
+(scale all proposals by the binding feasibility ratio) and **priority greedy** (fill in order of
+the actor's learned per-product priority scalar until resources exhaust). Default: proportional.
+Engine-side clipping in `execute_buy` remains as a backstop and should be a no-op. From the
+actor's perspective the arbiter is environment dynamics. See ADR 0021 Decision 4.
 
-**Implicit assortment** (planned, variable-K redesign)
+**Implicit assortment** (`src/rl/set_encoder.py`, `src/rl/env.py`)
 "Stop carrying a product" is expressed through the existing order-up-to head (target 0 = stop,
 sell down inventory), not an explicit listing/delisting action. The trainable node carries the
 full episode catalog superset in `carried_products`. Deliberate: the engine has no per-SKU fixed
 carrying cost, so a discrete carry head would have no economic content to learn.
-_Avoid_: delisting, deactivation (the engine has no such mechanism).
+_Avoid_: delisting, deactivation (the engine has no such mechanism). See ADR 0021 Decision 2.
 
 **Run Log**
 Dict produced by `Runner.run()`. Top-level keys: `n_steps` (int), `ticks` (list of per-tick node
@@ -215,11 +214,11 @@ Consumed by `DataExporter`.
 
 **CRN-paired eval**
 Evaluation protocol where the RL policy and `OrderUpToPolicy` run on bit-identical
-`(world_seed, init_seed, capacity, balance, active_subset, slot_permutation, allocation_seed)`
-tuples — Common Random Numbers. The `allocation` sub-seed (ADR 0016) is included in the CRN
-tuple. Uplift is computed paired per seed and averaged across 32 held-out seeds. See ADR 0003,
-ADR 0006, ADR 0016. Planned (variable-K redesign): `slot_permutation` drops out of the tuple
-(slot-shuffle deleted); `OrderUpToPolicy` anchor is unchanged since K is frozen within episodes.
+`(world_seed, capacity, balance, active_subset, allocation_sub_seed)` tuples — Common Random
+Numbers. `slot_permutation` is absent (ADR 0021 / slot-shuffle deleted; permutation invariance
+is structural). The `allocation` sub-seed (ADR 0016) is included in the CRN tuple. Uplift is
+computed paired per seed and averaged across held-out seeds. `OrderUpToPolicy` anchor is
+unchanged since K is frozen within episodes. See ADR 0003, ADR 0006, ADR 0016, ADR 0021.
 
 **Policy tuning study** (`src/tuning/`)
 Optuna-based hyperparameter tuner for `MultiSupplierTextbookPolicy` and subclasses. New tunables:
@@ -242,10 +241,10 @@ Gymnasium-compatible environment wrapping the graph engine. `reset()` builds a d
 three-node graph: one `FactoryNode` → one trainable `IntermediateNode` ("S") → one
 `DemandSinkNode` per active SKU. `step(action)` advances one tick via the two-phase tick API
 (`tick_world()` / `tick_decide_and_settle()`), with the action injected through an
-`RLIntermediatePolicy` shim. The observation tensor is extended with a
-`central_table_snapshot[product_slot]` block (supplier_count, min_price, mean_lead_time,
-mean_fill_rate) — 4 features per product slot, N_PER_SKU = 18. The action decoder emits
-per-supplier splits. See ADR 0007, ADR 0011.
+`RLIntermediatePolicy` shim. The observation is a `(K_max, F)` tensor (`K_max = 32`, `F = 16`
+per-product features including mask channel); the action is `(K_max, 3)`. K is sampled per
+episode from `[1, 20]`; padded rows have `mask = 0`. The Arbiter reconciles the joint action
+against capacity and cash budget before orders reach the engine. See ADR 0007, ADR 0011, ADR 0021.
 
 **RL Episode**
 One `reset()`-to-terminated pass through the RL Env. Fixed at 180 ticks. Episode return = sum of
@@ -267,9 +266,10 @@ scenario. `load_setup(setup_dir)` in `src/sim/setup_io.py` parses the two files 
 catalog and market block. The directory doubles as a cache for the LLM generator —
 `WorldBuilder.build_setup(n_items, setup_dir)` is a no-op when `catalog.csv` already exists.
 
-**Slot-shuffled observation**
-Observation tensor where K active SKUs occupy K slots with a per-episode slot-to-SKU permutation,
-preventing the agent from associating slot position with product identity. See ADR 0004.
+**Slot-shuffled observation** (superseded by ADR 0021)
+Observation tensor where K active SKUs occupied K slots with a per-episode slot-to-SKU permutation,
+preventing the agent from associating slot position with product identity. Deleted in ADR 0021:
+permutation invariance is now structural via the shared-weight per-product actor. See ADR 0004.
 
 ---
 

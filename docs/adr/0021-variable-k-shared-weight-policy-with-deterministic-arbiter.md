@@ -1,8 +1,8 @@
 # Variable-K RL: shared-weight per-product policy with deterministic arbiter
 
-Status: proposed. Supersedes ADR 0004 Decision 2 (slot-shuffle) and resolves ADR 0004 Decision 4's
+Status: accepted. Supersedes ADR 0004 Decision 2 (slot-shuffle) and resolves ADR 0004 Decision 4's
 deferred assortment head. Action/observation layout changes break existing checkpoints (retrain,
-as with the ADR 0007 migration).
+as with the ADR 0007 migration). Implemented in the variable-k-rl feature (issues 01–09).
 
 The RL stack drops the fixed-`K_active` assumption so one policy manages any number of products,
 with K sampled per episode. Products couple only through shared node capacity and the cash pool

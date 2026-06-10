@@ -1,6 +1,6 @@
 # Documentation sweep: RL reference, README, CONTEXT.md, ADR status
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

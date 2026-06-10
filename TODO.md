@@ -127,7 +127,10 @@ worth standalone churn while current paired-eval tests are green. A new ADR shou
 ADR 0003 and define the seeding scheme.
 
 
-## 9. Variable product count in RL: shared-weight per-product policy + deterministic reconciliation  — PLANNED
+## 9. Variable product count in RL: shared-weight per-product policy + deterministic reconciliation  — IMPLEMENTED
+
+> Implemented in the `variable-k-rl` feature. See [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) (accepted) and [`.scratch/variable-k-rl/PRD.md`](.scratch/variable-k-rl/PRD.md) for the full design and implementation record. The deferred coordination upgrades noted in the open questions below are still future work (see §10).
+
 
 Remove the fixed-`K_active` assumption from the RL stack so a policy can manage an indefinite,
 changing set of products — including products entering or ending mid-episode. Today fixed K is
