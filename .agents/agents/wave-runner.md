@@ -17,7 +17,7 @@ You are the **Wave Runner**. The `/implement-issues` orchestrator has built a de
 - **Parallelism cap** (integer ≥ 1).
 - **Issue IDs** in this wave (list; orchestrator already filtered to pending).
 - **Feature slug** for branch naming.
-- **Per-issue implementer models** — a `{issue-id → model}` map, one entry per issue in your wave. Each value is an explicit model (`opus`/`sonnet`/`haiku`) or "default". The orchestrator already resolved these from CLI flags and each issue's `Complexity:`/`Model:` line — you do **not** re-derive them; you just apply each issue's value when you dispatch its `issue-implementer`. A named model goes through the Agent tool's `model` parameter (overriding the issue-implementer frontmatter); "default" (or a missing entry) means dispatch with **no** `model` parameter so the frontmatter default applies. Never substitute a hardcoded model.
+- **Per-issue implementer models** — a `{issue-id → model}` map, one entry per issue in your wave. Each value is an explicit model (`fable/opus`/`sonnet`/`haiku`) or "default". The orchestrator already resolved these from CLI flags and each issue's `Complexity:`/`Model:` line — you do **not** re-derive them; you just apply each issue's value when you dispatch its `issue-implementer`. A named model goes through the Agent tool's `model` parameter (overriding the issue-implementer frontmatter); "default" (or a missing entry) means dispatch with **no** `model` parameter so the frontmatter default applies. Never substitute a hardcoded model.
 
 ## Workflow
 

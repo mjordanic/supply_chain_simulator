@@ -184,6 +184,28 @@ by `Simulation._observe_node()`.
 The K (default 5) product ids drawn per episode for RL training. Frozen for the episode duration.
 The assortment is encoded via slot-shuffled observations. Distinct from the full catalog
 (world_rng demand draws happen for every catalog product to preserve CRN cleanliness). See ADR 0003.
+Planned (variable-K redesign, TODO §9): K becomes variable per episode (sampled from [1, 20],
+padded to `K_max = 32` with a mask channel); K stays frozen *within* an episode — no mid-episode
+entry/exit. Slot-shuffle is deleted; permutation invariance becomes structural (shared-weight
+per-product actor).
+
+**Arbiter** (planned, variable-K redesign)
+The deterministic reconciliation step between the per-product action proposals and the engine:
+projects the joint order proposal onto the feasible set defined by node capacity *and* the cash
+budget (node cash × configured fraction, costed at central-table offer prices), so within-tick
+resource exhaustion is decided by the arbiter — visible to the policy — rather than by arbitrary
+pid-iteration order in the engine. Two variants behind a config switch: **proportional fair-share**
+(scale all proposals by the binding feasibility ratio; extends today's `fair_share_allocate`) and
+**priority greedy** (fill in order of the actor's learned per-product priority scalar until
+resources exhaust). Default: proportional. Engine-side clipping in `execute_buy` remains as a
+backstop and should be a no-op. From the actor's perspective the arbiter is environment dynamics.
+
+**Implicit assortment** (planned, variable-K redesign)
+"Stop carrying a product" is expressed through the existing order-up-to head (target 0 = stop,
+sell down inventory), not an explicit listing/delisting action. The trainable node carries the
+full episode catalog superset in `carried_products`. Deliberate: the engine has no per-SKU fixed
+carrying cost, so a discrete carry head would have no economic content to learn.
+_Avoid_: delisting, deactivation (the engine has no such mechanism).
 
 **Run Log**
 Dict produced by `Runner.run()`. Top-level keys: `n_steps` (int), `ticks` (list of per-tick node
@@ -196,7 +218,8 @@ Evaluation protocol where the RL policy and `OrderUpToPolicy` run on bit-identic
 `(world_seed, init_seed, capacity, balance, active_subset, slot_permutation, allocation_seed)`
 tuples — Common Random Numbers. The `allocation` sub-seed (ADR 0016) is included in the CRN
 tuple. Uplift is computed paired per seed and averaged across 32 held-out seeds. See ADR 0003,
-ADR 0006, ADR 0016.
+ADR 0006, ADR 0016. Planned (variable-K redesign): `slot_permutation` drops out of the tuple
+(slot-shuffle deleted); `OrderUpToPolicy` anchor is unchanged since K is frozen within episodes.
 
 **Policy tuning study** (`src/tuning/`)
 Optuna-based hyperparameter tuner for `MultiSupplierTextbookPolicy` and subclasses. New tunables:
@@ -382,3 +405,4 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0017](docs/adr/0017-setup-files-as-deterministic-input.md) — Setup files as deterministic input. **Accepted.**
 - [ADR 0018](docs/adr/0018-lateral-links-demand-pull-scheduling.md) — Lateral supplier links + demand-pull topological scheduling (Kahn on reversed graph); type-based validation; min-order-aware routing; rejection log. **Accepted — supersedes ADR 0014.**
 - [ADR 0020](docs/adr/0020-replay-demand-sinks.md) — Replay demand sinks (M5 real-data mode): subclass override, full multiplier chain kept, CRN draws burned.
+- [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — Variable-K RL: shared-weight per-product policy, deterministic arbiter owning capacity + cash, implicit assortment, no mid-episode churn. **Proposed — supersedes ADR 0004 Decision 2.**
