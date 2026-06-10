@@ -1,6 +1,6 @@
 # Arbiter module: deterministic reconciliation with proportional and greedy variants
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
