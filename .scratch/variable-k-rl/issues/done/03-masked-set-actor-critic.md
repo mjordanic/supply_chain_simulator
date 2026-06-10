@@ -1,6 +1,6 @@
 # Masked set actor-critic with masked joint Gaussian distribution
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
