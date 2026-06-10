@@ -1,6 +1,6 @@
 # Train loop + rollout buffer rewire: masked PPO over padded shapes
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -27,12 +27,12 @@ PPO math is otherwise unchanged: same clipping, GAE, optimiser conventions as to
 
 ## Acceptance criteria
 
-- [ ] A short smoke training run (few updates, small episode length) completes end-to-end with K varying across episodes, finite losses, and no NaN.
-- [ ] Masked slots verifiably contribute nothing to the loss (e.g. gradients with respect to padded-row inputs are zero in a spot check, or loss is invariant to padded-row content).
-- [ ] Checkpoint written through the checkpoint I/O module; reloading it through the same module reconstructs an actor that runs inference.
-- [ ] Works under the existing vector-env setup with more than one parallel env.
-- [ ] Existing train-driver and PPO smoke tests updated to the new contracts (in scope per the PRD); no new dedicated train test suite.
-- [ ] Full test suite green (`uv run pytest`).
+- [x] A short smoke training run (few updates, small episode length) completes end-to-end with K varying across episodes, finite losses, and no NaN.
+- [x] Masked slots verifiably contribute nothing to the loss (e.g. gradients with respect to padded-row inputs are zero in a spot check, or loss is invariant to padded-row content).
+- [x] Checkpoint written through the checkpoint I/O module; reloading it through the same module reconstructs an actor that runs inference.
+- [x] Works under the existing vector-env setup with more than one parallel env.
+- [x] Existing train-driver and PPO smoke tests updated to the new contracts (in scope per the PRD); no new dedicated train test suite.
+- [x] Full test suite green (`uv run pytest`).
 
 Prior art: `test_ppo_smoke`, `test_train_driver` for the smoke pattern being updated.
 
