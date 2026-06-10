@@ -126,6 +126,80 @@ needs a re-baseline); loses the "latent demand for all products" side-data the l
 worth standalone churn while current paired-eval tests are green. A new ADR should supersede
 ADR 0003 and define the seeding scheme.
 
+---
 
 
-In evaluate functions there is no service level. Why is that? Please make sure that we can evaluate service level and other common metrics as specified in README.
+## 7. Run a trained RL policy inside a multi-echelon graph  — PLANNED
+
+Both tuning and RL optimise a single `IntermediateNode` ("S") in a degenerate 3-node graph
+(`factory → S → sink`; see ADR 0004 and ADR 0009). A *tuned* textbook policy is a plain
+`IntermediatePolicy`, so deploying it into a real multi-echelon graph is trivial — attach it to
+any one node via `Runner(scenario, policy_overrides={"shop-1": tuned}).run()` (demonstrated in
+`notebooks/05-tune-a-policy.ipynb`). A *trained RL actor* is not portable that way yet.
+
+**Why it doesn't work today.** `RLIntermediatePolicy` is a shim: its `decide()` just returns an
+action pre-decoded and injected via `set_pending_action()`, which only the env's two-phase loop
+(`tick_world` → `encode_observation` → actor → `set_pending_action` → `tick_decide_and_settle`)
+ever calls. A normal node's `decide(obs_intermediate, central_table)` is *not* handed `market` or
+`item_registry`, but `encode_observation` needs them (seasonality + lifecycle features, obs slots
+6–13). So a checkpoint cannot be dropped onto a node and run through `Runner.run()` the way a
+textbook policy can. The RL eval path (`src/rl/eval._run_rl`) sidesteps this by driving the
+*whole* graph with the two-phase API itself — but it is hardwired to the 3-node `sample_episode`
+graph.
+
+**To re-add.** Two options. (a) A self-contained inference policy (`src/rl/inference.py`) that
+holds references to `market` / `registry` and the per-node bookkeeping (`slot_perm`, rolling
+`sales_history`, `active_subset`, `supplier_ids_for`, `initial_cash`) and runs
+encode→actor→decode inside `decide()` — attachable like any `IntermediatePolicy`, but it must
+reach world state the current `decide()` contract doesn't pass (so likely also a small engine
+change to forward `market`/`registry`). (b) A generic two-phase driver that steps an arbitrary
+multi-echelon graph and calls `set_pending_action()` on one chosen RL node while the other nodes
+run their own policies — generalising `_run_rl` to any graph, no `decide()`-contract change.
+Either way the RL node must carry exactly `K_active` SKUs (the actor's fixed input width). Add an
+example to `notebooks/06-rl-train-and-eval.ipynb` once shipped, and update `src/rl/README.md`
+(which currently points here).
+
+
+---
+
+## 8. Price-elastic demand and store competition  — PLANNED
+
+Make price actually affect demand. Today it does nothing on the demand side: textbook policies
+emit `list_price == base_price` flat, and `MarketParams.price_elasticity` / `promo_multiplier`
+are parsed but **never read** by the graph engine — `demand_target` is only `demand_dist ×
+seasonal × regional` (`node.py:298`, `market.py:305`). All of the below is synthetic and does
+**not** depend on real data.
+
+Two price roles: per-product **reference** (`base_price`, the yardstick) and per-(store,product)
+**selling** (`list_prices`, the lever). They must be able to diverge — demand responds to the
+ratio. Four things to build:
+
+- **Pricing lever.** A policy that sets `selling` off `base` (markup / promo discount). Today no
+  graph node prices off base, so there's nothing to react to.
+- **Category elasticity (sink-only).** Add a factor to `demand_target`:
+  `demand × (p_market / base) ** elasticity`. Sink-only — mid-graph nodes have no price-elastic
+  demand (their order qty is inventory-policy-driven). `p_market = min(list_price)` over the
+  **sink's direct suppliers only** (the sink already filters to direct suppliers, `runner.py:597`).
+  All stores cheap → pool grows. `promo_multiplier` rides the same ratio.
+- **Soft-share competition (sink-only).** Substitution already exists as hard cheapest-first at
+  every buyer (`_split_across_suppliers`, `_default_sink_action` `runner.py:603`) — winner-take-all
+  up to capacity, so a tiny price gap swings 100% of share. Replace the **sink** allocator with a
+  soft-share (logit/attraction) split so a cheaper store *gradually* attracts more orders. Leave
+  intermediate sourcing cheapest-first (a warehouse isn't a shopper).
+- The two effects reinforce: a store cutting price both grows the pool and wins more share.
+
+Wiring is small — one factor in `demand_target`, thread the faced `p_market` in (offers are
+published before sinks act, so it's available), a pricing policy, and a sink routing-strategy swap.
+
+**Open questions for grilling.** Soft-share functional form (logit temperature? attraction
+weights?) and how it degrades to the current cheapest-first. Where the pricing lever lives
+(new policy vs extend existing). Whether `base_price` should ever drift (a slow "regular price"
+schedule) or stay static. Interaction with the existing affordability cap (`sink.cash /
+list_price`) and CRN draw count (§6).
+
+*(Real-data note: this machinery also enables an M5 replay mode later — declare `base = observed
+price`, set `selling = base` so elasticity goes inert (M5 demand already embeds the real price
+response — re-applying it would double-count), one sink per (item, store) so soft-share can't
+re-split data that's already per-store. Separate effort; see the M5 feasibility study.)*
+
+

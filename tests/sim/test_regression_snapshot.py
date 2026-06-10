@@ -43,7 +43,9 @@ from src.sim.scenario import (
 
 # Bump this constant when simulator numerics change intentionally. A
 # failing assertion prints the observed digest so it can be copied here.
-EXPECTED_HASH = "c47e2dcd27b5d2081128861b7761e6d3b3a0ac385bb659df1da8073ef18df44d"
+# Re-baselined for ADR 0019 issue 03: engine now charges holding cost and
+# order fee each tick on IntermediateNodes, changing cash/equity trajectories.
+EXPECTED_HASH = "085cb4904b59c0dc537762a872c38ea1829062bbea709a86f0dd0f67bbba7d90"
 
 
 N_STEPS = 30

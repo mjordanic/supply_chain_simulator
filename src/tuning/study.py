@@ -231,8 +231,8 @@ def run_study(
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(
         direction="maximize",
-        # sampler=optuna.samplers.TPESampler(seed=tuning_config.sampler_seed),
-        sampler=optuna.samplers.RandomSampler(seed=tuning_config.sampler_seed),
+        sampler=optuna.samplers.TPESampler(seed=tuning_config.sampler_seed),
+        # sampler=optuna.samplers.RandomSampler(seed=tuning_config.sampler_seed),
         storage=None,
     )
 

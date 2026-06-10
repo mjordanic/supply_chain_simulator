@@ -152,7 +152,7 @@ class TestCentringZeroAction:
             rl_policy.set_pending_action(action_dict)
             sim.tick_decide_and_settle(current_tick)
 
-            last_sales = sim._last_tick_sales.get("S", {})
+            last_sales = sim._tick_sales.get("S", {})
             for pid in active_pids:
                 sales_history[pid].append(last_sales.get(pid, 0))
 
@@ -312,7 +312,7 @@ class TestCentringZeroAction:
             rl_policy.set_pending_action(action_dict)
             sim.tick_decide_and_settle(current_tick)
 
-            last_sales = sim._last_tick_sales.get("S", {})
+            last_sales = sim._tick_sales.get("S", {})
             for pid in active_pids:
                 sales_history[pid].append(last_sales.get(pid, 0))
 
@@ -366,7 +366,7 @@ class TestCentringZeroAction:
                                    active_subset=active_pids, effective_rate=eff_rate)
                 rl_policy.set_pending_action(ad)
                 sim.tick_decide_and_settle(current_tick)
-                last_sales = sim._last_tick_sales.get("S", {})
+                last_sales = sim._tick_sales.get("S", {})
                 for pid in active_pids:
                     sales_history[pid].append(last_sales.get(pid, 0))
                 cash_trace.append(float(node_s.cash))

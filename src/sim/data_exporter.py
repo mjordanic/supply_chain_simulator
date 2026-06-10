@@ -204,10 +204,23 @@ class DataExporter:
             for t, tick_log in enumerate(ticks):
                 step = sim_steps[t + 1] if t + 1 < len(sim_steps) else sim_steps[-1]
                 date = sim_dates[t + 1] if t + 1 < len(sim_dates) else sim_dates[-1]
+                # Build (node_id, pid) → flow record lookup from the per-tick flow log.
+                flow_lookup: dict[tuple[str, str], dict] = {}
+                for f in tick_log.get("node_flows", []):
+                    flow_lookup[(f["node_id"], f["pid"])] = f
                 for node_id, inv in tick_log.get("node_inventory", {}).items():
                     for pid, qty in inv.items():
                         if pid == "_total":
                             continue
+                        f = flow_lookup.get((node_id, pid))
+                        sales = f["sales"] if f is not None else None
+                        demand = f["demand"] if f is not None else None
+                        price = f["price"] if f is not None else None
+                        revenue = (
+                            sales * price
+                            if sales is not None and price is not None
+                            else None
+                        )
                         rows.append(
                             {
                                 "simulation_step": step,
@@ -215,14 +228,14 @@ class DataExporter:
                                 "store_id": node_id,
                                 "product_id": pid,
                                 "inventory": qty,
-                                "demand": None,
-                                "sales": None,
+                                "demand": demand,
+                                "sales": sales,
                                 "order_quantity": None,
                                 "outstanding_orders": None,
                                 "promotion_status": None,
                                 "active_status": None,
-                                "price": None,
-                                "revenue": None,
+                                "price": price,
+                                "revenue": revenue,
                                 "total_cost": None,
                                 "holding_cost": None,
                                 "profit": None,

@@ -19,9 +19,10 @@ orders of magnitude in node size.
 4. [Monitoring training](#monitoring-training)
 5. [Checkpoints](#checkpoints)
 6. [Comparing a trained policy against `OrderUpToPolicy`](#comparing-a-trained-policy-against-orderuptopolicy)
-7. [CLI flags](#cli-flags)
-8. [How the env relates to `Runner`](#how-the-env-relates-to-runner)
-9. [Further reading](#further-reading)
+7. [Using a trained policy in a multi-echelon graph](#using-a-trained-policy-in-a-multi-echelon-graph)
+8. [CLI flags](#cli-flags)
+9. [How the env relates to `Runner`](#how-the-env-relates-to-runner)
+10. [Further reading](#further-reading)
 
 ## Layout
 
@@ -250,6 +251,25 @@ relative to MSRP.
 
 ![RL vs OrderUpToPolicy KPIs](../../docs/images/rl_vs_baseline_kpis.png)
 
+## Using a trained policy in a multi-echelon graph
+
+Training and eval both run on the **degenerate 3-node graph** (`FactoryNode("F_<pid>") →
+IntermediateNode("S") → DemandSinkNode("D_<pid>")`) — one trainable node, never your authored
+multi-echelon scenario. The scale-invariance package means a trained actor generalises across
+node size and SKU assortment, so conceptually it should drop onto any single `IntermediateNode`
+in a larger graph.
+
+**This is not wired up yet.** Unlike a *tuned* textbook policy — which is a plain
+`IntermediatePolicy` you attach with `Runner(scenario, policy_overrides={"shop-1": tuned}).run()`
+(see [`src/tuning/README.md`](../tuning/README.md#deploying-a-tuned-policy-in-a-multi-echelon-graph)) —
+a trained actor **cannot** be run through `Runner.run()`. `RLIntermediatePolicy.decide()` only
+returns an action pre-injected via `set_pending_action()` inside the env's two-phase loop, and
+`encode_observation` needs `market` / `item_registry` state that a node's
+`decide(obs_intermediate, central_table)` is never handed (seasonality + lifecycle features, obs
+slots 6–13). Reusing a checkpoint inside an arbitrary multi-echelon graph is a planned follow-up —
+see [`TODO.md`](../../TODO.md) §8 for the two implementation options and the `K_active` constraint.
+For now, evaluate trained actors on the 3-node graph via `evaluate(...)` / `RLEnv` as shown above.
+
 ## CLI flags
 
 `uv run python -m src.rl.train --help` lists every flag. The ones you tune most often:
@@ -280,7 +300,7 @@ two-phase tick API in the seam between phases:
 1. `sim.tick_world()` — advance market / events; publish all seller offers to the central table.
 2. `encode_observation(node_S, market, registry, central_table, …)` — read the trainable node's state plus the central-table snapshot.
 3. `decode_action(...)` → `RLIntermediatePolicy.set_pending_action(...)` — inject the agent's pre-decoded per-supplier order/price action.
-4. `sim.tick_decide_and_settle(...)` — run the phase cascade: `S.policy.decide()` returns the pending action, the FCFS allocator settles trades against the central table, deliveries schedule at `current_tick + lead_time`, and demand sinks consume.
+4. `sim.tick_decide_and_settle(...)` — run the demand-pull topological walk: `S.policy.decide()` returns the pending action, the FCFS allocator settles trades against the central table, deliveries schedule at `current_tick + lead_time`, and demand sinks consume.
 
 Demand is sampled for *every* catalog product each tick (not only the active subset), so swapping
 policies leaves the world stream untouched — the CRN cleanliness property.

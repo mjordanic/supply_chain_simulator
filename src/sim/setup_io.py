@@ -23,7 +23,7 @@ A single clear ``ValueError`` is raised for:
 - Missing required node / edge field
 - Malformed Distribution tag
 - Duplicate node id
-- Graph errors (cycles, unreachable nodes, same-level links)
+- Graph errors (cycles, unreachable nodes, illegal edge types)
 
 ``write_setup`` is deliberately out of scope for this slice —
 it lands with the LLM generator (issue 04). The reproducibility
@@ -365,7 +365,11 @@ def _parse_factory_node(raw: dict, path: str, world_seed: int) -> Any:
 
 def _parse_intermediate_node(raw: dict, path: str, world_seed: int) -> Any:
     """Parse an intermediate node dict into an ``IntermediateNode`` instance."""
-    from src.sim.node import IntermediateNode
+    from src.sim.node import (
+        DEFAULT_HOLDING_RATE,
+        DEFAULT_ORDER_FEE,
+        IntermediateNode,
+    )
     from src.sim.distributions import Distribution
 
     node_id = _require(raw, "id", path)
@@ -388,6 +392,10 @@ def _parse_intermediate_node(raw: dict, path: str, world_seed: int) -> Any:
     min_order_imposed_raw = raw.get("min_order_imposed", {})
     min_order_imposed = {k: int(v) for k, v in min_order_imposed_raw.items()} if min_order_imposed_raw else {}
 
+    # Economic parameters — canonical default applied when a setup omits them.
+    holding_rate = float(raw["holding_rate"]) if "holding_rate" in raw else DEFAULT_HOLDING_RATE
+    order_fee = float(raw["order_fee"]) if "order_fee" in raw else DEFAULT_ORDER_FEE
+
     return IntermediateNode(
         id=node_id,
         region=region,
@@ -399,6 +407,8 @@ def _parse_intermediate_node(raw: dict, path: str, world_seed: int) -> Any:
         list_prices=list_prices,
         min_order_imposed=min_order_imposed,
         cash=float(raw.get("cash", 10000.0)),
+        holding_rate=holding_rate,
+        order_fee=order_fee,
     )
 
 
@@ -427,7 +437,83 @@ def _parse_demand_sink_node(raw: dict, path: str, world_seed: int) -> Any:
     )
 
 
-def _parse_node(raw: dict, index: int, world_seed: int) -> Any:
+def _parse_replay_sink_node(
+    raw: dict,
+    path: str,
+    world_seed: int,
+    demand_df: "Any",
+    n_steps: int,
+) -> Any:
+    """Parse a ``sink_replay`` node dict into a ``ReplayDemandSinkNode``.
+
+    Parameters
+    ----------
+    raw:
+        Raw YAML node dict (must have ``series_id``).
+    demand_df:
+        DataFrame with columns (series_id, tick, qty) loaded from
+        ``demand_series.parquet``.  May be ``None`` when the parquet is absent
+        (in which case we raise a clear ``FileNotFoundError``).
+    n_steps:
+        Scenario run length; used to validate the series is long enough.
+    """
+    from src.sim.replay_demand_sink import ReplayDemandSinkNode
+
+    node_id = _require(raw, "id", path)
+    region = _require(raw, "region", path)
+    product_id = _require(raw, "product_id", path)
+    series_id = _require(raw, "series_id", path)
+    income_rate = float(_require(raw, "income_rate", path))
+    cash = float(raw.get("cash", 10000.0))
+    init_seed = _derive_node_seed(world_seed, node_id)
+
+    if demand_df is None:
+        raise FileNotFoundError(
+            f"{path}: node type 'sink_replay' requires 'demand_series.parquet' "
+            "in the setup directory, but the file was not found."
+        )
+
+    # Filter the DataFrame for this series_id
+    rows = demand_df[demand_df["series_id"] == series_id]
+    if rows.empty:
+        raise ValueError(
+            f"{path}: series_id {series_id!r} not found in demand_series.parquet. "
+            f"Available ids: {sorted(demand_df['series_id'].unique().tolist())}"
+        )
+
+    # Sort by tick and extract qty as a list
+    rows = rows.sort_values("tick")
+    series = [int(q) for q in rows["qty"].tolist()]
+
+    # Length validation (ReplayDemandSinkNode.__post_init__ also checks, but we
+    # want the error message to point to the parquet file and setup dir rather than
+    # just the dataclass internals).
+    if len(series) < n_steps:
+        raise ValueError(
+            f"{path}: series {series_id!r} has {len(series)} entries but n_steps={n_steps}. "
+            "Provide at least n_steps entries in demand_series.parquet."
+        )
+
+    return ReplayDemandSinkNode(
+        id=node_id,
+        region=region,
+        init_seed=init_seed,
+        product_id=product_id,
+        series=series,
+        n_steps=n_steps,
+        income_rate=income_rate,
+        cash=cash,
+    )
+
+
+def _parse_node(
+    raw: dict,
+    index: int,
+    world_seed: int,
+    *,
+    demand_df: "Any" = None,
+    n_steps: int = 0,
+) -> Any:
     """Dispatch to the right node parser based on the ``type`` field."""
     path = f"nodes[{index}]"
     node_type = _require(raw, "type", path)
@@ -437,10 +523,12 @@ def _parse_node(raw: dict, index: int, world_seed: int) -> Any:
         return _parse_intermediate_node(raw, path, world_seed)
     elif node_type == "demand_sink":
         return _parse_demand_sink_node(raw, path, world_seed)
+    elif node_type == "sink_replay":
+        return _parse_replay_sink_node(raw, path, world_seed, demand_df, n_steps)
     else:
         raise ValueError(
             f"{path}: unknown node type {node_type!r} "
-            f"(valid: factory, intermediate, demand_sink)"
+            f"(valid: factory, intermediate, demand_sink, sink_replay)"
         )
 
 
@@ -570,8 +658,26 @@ def load_setup(setup_dir: str | Path) -> Any:
             )
         seen_node_ids.add(nid)
 
+    # --- Load demand_series.parquet (lazily — only when sink_replay nodes exist) ---
+    has_replay_nodes = any(
+        nr.get("type") == "sink_replay" for nr in nodes_raw
+    )
+    demand_df: Any = None
+    if has_replay_nodes:
+        demand_parquet = setup_dir / "demand_series.parquet"
+        if not demand_parquet.is_file():
+            raise FileNotFoundError(
+                f"demand_series.parquet not found in {setup_dir}. "
+                "This file is required when the setup contains 'sink_replay' nodes."
+            )
+        import pandas as _pd
+        demand_df = _pd.read_parquet(demand_parquet)
+
     # --- Parse nodes -----------------------------------------------------
-    raw_nodes: list[Any] = [_parse_node(nr, i, world_seed) for i, nr in enumerate(nodes_raw)]
+    raw_nodes: list[Any] = [
+        _parse_node(nr, i, world_seed, demand_df=demand_df, n_steps=n_steps)
+        for i, nr in enumerate(nodes_raw)
+    ]
 
     # --- Parse edges -----------------------------------------------------
     edges_raw = _require(doc, "edges", "setup.yaml")
@@ -581,9 +687,10 @@ def load_setup(setup_dir: str | Path) -> Any:
         _parse_edge(er, i, seen_node_ids) for i, er in enumerate(edges_raw)
     ]
 
-    # --- Validate DAG topology (cycles, unreachable, same-level) ----------
+    # --- Validate DAG topology (cycles, unreachable, type-based edge rules) --
+    node_types: dict[str, str] = {n.id: n._node_type for n in raw_nodes}
     try:
-        build_graph(list(seen_node_ids), edges)
+        build_graph(list(seen_node_ids), edges, node_types=node_types)
     except ValueError as exc:
         raise ValueError(f"setup.yaml graph topology error: {exc}") from exc
 
@@ -722,8 +829,15 @@ def _write_disruption_block(disruption: Any) -> dict:
 
 
 def _write_node_block(node_instance: Any) -> dict:
-    """Serialize a NodeInstance to a plain-dict suitable for setup.yaml nodes list."""
+    """Serialize a NodeInstance to a plain-dict suitable for setup.yaml nodes list.
+
+    For ``ReplayDemandSinkNode`` instances the series data is NOT embedded in
+    the YAML block (it lives in demand_series.parquet instead).  The block only
+    records the ``series_id`` so ``load_setup`` can look it up.  The caller
+    (``write_setup``) is responsible for writing the parquet file.
+    """
     from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+    from src.sim.replay_demand_sink import ReplayDemandSinkNode
 
     node = node_instance.node
     d: dict = {
@@ -746,6 +860,18 @@ def _write_node_block(node_instance: Any) -> dict:
         d["inventory"] = {k: int(v) for k, v in node.inventory.items()}
         d["list_prices"] = {k: float(v) for k, v in node.list_prices.items()}
         d["min_order_imposed"] = {k: int(v) for k, v in node.min_order_imposed.items()}
+        d["cash"] = float(node.cash)
+        d["holding_rate"] = float(node.holding_rate)
+        d["order_fee"] = float(node.order_fee)
+    elif isinstance(node, ReplayDemandSinkNode):
+        # ReplayDemandSinkNode check must come BEFORE DemandSinkNode because it
+        # is a subclass — isinstance order matters.
+        d["type"] = "sink_replay"
+        d["product_id"] = node.product_id
+        # Use the node id as the canonical series_id so the roundtrip is
+        # lossless even when the original series_id wasn't stored on the node.
+        d["series_id"] = node.id
+        d["income_rate"] = float(node.income_rate)
         d["cash"] = float(node.cash)
     elif isinstance(node, DemandSinkNode):
         d["type"] = "demand_sink"
@@ -805,6 +931,36 @@ def _policy_params(policy: Any) -> dict:
         if hasattr(policy, name):
             out[name] = getattr(policy, name)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Demand series parquet helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_demand_parquet(node_instances: "list[Any]", setup_dir: Path) -> None:
+    """Write demand_series.parquet for any ReplayDemandSinkNode instances.
+
+    Emits a tidy parquet with columns (series_id, tick, qty) where series_id
+    is the node's id.  If no replay nodes are present, does nothing.
+    """
+    from src.sim.replay_demand_sink import ReplayDemandSinkNode
+
+    rows = []
+    for ni in node_instances:
+        node = ni.node
+        if isinstance(node, ReplayDemandSinkNode):
+            series_id = node.id  # canonical: node id is the series id
+            for tick, qty in enumerate(node.series):
+                rows.append({"series_id": series_id, "tick": tick, "qty": qty})
+
+    if not rows:
+        return  # synthetic scenario — no parquet needed
+
+    import pandas as _pd
+
+    df = _pd.DataFrame(rows, columns=["series_id", "tick", "qty"])
+    df.to_parquet(setup_dir / "demand_series.parquet", index=False)
 
 
 # ---------------------------------------------------------------------------
@@ -902,6 +1058,9 @@ def write_setup(scenario: Any, setup_dir: "str | Path") -> None:
 
     with yaml_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
+
+    # --- demand_series.parquet (only for replay scenarios) -------------------
+    _write_demand_parquet(scenario.nodes, setup_dir)
 
 
 # ---------------------------------------------------------------------------

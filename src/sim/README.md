@@ -11,23 +11,26 @@ dynamics, and the data exporter that persists run results. Every other sub-packa
 2. [Concepts](#concepts)
 3. [Running a setup directory](#running-a-setup-directory)
 4. [Authoring a setup directory by hand](#authoring-a-setup-directory-by-hand)
-5. [Output layout](#output-layout)
-6. [Policy reference](#policy-reference)
-7. [Common Random Numbers and reproducibility](#common-random-numbers-and-reproducibility)
-8. [Visualizing a run](#visualizing-a-run)
-9. [Further reading](#further-reading)
+5. [Real-data demand replay (M5)](#real-data-demand-replay-m5)
+6. [Output layout](#output-layout)
+7. [Policy reference](#policy-reference)
+8. [Common Random Numbers and reproducibility](#common-random-numbers-and-reproducibility)
+9. [Visualizing a run](#visualizing-a-run)
+10. [Further reading](#further-reading)
 
 ## Layout
 
 ```
 src/sim/
   node.py                Node ABC + FactoryNode / IntermediateNode / DemandSinkNode
+  replay_demand_sink.py  ReplayDemandSinkNode (demand from an observed series — real-data replay)
   graph.py               EdgeSpec + Graph (DAG validation, levels, topology queries) + build_graph
   central_table.py       CentralTable live offer book + Offer (fill-rate EMA)
   allocation.py          execute_buy (FCFS primitive) + shuffle_buyers + AllocationResult
   policy.py              NodePolicy ABCs + concrete node policies + TextbookReorderPolicy family
   runner.py              Runner + Simulation / build_world / TickResult (two-phase tick API)
   market.py              regional demand/supply; demand_multiplier(pid, region, tick)
+  flat_world.py          flat_world() — market/lifecycle params with multiplier chain ≡ 1.0 (pure replay)
   event_engine.py        stochastic disruptions + scheduled delivery callbacks
   observation.py         per-node observation builders handed to policies each tick
   distributions.py       Constant / Uniform / Normal / Choice / LogUniform
@@ -44,15 +47,16 @@ src/sim/
 ## Concepts
 
 - **Node** (`Node` ABC) — the actor in the supply-chain graph. Three concrete subtypes:
-  - **`FactoryNode`** — produces one product per tick at `unit_cost`; sells at `list_price` == `unit_cost` (zero-margin, ADR 0013). Echelon level 0, the entry point of inventory.
+  - **`FactoryNode`** — produces one product per tick at `unit_cost`; sells at `list_price` == `unit_cost` (zero-margin, ADR 0013). The entry point of inventory into the chain.
   - **`IntermediateNode`** — warehouse / DC / shop. Holds multi-product `inventory`, sets `list_prices`, imposes per-product `min_order_imposed`, routes orders across multiple upstream suppliers, tracks `pending` (per-supplier × pid in-transit). Warehouse-vs-shop is a free-form `tags` label, never branches mechanics.
   - **`DemandSinkNode`** — the only source of new cash. Bound to one `product_id`; each tick earns `income_rate`, computes a demand target, and buys from intermediates. Unmet demand (no supplier stock or no cash) is a lost sale.
+  - **`ReplayDemandSinkNode`** (`replay_demand_sink.py`) — a `DemandSinkNode` whose per-tick demand comes from an observed series instead of `demand_dist` — the real-data replay mode. The full market multiplier chain still applies on top, and the node burns the same `world_rng` draws as the stochastic sink, so mixed replay/stochastic graphs stay CRN-clean. See [Real-data demand replay (M5)](#real-data-demand-replay-m5).
 
   Nodes are *not* frozen — the engine mutates `inventory` / `cash` / `pending` in place. Construction consumes only the per-node `init_rng`, so two nodes built from the same `(subclass, init_seed)` start bit-identical regardless of attached policy. See ADR 0011.
-- **Graph** + **EdgeSpec** — `build_graph(node_ids, edges)` validates a DAG (raises on cycles, unreachable nodes, or same-level supplier links) and computes echelon `levels` via longest-path-from-any-factory. `EdgeSpec(supplier_id, buyer_id, default_lead_time, per_product_lead_time=None)` is a directed supply edge with an optional per-product lead-time override. Topology queries: `suppliers_of`, `buyers_of`, `lead_time`.
+- **Graph** + **EdgeSpec** — `build_graph(node_ids, edges, node_types=...)` validates a DAG and computes display-only `levels` via longest-path-from-any-source. Validation is **type-based** (ADR 0018): supplier ∈ {factory, intermediate}, buyer ∈ {intermediate, sink}, `factory → sink` rejected (flow must pass through ≥1 intermediate); plus the cycle / self-loop / unreachable-node checks. Lateral `intermediate → intermediate` edges at any depth are legal — only the *union* of all edges must stay acyclic (a node pair may trade in one direction across all products). `level` is a display hint, not a scheduling unit. `EdgeSpec(supplier_id, buyer_id, default_lead_time, per_product_lead_time=None)` is a directed supply edge with an optional per-product lead-time override. Topology queries: `suppliers_of`, `buyers_of`, `lead_time`.
 - **CentralTable** + **Offer** — a live, globally-visible offer book. At the start of each tick every seller `publish`es an `Offer(available_qty, list_price, min_order, fill_rate_recent)`; as allocations land the allocator `commit`s, decrementing `available_qty` live and updating a qty-weighted EMA on `fill_rate_recent` (10-tick window). `snapshot_for_buyer(pid)` reflects prior buyers' allocations *within the same phase*, so routing accounts for live supply depletion. See ADR 0012.
-- **Allocation** — `execute_buy(buyer, supplier, pid, qty_requested, table, cash_ledger) -> AllocationResult` is the single FCFS primitive: two-layer min-order rejection (supplier-imposed + buyer-side policy floor), clamp by live `available_qty` / buyer cash / buyer remaining capacity, `table.commit`, cash transfer, and a delivery callback scheduled at `current_tick + lead_time`. Physical lead time still delays arrival. `shuffle_buyers(buyers, allocation_rng)` is the deterministic per-phase buyer shuffle. See ADR 0012, ADR 0016.
-- **Phase cascade (tick phasing)** — one tick is a deterministic upward cascade by echelon level: `tick_world` (market multiplier → events) → publish all offers → for each level p from 1..max: shuffle buyers → per-buyer observe → decide → `execute_buy` per line → factory produce → fire delivery callbacks → consume demand sinks. Demand pulls up the chain in natural order. See ADR 0014.
+- **Allocation** — `execute_buy(buyer, supplier, pid, qty_requested, table, cash_ledger) -> AllocationResult` is the single FCFS primitive: two-layer min-order rejection (supplier-imposed + buyer-side policy floor), clamp by live `available_qty` / buyer cash / buyer remaining capacity, `table.commit`, cash transfer, and a delivery callback scheduled at `current_tick + lead_time`. Physical lead time still delays arrival. `AllocationResult` carries a `reason` field naming the binding constraint on a rejection (`no_offer`, `below_min_order`, `insufficient_stock`, `insufficient_cash`, `insufficient_capacity`). Buyer routing is **min-order-aware**: a supplier whose `min_order` can't be met is skipped and the buyer falls through to the next feasible supplier rather than silently losing the sale. `shuffle_buyers(buyers, allocation_rng)` is the deterministic per-phase buyer shuffle. See ADR 0012, ADR 0016, ADR 0018.
+- **Demand-pull schedule (tick phasing)** — one tick is a reverse-topological walk (sinks first, factories last) via Kahn's algorithm on the reversed graph: `tick_world` (market multiplier → events) → publish all offers → walk each ready-set of incomparable peers (shuffled with `allocation_rng` for FCFS fairness): per-buyer observe → decide → `execute_buy` per line → fire delivery callbacks → factory produce → consume demand sinks. Because `execute_buy` decrements seller stock at sale time, by the time an intermediate is processed its downstream buyers have already transacted, so it reorders against *complete current-tick* demand (`observed_sales`) — there is no one-tick demand lag. The schedule structure is computed once at `build_world` (topology is static); only the ready-set shuffle re-draws each tick. This survives lateral links. See ADR 0018.
 - **Four-stream RNG split** — `world_rng` (market, events, demand draws), `allocation_rng` (per-phase buyer shuffle, ADR 0016), `policy_rng` (one per policy instance), and `init_rng` (one per node, step-0 state) never share state. This is what makes CRN comparison correct.
 - **DataExporter** — consumes the run log + scenario and writes parquet/JSON/PNG under `data/<setup-dir-name>/`.
 
@@ -81,12 +85,14 @@ uv run python main.py scaffold setups/my_run/catalog.csv --out setups/my_run/set
 
 ## Authoring a setup directory by hand
 
-A setup directory contains two files:
+A setup directory contains two files (plus `demand_series.parquet` when the setup uses
+`sink_replay` nodes — see [Real-data demand replay (M5)](#real-data-demand-replay-m5)):
 
 ```
 my_run/
-  catalog.csv    one row per SKU
-  setup.yaml     run, market, disruption, nodes, edges
+  catalog.csv             one row per SKU
+  setup.yaml              run, market, disruption, nodes, edges
+  demand_series.parquet   (only for sink_replay nodes) tidy (series_id, tick, qty) demand
 ```
 
 **`catalog.csv`** — columns: `product_id`, `name`, `category`, `base_price`, `unit_cost`,
@@ -121,7 +127,7 @@ disruption:
 
 nodes:
   - id: factory-1
-    type: factory           # factory | intermediate | demand_sink
+    type: factory           # factory | intermediate | demand_sink | sink_replay
     region: US
     produces_product_id: P0001
     unit_cost: 5.0
@@ -193,12 +199,57 @@ edges:
 
 See `setups/three_node_chain/` and `setups/two_factories_two_shops/` for complete hand-authored examples.
 
+## Real-data demand replay (M5)
+
+The simulator can replay observed real-world demand instead of sampling it. Three pieces
+work together (ADR 0020):
+
+- **`ReplayDemandSinkNode`** (`replay_demand_sink.py`) — a `DemandSinkNode` subclass whose
+  per-tick base demand is `series[tick]` instead of a `demand_dist` draw. The full
+  multiplier chain (market × seasonal × regional) still applies on top, so synthetic
+  what-ifs — promos, disruptions, elasticity — compose on replayed demand unchanged.
+  *Pure* replay is achieved by authoring the multiplier chain flat, not by a node flag:
+  **`flat_world(regions)`** (`flat_world.py`) returns `MarketParams` + `ItemLifecycleParams`
+  whose chain is bit-exactly 1.0 on every tick. CRN invariant: the replay sink burns
+  exactly the same `world_rng` draws as the stochastic sink (one per catalog item per
+  tick), so mixing replay and stochastic sinks in one graph leaves every other RNG
+  stream bit-identical.
+- **`sink_replay` setup nodes** — replay sinks are authorable in `setup.yaml`. The node
+  references a `series_id` in `demand_series.parquet` (tidy `(series_id, tick, qty)`),
+  which must sit next to `setup.yaml` and cover at least `n_steps` ticks:
+
+  ```yaml
+  - id: sink-FOODS_3_090-CA_1
+    type: sink_replay
+    region: CA
+    product_id: FOODS_3_090
+    series_id: FOODS_3_090_CA_1
+    income_rate: 1000000.0
+    cash: 0.0
+  ```
+
+- **`PriceReplayPolicy`** (`policy.py`) — opt-in wrapper around any `IntermediatePolicy`
+  that delegates ordering decisions to the inner policy unchanged and overwrites the
+  `list_price` slice with observed per-tick price arrays. Ordering is bit-identical with
+  and without the wrapper; products without a price array keep the inner policy's price.
+  Constructed programmatically (`PriceReplayPolicy(inner, prices, n_steps)`) — it is not
+  in the policy registry.
+
+The **M5 dataset adapter** (`src/datasets/m5.py`) produces all of this from the raw
+Kaggle M5 (Walmart) files in one call: it slices items/stores/dates, runs a data-quality
+report, and emits a complete setup directory — shops, `sink_replay` nodes, catalog, and
+the demand/price/calendar parquets. Upstream topology (factories, DCs) is the scenario
+author's job. Full reference: [`src/datasets/README.md`](../datasets/README.md);
+end-to-end walkthrough: [`notebooks/m5_replay_example.ipynb`](../../notebooks/m5_replay_example.ipynb).
+
 ## Output layout
 
 `Runner(scenario).run()` returns a run log with top-level keys `n_steps`, `ticks`, `global`:
 
-- `ticks` — one entry per tick: `tick`, `node_cash`, `node_inventory` (per-node `{pid: qty}`; factories use `{"_total": qty}`), `node_pending` (per-node `{pid: in_transit}` summed across suppliers), `node_orders`.
+- `ticks` — one entry per tick: `tick`, `node_cash`, `node_inventory` (per-node `{pid: qty}`; factories use `{"_total": qty}`), `node_pending` (per-node `{pid: in_transit}` summed across suppliers), `node_orders`, `node_flows`, `purchases` (the flow log, see below), and `rejections` (see below).
 - `global` — `time` (`simulation_step`, `simulation_date`), `market_supply` / `market_demand` per region, and `events`.
+- `node_flows` / `purchases` (per-tick flow log, ADR 0019) — `node_flows` is one record per `(node, pid)`: `sales` (units sold as supplier), `demand` (units requested of it; a sink's exogenous `demand_target`), `price` (decision-time `list_price`; `null` for sinks), and `stockout` (decision-time on-hand == 0). `purchases` is one record per `(buyer, supplier, pid)`: `qty_filled` and `cash_paid` (= `qty_filled × supplier list_price`). `node_orders` is derived from these purchase rows. Build tidy DataFrames with `inspect.flow_frame` / `inspect.purchase_frame`.
+- `rejections` (per-tick, always-on, ADR 0018) — an observability stream for unfilled or partially-filled orders. Each entry is `{tick, buyer_id, supplier_id, pid, qty_requested, qty_filled, qty_rejected, reason}`, where `reason` ∈ {`no_offer`, `below_min_order`, `insufficient_stock`, `insufficient_cash`, `insufficient_capacity`}. Demand that no feasible supplier could fill is recorded as an `unmet_demand` entry (`supplier_id=None`) — the true lost-sale measure once min-order fall-through removes the avoidable rejections.
 
 `DataExporter(scenario, run_log).export_all(output_folder)` writes (relative to `--output`, default `data/<setup-dir-name>/`):
 
@@ -241,6 +292,7 @@ Each policy owns a private `policy_rng` seeded from its `policy_seed` kwarg, dis
 | `DefaultDemandSinkPolicy(*, policy_seed=None)` | `DemandSinkPolicy` | greedy: buy the demand target from the cheapest feasible direct suppliers first |
 | `IntermediatePolicy.SingleSupplierAdapter(*, supplier_id, ...)` | `IntermediatePolicy` | route a textbook reorder policy to a single named supplier |
 | `MultiSupplierTextbookPolicy` (+ 4 concrete) | `IntermediatePolicy` | textbook reorder rules with multi-supplier routing |
+| `PriceReplayPolicy(inner, prices, n_steps)` | `IntermediatePolicy` | wrapper: inner policy orders, observed daily prices overwrite `list_price` |
 | `RLIntermediatePolicy` | `IntermediatePolicy` | shim that replays a pre-decoded action injected by the RL stack |
 
 ### `TextbookReorderPolicy` family (`MultiSupplierTextbookPolicy`)
@@ -332,4 +384,4 @@ Consequences:
 ## Further reading
 
 - [`CONTEXT.md`](../../CONTEXT.md) — domain and architecture glossary
-- ADRs [0011](../../docs/adr/0011-multi-echelon-graph.md)–[0016](../../docs/adr/0016-allocation-rng-sub-seed.md) — the multi-echelon design decisions
+- ADRs [0011](../../docs/adr/0011-multi-echelon-graph.md)–[0018](../../docs/adr/0018-lateral-links-demand-pull-scheduling.md) — the multi-echelon design decisions (latest: lateral links + demand-pull scheduling)

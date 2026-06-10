@@ -9,8 +9,10 @@ Public API
 - ``EdgeSpec``       — immutable edge descriptor with default + per-product lead times
 - ``Graph``          — validated DAG with topology queries
 - ``build_graph``    — authoring entry point: validates then constructs
-- ``validate_dag``   — raises ``ValueError`` on cycles, unreachable nodes, same-level links
+- ``validate_dag``   — raises ``ValueError`` on cycles, unreachable nodes, illegal type-based edges
 - ``compute_levels`` — returns ``dict[node_id, int]`` via longest-path-from-any-source
+- ``build_demand_pull_schedule`` — returns ready-sets in reverse-topological order (sinks first,
+                                   factories last); pure, no ``Simulation`` dependency
 """
 
 from __future__ import annotations
@@ -99,15 +101,40 @@ class Graph:
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_dag(nodes: list[str], edges: list[EdgeSpec]) -> None:
+def validate_dag(
+    nodes: list[str],
+    edges: list[EdgeSpec],
+    *,
+    node_types: dict[str, str] | None = None,
+) -> None:
     """Validate that *nodes* and *edges* form a legal DAG.
+
+    Parameters
+    ----------
+    nodes:
+        List of node IDs in the graph.
+    edges:
+        List of directed supply edges.
+    node_types:
+        Optional mapping of ``{node_id: node_type}`` where each value is one of
+        ``"factory"``, ``"intermediate"``, or ``"demand_sink"``.  When supplied,
+        **type-based edge rules** are enforced instead of the old BFS same-level
+        check:
+
+        - Supplier must be ``factory`` or ``intermediate`` (sinks don't sell).
+        - Buyer must be ``intermediate`` or ``demand_sink`` (factories don't buy;
+          flow must pass through ≥1 intermediate so ``factory→demand_sink`` is
+          illegal).
+
+        When *None* (default), no type-based check is performed (backward-compat
+        mode for callers that haven't yet plumbed node types through).
 
     Raises
     ------
     ValueError
         - If the graph contains a **cycle** (including self-loops).
         - If any node is **unreachable** from the connected component (isolated).
-        - If any edge links two nodes at the **same echelon level**.
+        - If *node_types* is supplied and any edge violates the type rules above.
     """
     node_set = set(nodes)
 
@@ -156,72 +183,46 @@ def validate_dag(nodes: list[str], edges: list[EdgeSpec]) -> None:
             )
 
     # ------------------------------------------------------------------
-    # 3. Same-level supplier-link detection
+    # 3. Edge-type validation (only when node_types is supplied)
     #
-    # Uses BFS shortest-path levels from all source nodes (nodes with no
-    # incoming edges). An edge A→B is a same-level peer link when
-    # BFS-level[A] == BFS-level[B]. This correctly identifies horizontal
-    # flows (e.g. shop supplying another shop at the same echelon) while
-    # allowing all valid top-down links.
+    # Replaces the old BFS same-level check.  Rules:
+    #   - Supplier ∈ {factory, intermediate}   (sinks don't sell)
+    #   - Buyer   ∈ {intermediate, demand_sink} (factories don't buy;
+    #     factory→sink is forbidden — flow must pass through ≥1 intermediate)
     #
-    # Why shortest-path (not longest-path)?  Shortest-path assigns a node
-    # the echelon of its *closest* upstream factory, which is its natural
-    # tier. A "peer" edge between two nodes sharing the same closest-factory
-    # distance has the same BFS level.  A legitimate downward edge always
-    # goes from a lower BFS level to a higher BFS level.
+    # Lateral intermediate→intermediate edges are explicitly legal here.
     # ------------------------------------------------------------------
-    bfs_levels = _compute_bfs_levels(nodes, adj)
-    for edge in edges:
-        sup_level = bfs_levels[edge.supplier_id]
-        buy_level = bfs_levels[edge.buyer_id]
-        if sup_level == buy_level:
-            raise ValueError(
-                f"Same-level supplier link detected: '{edge.supplier_id}' → "
-                f"'{edge.buyer_id}' — both are at echelon level "
-                f"{sup_level} (shortest-path from sources). "
-                "Supplier links must cross echelon boundaries."
-            )
+    if node_types is not None:
+        for edge in edges:
+            sup_type = node_types.get(edge.supplier_id)
+            buy_type = node_types.get(edge.buyer_id)
+            # Rule: sinks don't sell (demand_sink as supplier is illegal)
+            if sup_type == "demand_sink":
+                raise ValueError(
+                    f"Illegal edge '{edge.supplier_id}' → '{edge.buyer_id}': "
+                    f"supplier node '{edge.supplier_id}' is a demand_sink "
+                    f"(rule: sinks don't sell)."
+                )
+            # Rule: factories don't buy (factory as buyer is illegal)
+            if buy_type == "factory":
+                raise ValueError(
+                    f"Illegal edge '{edge.supplier_id}' → '{edge.buyer_id}': "
+                    f"buyer node '{edge.buyer_id}' is a factory "
+                    f"(rule: factories don't buy)."
+                )
+            # Rule: factory→sink is illegal; flow must pass through ≥1 intermediate
+            if sup_type == "factory" and buy_type == "demand_sink":
+                raise ValueError(
+                    f"Illegal edge '{edge.supplier_id}' → '{edge.buyer_id}': "
+                    f"factory→sink edge is not allowed — flow must pass through "
+                    f"at least one intermediate node "
+                    f"(rule: factory→sink bypasses intermediates)."
+                )
 
 
 # ---------------------------------------------------------------------------
 # Level computation
 # ---------------------------------------------------------------------------
-
-def _compute_bfs_levels(nodes: list[str], adj: dict[str, list[str]]) -> dict[str, int]:
-    """BFS shortest-path level from all source nodes (nodes with no in-edges).
-
-    Used for same-level peer-link detection.  A node's BFS level is its
-    minimum distance from any source — its "natural echelon."
-    Nodes unreachable from any source (e.g. orphaned nodes that escaped
-    the unreachable check) get level 0 (treated as additional sources).
-    """
-    # Compute in-degree
-    in_degree: dict[str, int] = {n: 0 for n in nodes}
-    for n in nodes:
-        for neighbour in adj[n]:
-            in_degree[neighbour] += 1
-
-    level: dict[str, int] = {}
-    queue: deque[str] = deque()
-    for n in nodes:
-        if in_degree[n] == 0:
-            level[n] = 0
-            queue.append(n)
-
-    while queue:
-        node = queue.popleft()
-        for neighbour in adj[node]:
-            if neighbour not in level:
-                level[neighbour] = level[node] + 1
-                queue.append(neighbour)
-
-    # Assign level 0 to any remaining nodes (should be caught earlier)
-    for n in nodes:
-        if n not in level:
-            level[n] = 0
-
-    return level
-
 
 def _compute_levels_from_adj(nodes: list[str], adj: dict[str, list[str]]) -> dict[str, int]:
     """Longest-path level computation on a DAG given an adjacency mapping.
@@ -262,14 +263,114 @@ def compute_levels(graph: Graph) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Reverse-topological (demand-pull) scheduler — pure, no Simulation dependency
+# ---------------------------------------------------------------------------
+
+def build_demand_pull_schedule(graph: Graph) -> list[list[str]]:
+    """Return the demand-pull ready-sets for *graph*.
+
+    Computes Kahn's algorithm on the **reversed** edge set so that a node
+    becomes ready only once all its downstream buyers have been placed in a
+    prior ready-set.  Graph-terminal buyers (sinks, nodes with no buyers)
+    appear in the first ready-set; source nodes (factories, nodes with no
+    suppliers) appear in the last.
+
+    The returned list is a sequence of *ready-sets*: mutually-incomparable
+    nodes that may be processed in any order within a set.  The caller
+    applies its own shuffle to each set (e.g. using ``allocation_rng``) to
+    produce a deterministic per-tick total order.
+
+    Parameters
+    ----------
+    graph:
+        A :class:`Graph` instance (already validated by :func:`build_graph`).
+
+    Returns
+    -------
+    list[list[str]]
+        Ordered list of ready-sets, each a list of node IDs.  The first set
+        contains the sinks / graph-terminals; the last set contains the
+        source nodes (factories).  Each node appears in exactly one set.
+
+    Notes
+    -----
+    On the reversed graph an edge ``supplier → buyer`` becomes ``buyer →
+    supplier``, so in-degree on the reversed graph counts how many
+    *downstream buyers* a node has.  A node with in-degree 0 on the reversed
+    graph has no buyers — it is a graph-terminal and is "ready" immediately
+    (processed first in demand-pull order).
+    """
+    # Sort for a stable, PYTHONHASHSEED-independent initial ordering.
+    # Without sorting, iteration over frozenset (graph.nodes) is
+    # hash-randomised and produces a different schedule each interpreter
+    # invocation — breaking CRN reproducibility (ADR 0003/0016).
+    nodes = sorted(graph.nodes)
+
+    # Build reversed-graph in-degree: for each node, count its buyers.
+    in_degree: dict[str, int] = {n: 0 for n in nodes}
+    for n in nodes:
+        for buyer in graph.buyers_of(n):
+            # On the reversed graph, n has an edge FROM buyer TO n,
+            # so n's in-degree on the reversed graph = number of its buyers.
+            in_degree[n] += 1
+
+    # Kahn's algorithm on the reversed graph.
+    # Ready = in-degree == 0 on the reversed graph (no buyers yet to process).
+    ready: deque[str] = deque(n for n in nodes if in_degree[n] == 0)
+    schedule: list[list[str]] = []
+
+    remaining = set(nodes)
+    while ready:
+        # Collect the current ready-set (all nodes currently ready).
+        current_set: list[str] = []
+        next_ready: list[str] = []
+        while ready:
+            current_set.append(ready.popleft())
+
+        for node in current_set:
+            remaining.discard(node)
+            # Traverse the reversed graph: neighbours of node are its
+            # suppliers on the original graph.
+            for supplier in sorted(graph.suppliers_of(node)):
+                if supplier not in remaining:
+                    continue
+                in_degree[supplier] -= 1
+                if in_degree[supplier] == 0:
+                    next_ready.append(supplier)
+
+        schedule.append(current_set)
+        ready.extend(next_ready)
+
+    return schedule
+
+
+# ---------------------------------------------------------------------------
 # Authoring entry point
 # ---------------------------------------------------------------------------
 
-def build_graph(nodes: list[str], edges: list[EdgeSpec]) -> Graph:
+def build_graph(
+    nodes: list[str],
+    edges: list[EdgeSpec],
+    *,
+    node_types: dict[str, str] | None = None,
+) -> Graph:
     """Validate *nodes* + *edges* and return a :class:`Graph`.
 
+    Parameters
+    ----------
+    nodes:
+        List of node IDs.
+    edges:
+        List of directed supply edges.
+    node_types:
+        Optional ``{node_id: node_type}`` mapping (values: ``"factory"``,
+        ``"intermediate"``, ``"demand_sink"``).  When supplied, type-based edge
+        validation is performed (lateral ``intermediate→intermediate`` edges are
+        legal; ``factory→sink``, ``→factory``, and ``sink→*`` edges are
+        rejected).  When *None*, no type check is performed (backward compat).
+
     Raises ``ValueError`` if the topology is invalid (cycle, unreachable node,
-    same-level link).
+    or illegal edge type when *node_types* is given).
     """
-    validate_dag(nodes, edges)
+    validate_dag(nodes, edges, node_types=node_types)
     return Graph(nodes, edges)

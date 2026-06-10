@@ -26,8 +26,30 @@ Implementation notes
   future agent without rewriting plumbing.
 - The baseline policy is ``OrderUpToPolicy`` wrapped in ``SingleSupplierAdapter``
   so it runs on the graph engine's ``IntermediateNode``.
-- The eval runs the RL policy through a step-by-step loop using the graph
-  engine's two-phase tick API.
+- The RL run uses a bespoke two-phase stepping loop (``tick_world()`` /
+  ``tick_decide_and_settle()``) because the RL observation encoder must run
+  between phases. The per-tick engine state (``_tick_purchases``,
+  ``_tick_decision_state``, ``_tick_sink_demand``, closing inventory) is
+  accumulated into a minimal run-log dict that is fed to the shared
+  ``inspect`` + ``metrics`` DataFrame path (ADR 0019). The baseline run uses
+  ``Runner.run()`` directly.
+
+RL eval path finding (issue 07)
+-------------------------------
+``_run_rl`` does NOT go through ``Runner.run()``. It drives the engine with
+the two-phase ``tick_world()`` / ``tick_decide_and_settle()`` API so the RL
+observation encoder can snapshot state between phases. After each
+``tick_decide_and_settle()`` the per-tick engine state is harvested and
+appended to a run-log compatible list; this list is passed to the shared
+``inspect.*`` builders at the end of the episode.
+
+``_run_baseline`` DOES use ``Runner.run()`` via the ``Runner`` class — it
+attaches the baseline policy via ``policy_overrides`` and calls
+``Runner.run()`` exactly once.
+
+Both paths then call ``inspect.flow_frame`` / ``inspect.purchase_frame`` /
+``inspect.closing_inventory_frame`` / ``metrics.business_metrics`` /
+``metrics.profit_decomposition`` for KPI extraction (ADR 0019).
 """
 
 from __future__ import annotations
@@ -44,18 +66,12 @@ import numpy as np
 from src.rl.configs.default import RLConfig
 from src.rl.encoders import compute_effective_rate, decode_action, encode_observation
 from src.rl.episode_sampler import RLEpisodeSpec, sample_episode
-from src.sim.metrics import (
-    RunSlice,
-    inventory_turnover,
-    mean_price_pct_of_msrp,
-    stockout_rate,
-)
 from src.sim.policy import (
     IntermediatePolicy,
     OrderUpToPolicy,
     RLIntermediatePolicy,
 )
-from src.sim.runner import build_world
+from src.sim.runner import build_world, Runner
 from src.sim.scenario import (
     DisruptionParams,
     ItemLifecycleParams,
@@ -192,35 +208,6 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 
-def _episode_metrics(
-    run_slice: RunSlice,
-    net_profit: float,
-) -> dict[str, float]:
-    """Assemble a per-episode metrics dict from observable traces.
-
-    Only the KPIs that can be measured from node-S state the eval already
-    holds are reported:
-
-    - ``net_profit`` — cumulative cash delta of node S (the RL reward signal;
-      reconciles per the audit).
-    - ``stockout_rate`` — fraction of (active-SKU, tick) pairs with zero
-      on-hand inventory at decision time.
-    - ``inventory_turnover`` — realised sales / mean on-hand inventory.
-    - ``mean_price_pct_of_msrp`` — mean selling-price / MSRP ratio.
-
-    ``service_level`` and the revenue / holding / order-cost decomposition are
-    intentionally absent: true demand (pre-stockout) and the per-component cash
-    split are not surfaced by the graph engine here, so emitting them would be a
-    fabricated 0.0 rather than a measurement.
-    """
-    return {
-        "net_profit": net_profit,
-        "stockout_rate": stockout_rate(run_slice),
-        "inventory_turnover": inventory_turnover(run_slice),
-        "mean_price_pct_of_msrp": mean_price_pct_of_msrp(run_slice),
-    }
-
-
 def _run_rl(
     rl_policy_fn: PolicyFn,
     spec: RLEpisodeSpec,
@@ -234,9 +221,21 @@ def _run_rl(
       RLIntermediatePolicy.set_pending_action() →
       sim.tick_decide_and_settle().
 
-    Collects per-tick traces into a ``RunSlice`` and returns
-    ``aggregate_episode`` metrics.
+    After each tick the engine's internal per-tick state (``_tick_purchases``,
+    ``_tick_decision_state``, ``_tick_sink_demand``, closing inventory) is
+    harvested into a minimal run-log dict.  At the end of the episode this
+    run-log is passed to the shared ``inspect`` + ``metrics`` DataFrame builders
+    (ADR 0019) to produce KPIs on the same code path as the baseline.
     """
+    from src.sim.inspect import (
+        flow_frame,
+        purchase_frame,
+        closing_inventory_frame,
+        node_timeseries_df,
+    )
+    from src.sim.metrics import business_metrics, profit_decomposition
+    from src.sim.node import IntermediateNode
+
     rl_policy = RLIntermediatePolicy()
     sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
     node_s = sim.nodes["S"]
@@ -263,35 +262,16 @@ def _run_rl(
     else:
         base_demand_prior = 1.0
 
-    # Use active_subset as the active_pids for RunSlice.
-    initial_cash = float(node_s.cash)
     episode_length = spec.scenario.n_steps
     base_prices = {pid: float(node_s.list_prices.get(pid, 1.0)) for pid in active_subset}
 
-    # Track cash delta as proxy for net_profit (primary RL reward signal).
-    cumulative_cash_delta: float = 0.0
-
-    # Collect the per-tick traces that are observable from node S without
-    # new engine plumbing (inventory at decision time, realised sales, prices).
-    # demand / revenue / cost decomposition are NOT recoverable here, so the
-    # KPIs that need them are omitted rather than reported as a fake 0.0.
-    run_slice = RunSlice(active_pids=list(active_subset))
+    # Accumulate per-tick log entries for the shared inspect builders.
+    tick_entries: list[dict[str, Any]] = []
 
     for tick in range(episode_length):
-        cash_before = float(node_s.cash)
-
         # Phase 1: advance world, publish offers.
         current_tick = sim.tick_world()
         central_table = getattr(sim, "_current_table", None)
-
-        # Inventory snapshot at decision time (before this tick's settlement).
-        run_slice.inventory.append(
-            [float(node_s.inventory.get(pid, 0)) for pid in active_subset]
-        )
-        run_slice.price.append(
-            [float(node_s.list_prices.get(pid, 0.0)) for pid in active_subset]
-        )
-        run_slice.msrp.append([base_prices[pid] for pid in active_subset])
 
         # Compute effective rate once per tick.
         effective_rate = compute_effective_rate(sales_history, base_demand_prior)
@@ -334,23 +314,131 @@ def _run_rl(
         # Inject action into RLIntermediatePolicy shim.
         rl_policy.set_pending_action(action_dict)
 
-        # Phase 2: phase cascade (S.policy.decide() returns pending action).
+        # Phase 2: demand-pull walk (S.policy.decide() returns pending action).
         sim.tick_decide_and_settle(current_tick)
 
         # Update rolling sales history.
-        last_sales = sim._last_tick_sales.get("S", {})
-        run_slice.sales.append(
-            [float(last_sales.get(pid, 0)) for pid in active_subset]
-        )
+        last_sales = sim._tick_sales.get("S", {})
         for pid in active_subset:
             qty = last_sales.get(pid, 0)
             if pid in sales_history:
                 sales_history[pid].append(qty)
 
-        cash_after = float(node_s.cash)
-        cumulative_cash_delta += cash_after - cash_before
+        # Harvest per-tick engine state into a run-log compatible entry.
+        # This mirrors what Runner._snapshot_tick() does for the standard path.
+        node_cash: dict[str, float] = {}
+        node_inventory: dict[str, Any] = {}
+        node_pending: dict[str, Any] = {}
 
-    return _episode_metrics(run_slice, cumulative_cash_delta)
+        for node_id, node in sim.nodes.items():
+            from src.sim.node import DemandSinkNode, FactoryNode
+            node_cash[node_id] = float(node.cash)
+            if isinstance(node, FactoryNode):
+                node_inventory[node_id] = {"_total": node.inventory}
+                node_pending[node_id] = {}
+            elif isinstance(node, IntermediateNode):
+                node_inventory[node_id] = dict(node.inventory)
+                pending_totals: dict[str, int] = {}
+                for sup_pending in node.pending.values():
+                    for pid, qty in sup_pending.items():
+                        pending_totals[pid] = pending_totals.get(pid, 0) + qty
+                node_pending[node_id] = pending_totals
+            else:
+                node_inventory[node_id] = {}
+                node_pending[node_id] = {}
+
+        # Build node_flows from decision_state + sink_demand + sales.
+        purchases = list(sim._tick_purchases)
+        decision_state = sim._tick_decision_state
+        sink_demand = sim._tick_sink_demand
+
+        sales_by: dict[tuple[str, str], int] = {}
+        demand_by: dict[tuple[str, str], int] = {}
+        for p in purchases:
+            key = (p["supplier_id"], p["pid"])
+            sales_by[key] = sales_by.get(key, 0) + p["qty_filled"]
+            demand_by[key] = demand_by.get(key, 0) + p["qty_requested"]
+
+        node_flows: list[dict[str, Any]] = []
+        for node_id, pidmap in decision_state.items():
+            for pid, st in pidmap.items():
+                key = (node_id, pid)
+                node_flows.append({
+                    "node_id": node_id,
+                    "pid": pid,
+                    "sales": sales_by.get(key, 0),
+                    "demand": demand_by.get(key, 0),
+                    "price": st["price"],
+                    "stockout": st["on_hand"] == 0,
+                })
+        for sink_id, pidmap in sink_demand.items():
+            for pid, dt in pidmap.items():
+                node_flows.append({
+                    "node_id": sink_id,
+                    "pid": pid,
+                    "sales": 0,
+                    "demand": int(dt),
+                    "price": None,
+                    "stockout": False,
+                })
+
+        purchases_log = [
+            {
+                "buyer_id": p["buyer_id"],
+                "supplier_id": p["supplier_id"],
+                "pid": p["pid"],
+                "qty_filled": p["qty_filled"],
+                "cash_paid": p["cash_paid"],
+            }
+            for p in purchases
+        ]
+
+        # Derive node_orders for completeness (inspect builders don't need it).
+        node_orders: dict[str, dict[str, int]] = {
+            nid: {}
+            for nid, n in sim.nodes.items()
+            if isinstance(n, IntermediateNode)
+        }
+        for p in purchases:
+            buyer = sim.nodes.get(p["buyer_id"])
+            if isinstance(buyer, IntermediateNode):
+                d = node_orders[p["buyer_id"]]
+                d[p["pid"]] = d.get(p["pid"], 0) + p["qty_requested"]
+
+        tick_entries.append({
+            "tick": current_tick,
+            "node_cash": node_cash,
+            "node_inventory": node_inventory,
+            "node_pending": node_pending,
+            "node_orders": node_orders,
+            "node_flows": node_flows,
+            "purchases": purchases_log,
+        })
+
+    # Build the run_log dict compatible with inspect builders.
+    run_log: dict[str, Any] = {
+        "n_steps": episode_length,
+        "ticks": tick_entries,
+        "global": {
+            "time": {
+                "simulation_step": list(range(episode_length + 1)),
+                "simulation_date": [None] * (episode_length + 1),
+            },
+            "market_supply": {},
+            "market_demand": {},
+            "events": {"occurrences": [None] * episode_length},
+        },
+    }
+
+    ff = flow_frame(run_log)
+    pf = purchase_frame(run_log)
+    cif = closing_inventory_frame(run_log)
+    ts_df = node_timeseries_df(run_log, spec.scenario)
+
+    bm = business_metrics(ff, ts_df, spec.scenario)
+    pd_df = profit_decomposition(ff, pf, cif, spec.scenario)
+
+    return _extract_node_s_metrics(bm, pd_df)
 
 
 def _run_baseline(
@@ -359,79 +447,58 @@ def _run_baseline(
     *,
     config: RLConfig | None = None,
 ) -> dict[str, float]:
-    """Run a baseline policy on ``spec`` for one full episode.
+    """Run a baseline policy on ``spec`` for one full episode via ``Runner.run()``.
 
     Attaches ``policy`` via ``policy_overrides={"S": policy}`` and runs
-    using ``Simulation.tick()`` (single-phase).
-    Returns ``net_profit`` as the cumulative cash delta of node S.
+    through ``Runner.run()`` (single-phase, standard run log).
+    Returns metrics via the shared ``inspect`` + ``metrics`` DataFrame path.
     """
-    sim = build_world(spec.scenario, policy_overrides={"S": policy})
-    node_s = sim.nodes["S"]
-    episode_length = spec.scenario.n_steps
-    active_subset = spec.active_subset
-    base_prices = {pid: float(node_s.list_prices.get(pid, 1.0)) for pid in active_subset}
+    from src.sim.inspect import (
+        flow_frame,
+        purchase_frame,
+        closing_inventory_frame,
+        node_timeseries_df,
+    )
+    from src.sim.metrics import business_metrics, profit_decomposition
 
-    cumulative_cash_delta: float = 0.0
-    run_slice = RunSlice(active_pids=list(active_subset))
+    runner = Runner(spec.scenario, policy_overrides={"S": policy})
+    run_log = runner.run()
 
-    for _tick in range(episode_length):
-        cash_before = float(node_s.cash)
+    ff = flow_frame(run_log)
+    pf = purchase_frame(run_log)
+    cif = closing_inventory_frame(run_log)
+    ts_df = node_timeseries_df(run_log, spec.scenario)
 
-        # Inventory / price snapshot at decision time (before this tick settles).
-        run_slice.inventory.append(
-            [float(node_s.inventory.get(pid, 0)) for pid in active_subset]
-        )
-        run_slice.price.append(
-            [float(node_s.list_prices.get(pid, 0.0)) for pid in active_subset]
-        )
-        run_slice.msrp.append([base_prices[pid] for pid in active_subset])
+    bm = business_metrics(ff, ts_df, spec.scenario)
+    pd_df = profit_decomposition(ff, pf, cif, spec.scenario)
 
-        sim.tick()
-
-        last_sales = sim._last_tick_sales.get("S", {})
-        run_slice.sales.append(
-            [float(last_sales.get(pid, 0)) for pid in active_subset]
-        )
-
-        cash_after = float(node_s.cash)
-        cumulative_cash_delta += cash_after - cash_before
-
-    return _episode_metrics(run_slice, cumulative_cash_delta)
+    return _extract_node_s_metrics(bm, pd_df)
 
 
-def _record_graph_tick(
-    node_s: Any,
-    orders_placed: dict[str, int],
-    run_slice: RunSlice,
-    active_subset: tuple[str, ...],
-    tick: int,
-) -> None:
-    """Append one tick of graph-node-S state to the ``RunSlice``.
+def _extract_node_s_metrics(
+    bm: "Any",
+    pd_df: "Any",
+) -> dict[str, float]:
+    """Extract KPIs for node "S" from business_metrics and profit_decomposition frames."""
+    s_bm = bm[bm["node_id"] == "S"]
+    if s_bm.empty:
+        s_bm = bm[bm["node_id"] == "_system"]
 
-    Translates IntermediateNode fields to the RunSlice schema used by
-    ``aggregate_episode``.
-    """
-    pids = run_slice.active_pids
+    service_level = float(s_bm["service_level"].iloc[0]) if not s_bm.empty else 0.0
+    stockout_rate = float(s_bm["stockout_rate"].iloc[0]) if not s_bm.empty else 0.0
+    inventory_turnover = float(s_bm["inventory_turnover"].iloc[0]) if not s_bm.empty else 0.0
+    mean_price_pct_of_msrp = float(s_bm["mean_price_pct_of_msrp"].iloc[0]) if not s_bm.empty else 1.0
 
-    # Sales: use the last-tick sales accumulator from the runner.
-    # For the graph engine, "sales" corresponds to units sold downstream.
-    # We approximate with 0 here since the graph engine tracks this differently;
-    # the RunSlice records it from _last_tick_sales in _run_rl.
-    inv = node_s.inventory
+    s_pd = pd_df[pd_df["node_id"] == "S"]
+    net_profit = float(s_pd["net_profit"].iloc[0]) if not s_pd.empty else 0.0
 
-    run_slice.inventory.append([inv.get(pid, 0) for pid in pids])
-    run_slice.sales.append([0 for _ in pids])  # sales tracked separately
-    run_slice.demand.append([0 for _ in pids])
-    run_slice.price.append([node_s.list_prices.get(pid, 0.0) for pid in pids])
-    run_slice.msrp.append([node_s.list_prices.get(pid, 1.0) for pid in pids])
-
-    # Revenue and costs approximated from cash changes (net P&L).
-    run_slice.revenue.append([0.0 for _ in pids])
-    run_slice.holding_cost.append([0.0 for _ in pids])
-
-    # Order cost: qty * unit_cost (approximate — use order qty * list_price of factory).
-    run_slice.order_cost.append([0.0 for _ in pids])
-    run_slice.order_fee.append([0.0 for _ in pids])
+    return {
+        "net_profit": net_profit,
+        "service_level": service_level,
+        "stockout_rate": stockout_rate,
+        "inventory_turnover": inventory_turnover,
+        "mean_price_pct_of_msrp": mean_price_pct_of_msrp,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -456,9 +523,6 @@ def _aggregate_paired(
     def _mean(vals: list[float]) -> float:
         return sum(vals) / len(vals)
 
-    # Only the measured KPIs are surfaced (see ``_episode_metrics``).
-    # service_level / revenue / cost decomposition are not recoverable from the
-    # eval loop, so they are omitted rather than reported as a fabricated 0.0.
     result: dict[str, float] = {
         "eval/rl_return": _mean(rl_returns),
         "eval/baseline_return": _mean(bl_returns),

@@ -1,6 +1,6 @@
 # 01 — Type-based graph validation (lateral edges legal)
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

@@ -191,6 +191,8 @@ def _node_to_dict(node: Any) -> dict[str, Any]:
         d["list_prices"] = dict(node.list_prices)
         d["min_order_imposed"] = dict(node.min_order_imposed)
         d["cash"] = node.cash
+        d["holding_rate"] = node.holding_rate
+        d["order_fee"] = node.order_fee
 
     elif isinstance(node, DemandSinkNode):
         d["product_id"] = node.product_id
@@ -230,6 +232,8 @@ def _node_from_dict(d: Mapping[str, Any]) -> Any:
         )
 
     elif node_type == "IntermediateNode":
+        from src.sim.node import DEFAULT_HOLDING_RATE, DEFAULT_ORDER_FEE
+
         return IntermediateNode(
             **shared,
             carried_products=set(d["carried_products"]),
@@ -240,6 +244,8 @@ def _node_from_dict(d: Mapping[str, Any]) -> Any:
             list_prices=dict(d["list_prices"]),
             min_order_imposed=dict(d["min_order_imposed"]),
             cash=d.get("cash", 0.0),
+            holding_rate=d.get("holding_rate", DEFAULT_HOLDING_RATE),
+            order_fee=d.get("order_fee", DEFAULT_ORDER_FEE),
         )
 
     elif node_type == "DemandSinkNode":

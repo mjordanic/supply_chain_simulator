@@ -801,6 +801,8 @@ __all__ = [
     "PeriodicReorderPolicy",
     # Phase-5 RL graph-engine shim (issue 12)
     "RLIntermediatePolicy",
+    # m5-replay price replay wrapper (issue 04)
+    "PriceReplayPolicy",
 ]
 
 
@@ -2069,15 +2071,14 @@ class _SingleSupplierAdapter(IntermediatePolicy):
 
         # The textbook policy needs "sales" to update its rolling log so the
         # rate estimate (and hence the reorder point ``s``) becomes non-zero.
-        # Prefer the runner-injected ``prev_tick_sales`` (exact units sold to
-        # downstream buyers last tick); fall back to 0 only when it is absent.
-        # Hardcoding 0 here left ``s == 0`` forever, so ``position < s`` never
-        # held and the shop never reordered.
-        prev_tick_sales: dict[str, int] = dict(
-            obs_intermediate.get("prev_tick_sales", {})
+        # ``observed_sales`` is injected by the runner under demand-pull ordering
+        # (ADR 0018) and reflects complete current-tick sales.  Zero is the
+        # correct signal when no downstream buyers transacted this tick.
+        observed_sales: dict[str, int] = dict(
+            obs_intermediate.get("observed_sales", {})
         )
         sales_approx: dict[str, int] = {
-            pid: prev_tick_sales.get(pid, 0) for pid in inventory
+            pid: observed_sales.get(pid, 0) for pid in inventory
         }
 
         # Build a Store-compatible observation for the textbook policy.
@@ -2338,12 +2339,6 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
         self.list_price_out = list_price_out
         self.per_supplier_min_order_floor = per_supplier_min_order_floor
         self.routing_strategy = routing_strategy
-        # Per-pid inventory snapshot from the previous decide call.  Used by
-        # ``decide`` to compute approximate sales as the inventory decrease
-        # between consecutive ticks (``max(0, prev_inv - curr_inv)``).
-        # Inventory increases (deliveries) give 0 sales — conservative but
-        # correct: the rate estimate self-corrects once depletion cycles begin.
-        self._last_inventory: dict[str, int] = {}
         self._inner = self._make_inner_policy(
             cover_horizon_ticks=cover_horizon_ticks,
             safety_lead_pct_of_lag=safety_lead_pct_of_lag,
@@ -2467,25 +2462,13 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
             for pid, qty in sup_pending.items():
                 pending_flat[pid] = pending_flat.get(pid, 0) + qty
 
-        # Use runner-injected prev_tick_sales when available (preferred).
-        # The runner tracks exact units sold by each IntermediateNode to
-        # downstream buyers in the previous tick, giving an accurate demand
-        # signal even on delivery ticks (when inventory-delta would be wrong).
-        # Fallback: estimate sales as inventory decrease from previous tick —
-        # conservative (delivery ticks give 0) but self-correcting.
-        prev_tick_sales: dict[str, int] = obs_intermediate.get("prev_tick_sales", {})
-        if prev_tick_sales:
-            sales_approx: dict[str, int] = {
-                pid: prev_tick_sales.get(pid, 0) for pid in inventory
-            }
-        else:
-            # Inventory-delta fallback (used when runner doesn't inject sales).
-            sales_approx = {
-                pid: max(0, self._last_inventory.get(pid, 0) - inventory.get(pid, 0))
-                for pid in inventory
-            }
-        # Snapshot the current inventory for the fallback path in the next call.
-        self._last_inventory = dict(inventory)
+        # ``observed_sales`` is injected by the runner under demand-pull ordering
+        # (ADR 0018) and reflects complete current-tick sales.  Zero is correct
+        # when no downstream buyers transacted this tick (e.g. cold-start).
+        _sales_signal: dict[str, int] = obs_intermediate.get("observed_sales") or {}
+        sales_approx: dict[str, int] = {
+            pid: _sales_signal.get(pid, 0) for pid in inventory
+        }
 
         node_capacity = int(obs_intermediate.get("capacity", 0)) or 10_000
 
@@ -2931,3 +2914,84 @@ class PeriodicReorderPolicy(MultiSupplierTextbookPolicy):
     @property
     def inv_before_settle_log(self) -> dict:
         return self._inner.inv_before_settle_log
+
+
+# ---------------------------------------------------------------------------
+# PriceReplayPolicy — observed-price wrapper for IntermediatePolicy (issue 04)
+# ---------------------------------------------------------------------------
+
+
+class PriceReplayPolicy(IntermediatePolicy):
+    """Opt-in wrapper that replays observed selling prices on top of any inner policy.
+
+    Delegates all ordering decisions to ``inner`` unchanged, then overwrites
+    the ``list_price`` portion of the decision with per-product, per-tick
+    daily price arrays.  Products without a price array keep whatever price
+    ``inner`` chose.  Ordering decisions are bit-identical with and without
+    the wrapper (same seeds, same inner policy).
+
+    The wrapper is tick-indexed from ``obs_intermediate["tick"]``.  It knows
+    nothing about Walmart week numbering — weekly->daily expansion is the M5
+    adapter's responsibility (issue 05).  Prices flow through the normal
+    offer-publication path so buyers see them in the central table.
+
+    Parameters
+    ----------
+    inner:
+        Any ``IntermediatePolicy`` instance.  Its ``decide`` is called first;
+        ``PriceReplayPolicy`` only post-processes the ``list_price`` slice.
+    prices:
+        Per-product per-tick price arrays.  ``prices[pid][tick]`` is the
+        observed selling price at that tick for product ``pid``.
+    n_steps:
+        Total number of simulation ticks.  Each array in ``prices`` must have
+        at least ``n_steps`` elements; validated at construction.
+
+    Raises
+    ------
+    ValueError
+        If any ``prices[pid]`` array is shorter than ``n_steps``.
+    """
+
+    def __init__(
+        self,
+        inner: IntermediatePolicy,
+        prices: Mapping[str, list[float]],
+        n_steps: int,
+    ) -> None:
+        # Inherit the inner policy's seed so the wrapper itself has no
+        # separate RNG; all stochastic decisions remain in inner.
+        super().__init__(policy_seed=getattr(inner, "policy_seed", None))
+        self._inner = inner
+        # Validate lengths eagerly so a short array fails at construction
+        # rather than silently at some mid-run tick.
+        for pid, arr in prices.items():
+            if len(arr) < n_steps:
+                raise ValueError(
+                    f"PriceReplayPolicy: prices[{pid!r}] has {len(arr)} elements "
+                    f"but n_steps={n_steps}; array must be at least n_steps long."
+                )
+        # Snapshot so external mutation after construction has no effect.
+        self._prices: dict[str, list[float]] = {pid: list(arr) for pid, arr in prices.items()}
+        self._n_steps = n_steps
+
+    def decide(
+        self,
+        obs_intermediate: Mapping[str, Any],
+        central_table: Any,
+    ) -> dict[str, Any]:
+        """Delegate to inner, then overwrite list_price for covered products.
+
+        The ``order`` and ``min_order_imposed`` keys are passed through
+        untouched; only ``list_price`` is modified.
+        """
+        action = self._inner.decide(obs_intermediate, central_table)
+        tick: int = int(obs_intermediate.get("tick", 0))
+        # Copy so we don't mutate the inner policy's return dict.
+        list_price = dict(action.get("list_price", {}))
+        for pid, arr in self._prices.items():
+            if tick < len(arr):
+                list_price[pid] = float(arr[tick])
+        action = dict(action)
+        action["list_price"] = list_price
+        return action

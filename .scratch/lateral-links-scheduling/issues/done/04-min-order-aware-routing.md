@@ -1,6 +1,6 @@
 # 04 — Min-order-aware routing
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

@@ -1068,11 +1068,25 @@ def test_periodic_reorder_fires_when_both_conditions_met():
         safety_lead_pct_of_lag=safety_lead / delivery_lag,
         cover_horizon_ticks=cover_horizon,
         unit_cost=10.0,  # must match catalog unit_cost so pilot is reasonably sized
+        delivery_lag=delivery_lag,  # policy delivery_lag must match scenario edge lag
     )
+    # s = (delivery_lag + safety_lead) * demand = (3 + 2) * 5 = 25
+    # S = s + cover_horizon * demand = 25 + 10*5 = 75
+    #
+    # Under demand-pull ordering (ADR 0018) sinks are processed before shops,
+    # so observed_sales is the CURRENT tick's demand (not lagged).  When
+    # inventory hits zero, observed_sales = {} which would zero the rate
+    # estimate on that tick.
+    #
+    # Fix: start with init_stock_pct > 0 (init_qty = 60) so:
+    # - No cold-start pilot fires (position != 0 on tick 1).
+    # - The shop sells steadily from tick 1; rate estimate is 5 by tick 2.
+    # - By review tick 10, inventory = 60 - 5*10 = 10 < s=25 → trigger.
+    # - Reorder replenishes within delivery_lag ticks for a second trigger ~tick 25.
     template = _mini_template(
-        init_stock_pct=0.0,
-        capacity=50_000,
-        balance=500.0,
+        init_stock_pct=0.01,   # init_qty = 6000 * 0.01 = 60 units (just above 2*s)
+        capacity=6_000,
+        balance=10_000.0,      # enough for many 75-unit orders at 10.0/unit
         delivery_lag=delivery_lag,
     )
     n_steps = 60
