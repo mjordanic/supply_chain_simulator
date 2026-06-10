@@ -5,18 +5,20 @@ Run explicitly with::
 
     uv run pytest -m slow tests/rl/test_ppo_smoke.py
 
-Acceptance criteria:
+Acceptance criteria (updated for ADR 0021 variable-K set actor-critic):
   - Trains PPO for ~1000 env steps (small n_steps, single env) on a fixed seed.
   - Loss values remain finite throughout.
   - KL divergence stays below a generous threshold (0.5).
   - Training completes without raising.
   - A TensorBoard event file is written to the configured log dir.
+  - train_ppo returns SetActor / SetCritic (not the legacy flat networks).
+  - Masked padded slots contribute nothing to the loss.
+  - Checkpoint written through checkpoint I/O module; reloadable.
 """
 
 from __future__ import annotations
 
 import os
-import tempfile
 
 import gymnasium as gym
 import numpy as np
@@ -24,9 +26,11 @@ import pytest
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-from src.rl.agents.ppo import Actor, Critic, train_ppo
+from src.rl.agents.ppo import train_ppo
+from src.rl.agents.set_actor_critic import SetActor, SetCritic
 from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
+from src.rl.set_encoder import K_MAX, F
 from src.sim.scenario import load_catalog
 
 
@@ -54,7 +58,7 @@ def _make_catalog(n: int = 20) -> list:
 def _make_env_factory(episode_length: int = 10):
     """Return a zero-arg callable that produces a fresh RLEnv."""
     catalog = _make_catalog(20)
-    config = RLConfig(episode_length=episode_length, K_active=5)
+    config = RLConfig(episode_length=episode_length, K_min=1, K_max_episode=5)
 
     def _factory():
         return RLEnv(catalog=catalog, config=config)
@@ -82,7 +86,8 @@ class TestPPOSmoke:
 
         config = RLConfig(
             episode_length=10,
-            K_active=5,
+            K_min=1,
+            K_max_episode=5,
             n_steps=16,           # small rollout
             n_epochs=2,
             n_minibatches=2,
@@ -114,17 +119,18 @@ class TestPPOSmoke:
         writer.close()
         envs.close()
 
-        assert isinstance(actor, Actor)
-        assert isinstance(critic, Critic)
+        assert isinstance(actor, SetActor), f"Expected SetActor, got {type(actor)}"
+        assert isinstance(critic, SetCritic), f"Expected SetCritic, got {type(critic)}"
 
     def test_losses_are_finite(self, tmp_path):
-        """Actor and critic weights remain finite after training."""
+        """SetActor and SetCritic weights remain finite after training."""
         factory = _make_env_factory(episode_length=10)
         envs = gym.vector.SyncVectorEnv([factory])
 
         config = RLConfig(
             episode_length=10,
-            K_active=5,
+            K_min=1,
+            K_max_episode=5,
             n_steps=16,
             n_epochs=2,
             n_minibatches=2,
@@ -169,7 +175,8 @@ class TestPPOSmoke:
         # Use target_kl early-stop so KL is controlled.
         config = RLConfig(
             episode_length=10,
-            K_active=5,
+            K_min=1,
+            K_max_episode=5,
             n_steps=32,
             n_epochs=4,
             n_minibatches=2,
@@ -203,11 +210,13 @@ class TestPPOSmoke:
 
         # With target_kl=0.5, the update loop early-stops so weights should
         # be finite and the actor distribution should not have exploded.
-        obs_dim = int(np.prod(envs.single_observation_space.shape))
-        dummy_obs = torch.zeros(1, obs_dim, device=device)
-        dist = actor.get_distribution(dummy_obs)
-        # Std should be positive and finite.
-        std = dist.scale
+        dummy_obs = torch.zeros(1, K_MAX * F, device=device)
+        obs_2d = dummy_obs.reshape(1, K_MAX, F)
+        # Give at least one active row so the distribution is valid.
+        obs_2d[0, 0, -1] = 1.0  # ROW_MASK = 15 (last col)
+        mask = obs_2d[:, :, -1]  # (1, K_MAX)
+        dist = actor.get_distribution(obs_2d, mask)
+        std = dist.std  # shape (3,) or broadcastable
         assert torch.all(std > 0), "Actor std collapsed to 0"
         assert torch.all(torch.isfinite(std)), "Actor std is non-finite"
 
@@ -221,7 +230,8 @@ class TestPPOSmoke:
 
         config = RLConfig(
             episode_length=10,
-            K_active=5,
+            K_min=1,
+            K_max_episode=5,
             n_steps=16,
             n_epochs=2,
             n_minibatches=2,
@@ -262,67 +272,146 @@ class TestPPOSmoke:
             f"Directory contents: {os.listdir(str(log_dir))}"
         )
 
-    def test_actor_critic_export(self, tmp_path):
-        """Actor and Critic are importable and instantiate with correct shapes."""
-        from src.rl.encoders import observation_dim, action_dim
-        K = 5
-        obs_dim = observation_dim(K)
-        act_dim = action_dim(K)
+    def test_set_actor_critic_shapes(self, tmp_path):
+        """SetActor and SetCritic instantiate and forward with correct shapes."""
+        actor = SetActor()
+        critic = SetCritic()
 
-        actor = Actor(obs_dim, act_dim)
-        critic = Critic(obs_dim)
+        B = 2
+        dummy_obs = torch.zeros(B, K_MAX, F)
+        # Activate first 3 rows.
+        dummy_obs[:, :3, -1] = 1.0
+        mask = dummy_obs[:, :, -1]  # (B, K_MAX)
 
-        dummy_obs = torch.zeros(2, obs_dim)
-        action, log_prob, entropy = actor.get_action_and_log_prob(dummy_obs)
-        value = critic(dummy_obs)
+        action, log_prob, entropy = actor.get_action_and_log_prob(dummy_obs, mask)
+        value = critic(dummy_obs, mask)
 
-        assert action.shape == (2, act_dim), f"Action shape mismatch: {action.shape}"
-        assert log_prob.shape == (2,), f"Log-prob shape mismatch: {log_prob.shape}"
-        assert entropy.shape == (2,), f"Entropy shape mismatch: {entropy.shape}"
-        assert value.shape == (2, 1), f"Value shape mismatch: {value.shape}"
+        assert action.shape == (B, K_MAX, 3), f"Action shape: {action.shape}"
+        assert log_prob.shape == (B,), f"Log-prob shape: {log_prob.shape}"
+        assert entropy.shape == (B,), f"Entropy shape: {entropy.shape}"
+        assert value.shape == (B, 1), f"Value shape: {value.shape}"
 
-        # Actions should be in (-1, 1) after tanh squash.
-        assert torch.all(action > -1.0) and torch.all(action < 1.0), (
-            "Actor actions not in (-1, 1)"
+        # Active rows should be non-zero; padded rows should be zero.
+        assert torch.all(action[:, :3, :].abs() > 0), "Active rows should have non-zero actions"
+        assert torch.all(action[:, 3:, :] == 0), "Padded rows should have zero actions"
+
+    def test_masked_slots_do_not_affect_loss(self, tmp_path):
+        """Padded rows are masked out: changing their content does not change log_prob."""
+        actor = SetActor()
+        B = 2
+
+        # Build obs with K=3 active rows.
+        obs = torch.zeros(B, K_MAX, F)
+        obs[:, :3, -1] = 1.0  # active mask
+        mask = obs[:, :, -1]
+
+        action, log_prob_orig, _ = actor.get_action_and_log_prob(obs, mask)
+
+        # Scramble the padded rows with random content.
+        obs_scrambled = obs.clone()
+        obs_scrambled[:, 3:, :] = torch.randn(B, K_MAX - 3, F)
+        # Keep mask column = 0 for padded rows.
+        obs_scrambled[:, 3:, -1] = 0.0
+        mask_scrambled = obs_scrambled[:, :, -1]
+
+        _, log_prob_scrambled, _ = actor.get_action_and_log_prob(
+            obs_scrambled, mask_scrambled, action
+        )
+
+        # log_prob should be identical regardless of padded-row content.
+        assert torch.allclose(log_prob_orig, log_prob_scrambled, atol=1e-5), (
+            f"Padded rows affected log_prob: orig={log_prob_orig}, "
+            f"scrambled={log_prob_scrambled}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Stale-checkpoint failure-mode test (issue 05 acceptance criterion)
+# Checkpoint round-trip test (issue 06 acceptance criterion)
 # ---------------------------------------------------------------------------
 
 
-def test_loading_stale_obs_shape_checkpoint_raises_shape_mismatch(tmp_path):
-    """Loading a pre-ADR-0007 checkpoint (N_PER_SKU=13) into a new Actor (N_PER_SKU=14) raises RuntimeError.
+def test_checkpoint_written_via_checkpoint_module(tmp_path):
+    """train driver checkpoint is written through checkpoint.save(); reloadable.
 
-    The error must mention a size mismatch, confirming that stale checkpoints
-    produce a loud, early failure rather than a silent wrong-shape load.
+    Verifies that the checkpoint file is a self-describing bundle (not a bare
+    state-dict) and that checkpoint.load() can reconstruct it without raising.
     """
-    import tempfile
-    from src.rl.encoders import action_dim
+    import src.rl.checkpoint as ckpt_module
+    from src.rl.set_encoder import OBS_LAYOUT_VERSION
+    from src.rl.train import main as train_main
 
-    K = 5
-    # Pre-ADR-0007 obs dim: K * 13 + 4
-    old_obs_dim = K * 13 + 4
-    # New obs dim: K * 14 + 4
-    new_obs_dim = K * 14 + 4
-    act_dim = action_dim(K)
+    argv = [
+        "--total-env-steps", "16",
+        "--n-envs", "1",
+        "--episode-length", "5",
+        "--k-catalog", "20",
+        "--k-min", "1",
+        "--k-max-episode", "5",
+        "--n-steps", "8",
+        "--n-epochs", "1",
+        "--n-minibatches", "2",
+        "--experiment-name", "ckpt_test",
+        "--tb-log-dir", str(tmp_path / "runs"),
+        "--checkpoint-dir", str(tmp_path / "runs"),
+        "--no-eval",
+    ]
+    train_main(argv)
 
-    # Build an Actor with the old (stale) observation shape and save its state_dict.
-    stale_actor = Actor(old_obs_dim, act_dim)
-    stale_ckpt = tmp_path / "stale_actor.pt"
-    torch.save(stale_actor.state_dict(), str(stale_ckpt))
+    # Find the written checkpoint.
+    ckpt_dir = tmp_path / "runs" / "ckpt_test" / "checkpoints"
+    pt_files = sorted(ckpt_dir.glob("*.pt"))
+    assert pt_files, f"No checkpoint files in {ckpt_dir}"
 
-    # Build a new Actor with the widened observation shape.
-    new_actor = Actor(new_obs_dim, act_dim)
+    # checkpoint.load() must succeed (validates layout_version).
+    bundle = ckpt_module.load(pt_files[-1])
+    assert "state_dict" in bundle, "Missing 'state_dict' key in checkpoint bundle"
+    assert "config" in bundle, "Missing 'config' key in checkpoint bundle"
+    assert "layout_version" in bundle, "Missing 'layout_version' key in checkpoint bundle"
+    assert bundle["layout_version"] == OBS_LAYOUT_VERSION
 
-    # Attempt to load the stale state_dict into the new Actor.
-    loaded_state_dict = torch.load(str(stale_ckpt), map_location="cpu")
-    with pytest.raises(RuntimeError) as exc_info:
-        new_actor.load_state_dict(loaded_state_dict)
+    # The loaded state_dict should reconstruct a functional SetActor.
+    new_actor = SetActor()
+    new_actor.load_state_dict(bundle["state_dict"])  # should not raise
+    obs = torch.zeros(1, K_MAX, F)
+    obs[0, 0, -1] = 1.0
+    mask = obs[:, :, -1]
+    action, _, _ = new_actor.get_action_and_log_prob(obs, mask)
+    assert action.shape == (1, K_MAX, 3)
 
-    error_msg = str(exc_info.value)
-    # The error must mention a size/shape mismatch (PyTorch uses "size mismatch").
-    assert "size mismatch" in error_msg.lower() or "shape" in error_msg.lower(), (
-        f"Expected 'size mismatch' or 'shape' in RuntimeError message, got: {error_msg}"
+
+# ---------------------------------------------------------------------------
+# Multi-env (vectorised) smoke (issue 06 acceptance criterion)
+# ---------------------------------------------------------------------------
+
+
+def test_train_ppo_with_multiple_envs(tmp_path):
+    """Training with n_envs > 1 completes without raising (vectorised setup)."""
+    catalog = _make_catalog(20)
+    n_envs = 3
+    config = RLConfig(
+        episode_length=5,
+        K_min=1,
+        K_max_episode=5,
+        K_catalog=20,
+        n_steps=8,
+        n_epochs=1,
+        n_minibatches=2,
+        n_envs=n_envs,
+        total_env_steps=48,   # 2 updates × 8 steps × 3 envs
+        tb_log_dir=str(tmp_path / "runs"),
+        experiment_name="multi_env",
     )
+
+    def _factory():
+        return RLEnv(catalog=catalog, config=config)
+
+    envs = gym.vector.SyncVectorEnv([_factory for _ in range(n_envs)])
+    writer = SummaryWriter(log_dir=str(tmp_path / "runs" / "multi_env"))
+    device = torch.device("cpu")
+
+    actor, critic = train_ppo(envs, config, writer, eval_fn=None, device=device, seed=1)
+    writer.close()
+    envs.close()
+
+    assert isinstance(actor, SetActor)
+    assert isinstance(critic, SetCritic)

@@ -5,7 +5,8 @@ Acceptance criteria verified here:
     short --total-env-steps run.
   - A SyncVectorEnv of ``config.n_envs`` RLEnv instances is constructed.
   - A TensorBoard event file is written under the configured log dir.
-  - A checkpoint is written to ``runs/<experiment_name>/checkpoints/``.
+  - A checkpoint is written to ``runs/<experiment_name>/checkpoints/``
+    as a self-describing bundle (checkpoint.save format, not bare state-dict).
   - CRN eval is wired and invoked at the configured cadence.
   - ``uv run pytest tests/sim/`` continues to pass (verified separately).
 
@@ -25,8 +26,10 @@ import pytest
 import torch
 import gymnasium as gym
 
+from src.rl.agents.set_actor_critic import SetActor
 from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
+from src.rl.set_encoder import K_MAX, F
 from src.rl.train import (
     _args_to_config,
     _checkpoint_dir,
@@ -46,7 +49,8 @@ def _tiny_config(tmp_path: Path, *, n_envs: int = 2, total_env_steps: int = 256)
     """Return an RLConfig sized for a fast end-to-end smoke run."""
     return RLConfig(
         episode_length=10,
-        K_active=5,
+        K_min=1,
+        K_max_episode=5,
         K_catalog=20,
         n_envs=n_envs,
         total_env_steps=total_env_steps,
@@ -68,6 +72,8 @@ def _tiny_argv(tmp_path: Path, **overrides) -> list[str]:
         "--n-envs", "2",
         "--episode-length", "10",
         "--k-catalog", "20",
+        "--k-min", "1",
+        "--k-max-episode", "5",
         "--n-steps", "16",
         "--n-epochs", "2",
         "--n-minibatches", "2",
@@ -97,6 +103,15 @@ class TestArgParsing:
         assert args.experiment_name == "rl_ppo"
         assert args.seed == 0
 
+    def test_parse_k_range(self):
+        """K-range args (--k-min, --k-max-episode) are reflected in parsed namespace."""
+        args = _parse_args([
+            "--k-min", "3",
+            "--k-max-episode", "15",
+        ])
+        assert args.K_min == 3
+        assert args.K_max_episode == 15
+
     def test_parse_overrides(self):
         """Custom args are reflected in parsed namespace."""
         args = _parse_args([
@@ -119,6 +134,8 @@ class TestArgParsing:
             "--seed", "7",
             "--lr", "1e-3",
             "--episode-length", "30",
+            "--k-min", "2",
+            "--k-max-episode", "10",
         ])
         config = _args_to_config(args)
         assert config.total_env_steps == 10000
@@ -126,11 +143,19 @@ class TestArgParsing:
         assert config.experiment_name == "exp"
         assert config.lr == pytest.approx(1e-3)
         assert config.episode_length == 30
+        assert config.K_min == 2
+        assert config.K_max_episode == 10
 
     def test_no_eval_flag_sets_attribute(self):
         """--no-eval flag sets args.no_eval to True."""
         args = _parse_args(["--no-eval"])
         assert args.no_eval is True
+
+    def test_arbiter_mode_arg(self):
+        """--arbiter-mode is parsed and mapped to config."""
+        args = _parse_args(["--arbiter-mode", "greedy"])
+        config = _args_to_config(args)
+        assert config.arbiter_mode == "greedy"
 
 
 # ---------------------------------------------------------------------------
@@ -139,34 +164,36 @@ class TestArgParsing:
 
 
 class TestCheckpointHelpers:
-    def test_save_checkpoint_creates_file(self, tmp_path):
-        """_save_checkpoint writes a .pt file that can be loaded."""
-        from src.rl.agents.ppo import Actor
-        from src.rl.encoders import observation_dim, action_dim
+    def test_save_checkpoint_creates_self_describing_bundle(self, tmp_path):
+        """_save_checkpoint writes a bundle loadable via checkpoint.load()."""
+        import src.rl.checkpoint as ckpt_module
+        from src.rl.set_encoder import OBS_LAYOUT_VERSION
 
         config = RLConfig(
             checkpoint_dir=str(tmp_path),
             experiment_name="ckpt_test",
-            K_active=5,
+            K_min=1,
+            K_max_episode=5,
         )
-        obs_d = observation_dim(config.K_active)
-        act_d = action_dim(config.K_active)
-        actor = Actor(obs_d, act_d)
-
+        actor = SetActor()
         path = _save_checkpoint(actor, global_step=1000, config=config)
 
         assert path.exists(), f"Checkpoint not found at {path}"
-        # Verify we can reload the state dict.
-        loaded = torch.load(path, map_location="cpu")
-        assert isinstance(loaded, dict)
-        assert "net.0.weight" in loaded
+
+        # Must be loadable via checkpoint.load() (not just torch.load).
+        bundle = ckpt_module.load(path)
+        assert "state_dict" in bundle
+        assert "config" in bundle
+        assert "layout_version" in bundle
+        assert bundle["layout_version"] == OBS_LAYOUT_VERSION
 
     def test_checkpoint_dir_structure(self, tmp_path):
         """Checkpoint files land under runs/<experiment_name>/checkpoints/."""
         config = RLConfig(
             checkpoint_dir=str(tmp_path),
             experiment_name="my_exp",
-            K_active=5,
+            K_min=1,
+            K_max_episode=5,
         )
         expected_dir = tmp_path / "my_exp" / "checkpoints"
         computed = _checkpoint_dir(config)
@@ -194,7 +221,7 @@ class TestVecEnvConstruction:
             for i in range(20)
         ]
         catalog = load_catalog(items)
-        config = RLConfig(episode_length=5, K_active=5, K_catalog=20)
+        config = RLConfig(episode_length=5, K_min=1, K_max_episode=5, K_catalog=20)
 
         def _factory():
             return RLEnv(catalog=catalog, config=config)
@@ -207,10 +234,7 @@ class TestVecEnvConstruction:
 
     def test_vec_env_obs_shape(self):
         """SyncVectorEnv observations have shape (n_envs, K_MAX * F)."""
-        from src.rl.set_encoder import K_MAX, F
-
         n_envs = 2
-        K = 5
         items = [
             {
                 "name": f"P{i}",
@@ -223,7 +247,7 @@ class TestVecEnvConstruction:
             for i in range(20)
         ]
         catalog = load_catalog(items)
-        config = RLConfig(episode_length=5, K_active=K, K_catalog=20)
+        config = RLConfig(episode_length=5, K_min=1, K_max_episode=5, K_catalog=20)
 
         def _factory():
             return RLEnv(catalog=catalog, config=config)
@@ -273,10 +297,10 @@ class TestDriverEndToEnd:
             f"No .pt files in {ckpt_dir}. Contents: {list(ckpt_dir.iterdir())}"
         )
 
-    def test_final_checkpoint_loadable(self, tmp_path):
-        """The final checkpoint can be loaded and its keys match Actor's state dict."""
-        from src.rl.agents.ppo import Actor
-        from src.rl.set_encoder import K_MAX, F
+    def test_final_checkpoint_is_self_describing_bundle(self, tmp_path):
+        """The final checkpoint is a self-describing bundle loadable via checkpoint.load()."""
+        import src.rl.checkpoint as ckpt_module
+        from src.rl.set_encoder import OBS_LAYOUT_VERSION
 
         argv = _tiny_argv(tmp_path)
         main(argv)
@@ -285,11 +309,21 @@ class TestDriverEndToEnd:
         pt_files = sorted(ckpt_dir.glob("*.pt"))
         assert pt_files, "No checkpoint files found"
 
-        # Load the most recent checkpoint.
-        loaded = torch.load(pt_files[-1], map_location="cpu")
-        # New env obs/act spaces use K_MAX * F and K_MAX * 3 (ADR 0021).
-        actor = Actor(K_MAX * F, K_MAX * 3)
-        actor.load_state_dict(loaded)  # should not raise
+        # Load and validate through the checkpoint module.
+        bundle = ckpt_module.load(pt_files[-1])
+        assert "state_dict" in bundle
+        assert "config" in bundle
+        assert "layout_version" in bundle
+        assert bundle["layout_version"] == OBS_LAYOUT_VERSION
+
+        # Reconstruct a functional SetActor.
+        new_actor = SetActor()
+        new_actor.load_state_dict(bundle["state_dict"])  # should not raise
+        obs = torch.zeros(1, K_MAX, F)
+        obs[0, 0, -1] = 1.0  # one active product row
+        mask = obs[:, :, -1]
+        action, _, _ = new_actor.get_action_and_log_prob(obs, mask)
+        assert action.shape == (1, K_MAX, 3)
 
     def test_eval_triggered_during_training(self, tmp_path):
         """Eval runs are triggered and their metrics appear in the TensorBoard dir."""
@@ -299,6 +333,8 @@ class TestDriverEndToEnd:
             "--n-envs", "2",
             "--episode-length", "10",
             "--k-catalog", "20",
+            "--k-min", "1",
+            "--k-max-episode", "5",
             "--n-steps", "16",
             "--n-epochs", "2",
             "--n-minibatches", "2",
@@ -327,7 +363,6 @@ class TestDriverEndToEnd:
         This is a lightweight proxy: we verify that the sim package imports
         cleanly alongside the RL package (the full pytest run covers tests/sim/).
         """
-        import importlib
         import src.sim.runner  # noqa: F401 — verifies no import-time breakage
         import src.rl.train  # noqa: F401
         # If either import raises, this test fails.

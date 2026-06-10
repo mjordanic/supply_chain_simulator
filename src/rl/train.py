@@ -29,7 +29,8 @@ Architecture
    configured cadence.
 5. Call ``train_ppo`` — it owns all rollout collection, GAE, and
    minibatch updates.
-6. On return, save the final Actor / Critic checkpoint.
+6. On return, save the final SetActor checkpoint through the checkpoint
+   I/O module (self-describing bundle with layout-version validation).
 """
 
 from __future__ import annotations
@@ -45,7 +46,9 @@ import torch
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
 
-from src.rl.agents.ppo import Actor, train_ppo
+from src.rl.agents.ppo import train_ppo
+from src.rl.agents.set_actor_critic import SetActor
+import src.rl.checkpoint as ckpt_module
 from src.rl.configs.default import RLConfig
 from src.rl.env import RLEnv
 from src.rl.eval import build_eval_seeds, evaluate
@@ -97,15 +100,33 @@ def _checkpoint_dir(config: RLConfig) -> Path:
 
 
 def _save_checkpoint(
-    actor: Actor,
+    actor: SetActor,
     global_step: int,
     config: RLConfig,
 ) -> Path:
-    """Save ``actor`` state dict; return the path written."""
+    """Save ``actor`` as a self-describing checkpoint bundle; return the path written."""
     ckpt_dir = _checkpoint_dir(config)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
     path = ckpt_dir / f"actor_step{global_step:010d}.pt"
-    torch.save(actor.state_dict(), path)
+    config_snapshot = {
+        "K_min": config.K_min,
+        "K_max_episode": config.K_max_episode,
+        "K_catalog": config.K_catalog,
+        "arbiter_mode": config.arbiter_mode,
+        "cash_budget_fraction": config.cash_budget_fraction,
+        "episode_length": config.episode_length,
+        "lr": config.lr,
+        "n_steps": config.n_steps,
+        "n_epochs": config.n_epochs,
+        "n_minibatches": config.n_minibatches,
+        "clip_coef": config.clip_coef,
+        "ent_coef": config.ent_coef,
+        "vf_coef": config.vf_coef,
+        "gae_lambda": config.gae_lambda,
+        "gamma": config.gamma,
+        "total_env_steps": config.total_env_steps,
+        "experiment_name": config.experiment_name,
+    }
+    ckpt_module.save(actor.state_dict(), config_snapshot, path)
     return path
 
 
@@ -123,15 +144,9 @@ def _make_eval_fn(
     market_params: MarketParams | None = None,
     disruption_params: DisruptionParams | None = None,
 ) -> Any:
-    """Return a closure ``(actor) → dict[str, float]`` usable as ``eval_fn``.
+    """Return a closure ``(actor) → dict[str, float]`` usable as ``eval_fn``."""
+    from src.rl.set_encoder import K_MAX, F, ROW_MASK
 
-    The closure:
-    1. Builds the frozen eval specs once on first call.
-    2. Wraps the actor in a numpy-friendly policy callable.
-    3. Delegates to ``evaluate()`` from ``src.rl.eval``.
-    4. Saves a checkpoint each time it is invoked.
-    """
-    # Build eval specs once — they are deterministic so we cache them.
     eval_specs = build_eval_seeds(
         catalog,
         config,
@@ -139,16 +154,18 @@ def _make_eval_fn(
         disruption_params=disruption_params,
     )
 
-    checkpoint_counter: list[int] = [0]  # mutable cell for the closure
+    checkpoint_counter: list[int] = [0]
 
-    def _eval_fn(actor: Actor) -> dict[str, float]:
+    def _eval_fn(actor: SetActor) -> dict[str, float]:
         actor.eval()
 
         def _rl_policy(obs_np: np.ndarray) -> np.ndarray:
             obs_t = torch.tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
+            obs_2d = obs_t.reshape(1, K_MAX, F)
+            mask = obs_2d[:, :, ROW_MASK]
             with torch.no_grad():
-                action, _, _ = actor.get_action_and_log_prob(obs_t)
-            return action.squeeze(0).cpu().numpy()
+                action_2d, _, _ = actor.get_action_and_log_prob(obs_2d, mask)
+            return action_2d.reshape(K_MAX * 3).cpu().numpy()
 
         def _baseline_factory():
             return OrderUpToPolicy()
@@ -160,7 +177,6 @@ def _make_eval_fn(
             config=config,
         )
 
-        # Save checkpoint at each eval.
         step = checkpoint_counter[0]
         _save_checkpoint(actor, step, config)
         checkpoint_counter[0] += 1
@@ -216,10 +232,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to a setup directory (catalog.csv + setup.yaml).",
     )
 
-    # Episode / env knobs.
+    # Episode / env knobs (variable-K range replaces fixed --k-active).
     parser.add_argument("--episode-length", type=int, default=180)
-    parser.add_argument("--k-active", type=int, default=5, dest="K_active")
+    parser.add_argument(
+        "--k-min", type=int, default=1, dest="K_min",
+        help="Minimum K sampled per episode (inclusive).",
+    )
+    parser.add_argument(
+        "--k-max-episode", type=int, default=20, dest="K_max_episode",
+        help="Maximum K sampled per episode (inclusive).",
+    )
     parser.add_argument("--k-catalog", type=int, default=100, dest="K_catalog")
+    parser.add_argument(
+        "--arbiter-mode", type=str, default="proportional",
+        choices=["proportional", "greedy"],
+        help="Arbiter allocation mode.",
+    )
+    parser.add_argument(
+        "--cash-budget-fraction", type=float, default=1.0,
+        help="Cash budget = node.cash * this fraction.",
+    )
     parser.add_argument("--delivery-lag", type=int, default=3)
     parser.add_argument("--holding-rate", type=float, default=0.01)
     parser.add_argument("--order-fee", type=float, default=50.0)
@@ -253,8 +285,11 @@ def _args_to_config(args: argparse.Namespace) -> RLConfig:
     """Map parsed args onto an ``RLConfig`` dataclass."""
     return RLConfig(
         episode_length=args.episode_length,
-        K_active=args.K_active,
+        K_min=args.K_min,
+        K_max_episode=args.K_max_episode,
         K_catalog=args.K_catalog,
+        arbiter_mode=args.arbiter_mode,
+        cash_budget_fraction=args.cash_budget_fraction,
         delivery_lag=args.delivery_lag,
         holding_rate=args.holding_rate,
         order_fee=args.order_fee,
@@ -355,6 +390,7 @@ def main(argv: list[str] | None = None) -> None:
     # ------------------------------------------------------------------
     print(
         f"[train] Starting PPO: total_env_steps={config.total_env_steps}, "
+        f"K_min={config.K_min}, K_max_episode={config.K_max_episode}, "
         f"seed={args.seed}",
         file=sys.stderr,
     )
@@ -368,7 +404,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 6. Save final checkpoint.
+    # 6. Save final checkpoint (self-describing bundle via checkpoint module).
     # ------------------------------------------------------------------
     final_path = _save_checkpoint(actor, config.total_env_steps, config)
     print(f"[train] Final checkpoint saved: {final_path}", file=sys.stderr)

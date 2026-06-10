@@ -3,15 +3,20 @@
 Adapted from CleanRL's ``ppo_continuous_action.py`` with the following
 changes:
 
-- Actor and Critic are separate small MLPs (64-64 hidden, tanh).  Actor
-  outputs a ``Normal`` distribution over actions; samples are squashed to
-  ``[-1, 1]`` via tanh at collection time.
+- ``SetActor`` and ``SetCritic`` (ADR 0021, variable-K shared-weight policy)
+  replace the legacy flat MLP networks.  The legacy ``Actor`` and ``Critic``
+  classes are kept for backward compatibility with existing tests and
+  checkpoints that reference them, but they are no longer used in the
+  training loop.
+- ``RolloutBuffer`` stores flat ``(K_MAX * F,)`` observations and
+  ``(K_MAX * 3,)`` actions as before; the product mask is extracted from the
+  observation at column ``ROW_MASK`` when needed by the actor/critic.
+- ``train_ppo`` instantiates ``SetActor`` / ``SetCritic`` and passes 2-D
+  reshaped obs and the extracted mask at each actor/critic call.
+- Checkpoints are saved through ``src.rl.checkpoint.save`` (self-describing
+  bundle with layout-version validation).
 - All hyperparameters are read from ``RLConfig`` — no magic numbers buried
   inline.
-- The training entry-point ``train_ppo(envs, config, writer, eval_fn)``
-  owns the rollout loop and update loop.  The ``train.py`` driver (issue 08)
-  constructs ``envs``, ``writer``, and ``eval_fn`` and calls into this
-  function.
 - TensorBoard scalars logged every update:
     train/episodic_return, train/episodic_length,
     losses/value_loss, losses/policy_loss, losses/entropy,
@@ -20,7 +25,7 @@ changes:
 
 Architecture
 ------------
-The Actor / Critic boundary is the *only* place a future heavier model
+The SetActor / SetCritic boundary is the *only* place a future heavier model
 (transformer, attention-over-SKUs) needs to change.  Everything around it
 (rollout collection, GAE, update loop, TensorBoard logging) stays the same.
 """
@@ -38,10 +43,12 @@ from torch.distributions import Normal
 from torch.utils.tensorboard import SummaryWriter
 
 from src.rl.configs.default import RLConfig
+from src.rl.agents.set_actor_critic import SetActor, SetCritic
+from src.rl.set_encoder import K_MAX, F, ROW_MASK
 
 
 # ---------------------------------------------------------------------------
-# Network definitions
+# Legacy network definitions (kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
 
@@ -53,19 +60,9 @@ def _layer_init(layer: nn.Linear, std: float = np.sqrt(2), bias_const: float = 0
 
 
 class Actor(nn.Module):
-    """MLP actor that parameterises a diagonal-Gaussian action distribution.
+    """Legacy MLP actor (flat obs/action).  Not used by train_ppo any more.
 
-    The output mean is passed through tanh to keep the mean in ``(-1, 1)``.
-    The log-std is a learned parameter vector (independent of the obs).
-
-    Parameters
-    ----------
-    obs_dim:
-        Dimensionality of the flat observation vector.
-    act_dim:
-        Dimensionality of the continuous action vector.
-    hidden_size:
-        Width of each hidden layer (default 64).
+    Retained so existing tests and stale-checkpoint tests continue to compile.
     """
 
     def __init__(self, obs_dim: int, act_dim: int, hidden_size: int = 64) -> None:
@@ -77,11 +74,9 @@ class Actor(nn.Module):
             nn.Tanh(),
             _layer_init(nn.Linear(hidden_size, act_dim), std=0.01),
         )
-        # Log-std as a stand-alone learnable parameter (scalar-broadcast per dim).
         self.log_std = nn.Parameter(torch.zeros(act_dim))
 
     def get_distribution(self, obs: torch.Tensor) -> Normal:
-        """Return the action distribution conditioned on ``obs``."""
         mean = torch.tanh(self.net(obs))
         std = self.log_std.exp().expand_as(mean)
         return Normal(mean, std)
@@ -89,31 +84,11 @@ class Actor(nn.Module):
     def get_action_and_log_prob(
         self, obs: torch.Tensor, action: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Sample an action (or evaluate a given one) and return log-prob + entropy.
-
-        Parameters
-        ----------
-        obs:
-            Observation batch, shape ``(B, obs_dim)``.
-        action:
-            If given, evaluate log-prob for this action.  Otherwise, sample.
-
-        Returns
-        -------
-        action:
-            Action batch, shape ``(B, act_dim)``, in ``(-1, 1)`` via tanh.
-        log_prob:
-            Per-sample sum of log-probs, shape ``(B,)``.
-        entropy:
-            Per-sample sum of entropies, shape ``(B,)``.
-        """
         dist = self.get_distribution(obs)
         if action is None:
             raw = dist.rsample()
             action = torch.tanh(raw)
         else:
-            # Invert tanh to recover the pre-squash sample for log-prob.
-            # Clamp to avoid log(0) from atanh at ±1.
             raw = torch.atanh(action.clamp(-1 + 1e-6, 1 - 1e-6))
         log_prob = dist.log_prob(raw).sum(dim=-1)
         entropy = dist.entropy().sum(dim=-1)
@@ -121,15 +96,7 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    """MLP critic that estimates the state-value function V(s).
-
-    Parameters
-    ----------
-    obs_dim:
-        Dimensionality of the flat observation vector.
-    hidden_size:
-        Width of each hidden layer (default 64).
-    """
+    """Legacy MLP critic (flat obs).  Not used by train_ppo any more."""
 
     def __init__(self, obs_dim: int, hidden_size: int = 64) -> None:
         super().__init__()
@@ -142,7 +109,6 @@ class Critic(nn.Module):
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        """Return value estimates, shape ``(B, 1)``."""
         return self.net(obs)
 
 
@@ -165,9 +131,9 @@ class RolloutBuffer:
     n_envs:
         Number of parallel envs.
     obs_dim:
-        Flat observation size.
+        Flat observation size (``K_MAX * F``).
     act_dim:
-        Flat action size.
+        Flat action size (``K_MAX * 3``).
     device:
         PyTorch device for all stored tensors.
     """
@@ -233,7 +199,7 @@ class RolloutBuffer:
         self,
         next_obs: torch.Tensor,
         next_done: torch.Tensor,
-        critic: Critic,
+        critic: SetCritic,
         gamma: float,
         gae_lambda: float,
     ) -> None:
@@ -242,7 +208,9 @@ class RolloutBuffer:
         Populates ``self.advantages`` and ``self.returns``.
         """
         with torch.no_grad():
-            next_value = critic(next_obs).squeeze(-1)  # (n_envs,)
+            next_obs_2d = next_obs.reshape(-1, K_MAX, F)
+            next_mask = next_obs_2d[:, :, ROW_MASK]
+            next_value = critic(next_obs_2d, next_mask).squeeze(-1)  # (n_envs,)
             last_gae = torch.zeros(self.n_envs, device=self.device)
             for t in reversed(range(self.n_steps)):
                 if t == self.n_steps - 1:
@@ -290,17 +258,25 @@ def train_ppo(
     envs,
     config: RLConfig,
     writer: SummaryWriter,
-    eval_fn: Callable[[Actor], dict[str, float]] | None = None,
+    eval_fn: Callable[[SetActor], dict[str, float]] | None = None,
     *,
     device: torch.device | None = None,
     seed: int = 0,
-) -> tuple[Actor, Critic]:
-    """Run a full PPO training loop.
+) -> tuple[SetActor, SetCritic]:
+    """Run a full PPO training loop using the masked set actor-critic.
 
-    The training driver (``train.py``, issue 08) constructs ``envs``,
-    ``writer``, and ``eval_fn`` and then calls this function.  This
-    function owns the rollout loop, GAE computation, and minibatch update
-    loop.
+    The training driver (``train.py``) constructs ``envs``, ``writer``, and
+    ``eval_fn`` and then calls this function.  This function owns the rollout
+    loop, GAE computation, and minibatch update loop.
+
+    Observations from the env are flat ``(K_MAX * F,)`` vectors.  They are
+    reshaped to ``(B, K_MAX, F)`` before each actor/critic call; the product
+    mask is extracted from column ``ROW_MASK`` of the reshaped tensor.  Actions
+    are ``(B, K_MAX, 3)`` from the actor, flattened back to ``(B, K_MAX * 3)``
+    for the env.
+
+    Checkpoints are saved through ``src.rl.checkpoint.save`` (self-describing
+    bundle with layout-version validation) rather than bare ``torch.save``.
 
     Parameters
     ----------
@@ -311,12 +287,9 @@ def train_ppo(
         ``RLConfig`` instance carrying all hyperparameters.
     writer:
         A ``torch.utils.tensorboard.SummaryWriter`` open for writing.
-        Scalars are flushed every update step.
     eval_fn:
-        Optional callable ``(actor: Actor) → dict[str, float]``.  Called
-        every ``config.eval_cadence_env_steps`` global env steps; the
-        returned dict is logged under ``eval/*`` keys.  When ``None``,
-        no eval runs.
+        Optional callable ``(actor: SetActor) → dict[str, float]``.  Called
+        every ``config.eval_cadence_env_steps`` global env steps.
     device:
         Torch device.  When ``None``, uses CUDA if available, else CPU.
     seed:
@@ -325,7 +298,7 @@ def train_ppo(
     Returns
     -------
     actor, critic
-        Trained network objects (on ``device``).
+        Trained ``SetActor`` and ``SetCritic`` objects (on ``device``).
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -334,20 +307,20 @@ def train_ppo(
     np.random.seed(seed)
 
     # Derive shapes from the vec-env.
-    obs_dim: int = int(np.prod(envs.single_observation_space.shape))
-    act_dim: int = int(np.prod(envs.single_action_space.shape))
+    obs_dim: int = int(np.prod(envs.single_observation_space.shape))  # K_MAX * F
+    act_dim: int = int(np.prod(envs.single_action_space.shape))       # K_MAX * 3
     n_envs: int = envs.num_envs
 
-    # Networks.
-    actor = Actor(obs_dim, act_dim).to(device)
-    critic = Critic(obs_dim).to(device)
+    # Networks (set actor-critic, ADR 0021).
+    actor = SetActor().to(device)
+    critic = SetCritic().to(device)
     optimizer = optim.Adam(
         list(actor.parameters()) + list(critic.parameters()),
         lr=config.lr,
         eps=1e-5,
     )
 
-    # Rollout buffer.
+    # Rollout buffer (stores flat obs/actions; mask extracted on the fly).
     buffer = RolloutBuffer(config.n_steps, n_envs, obs_dim, act_dim, device)
 
     # Derived training constants.
@@ -358,8 +331,6 @@ def train_ppo(
     # Episode-return tracking for TensorBoard.
     ep_return_buf: list[float] = []
     ep_length_buf: list[int] = []
-    ep_return_running: list[float] = []  # per-env running accum
-    ep_length_running: list[int] = []
 
     # Initialise vectorised env.
     obs_np, _ = envs.reset(seed=seed)
@@ -389,10 +360,18 @@ def train_ppo(
             global_step += n_envs
 
             with torch.no_grad():
-                action, log_prob, _ = actor.get_action_and_log_prob(obs)
-                value = critic(obs).squeeze(-1)
+                # Reshape flat obs → (n_envs, K_MAX, F); extract product mask.
+                obs_2d = obs.reshape(n_envs, K_MAX, F)
+                prod_mask = obs_2d[:, :, ROW_MASK]  # (n_envs, K_MAX)
 
-            action_np = action.cpu().numpy()
+                # SetActor returns action (n_envs, K_MAX, 3), log_prob (n_envs,).
+                action_2d, log_prob, _ = actor.get_action_and_log_prob(obs_2d, prod_mask)
+                action_flat = action_2d.reshape(n_envs, act_dim)
+
+                # SetCritic returns (n_envs, 1).
+                value = critic(obs_2d, prod_mask).squeeze(-1)  # (n_envs,)
+
+            action_np = action_flat.cpu().numpy()
             obs_next_np, reward_np, terminated_np, truncated_np, infos = envs.step(action_np)
             done_next_np = np.logical_or(terminated_np, truncated_np)
 
@@ -400,19 +379,11 @@ def train_ppo(
             done_next = torch.tensor(done_next_np, dtype=torch.float32, device=device)
 
             # Under Gymnasium's AutoresetMode.NEXT_STEP, the transition that
-            # immediately follows a done step is a dummy autoreset step (the
-            # underlying env was reset, not stepped): its reward/obs/done are
-            # placeholders, not a real environment transition. ``done`` still
-            # holds the *previous* step's flags here, so it flags exactly those
-            # dummy steps. We pass ``mask = 1 - done`` (0 for dummy, 1 for real)
-            # so dummy steps are excluded from the PPO loss and advantage
-            # normalisation, and we reuse the same signal to skip them in
-            # episode accounting (otherwise every episode after the first is
-            # counted one tick too long — length 181 instead of 180).
+            # immediately follows a done step is a dummy autoreset step.
             autoreset_np = done.cpu().numpy().astype(bool)
-            mask = 1.0 - done
+            step_mask = 1.0 - done  # 0.0 for dummy autoreset steps
 
-            buffer.store(obs, action, log_prob, reward, done, value, mask)
+            buffer.store(obs, action_flat, log_prob, reward, done, value, step_mask)
 
             obs = torch.tensor(obs_next_np, dtype=torch.float32, device=device)
             done = done_next
@@ -438,20 +409,18 @@ def train_ppo(
         # PPO update.
         # ----------------------------------------------------------------
         b_obs, b_actions, b_log_probs_old, b_advantages, b_returns, b_masks = buffer.get_flat()
+        # b_obs: (batch_size, K_MAX * F)
+        # b_actions: (batch_size, K_MAX * 3)
 
-        # Drop Gymnasium NEXT_STEP dummy autoreset steps (mask == 0) from the
-        # update: they carry placeholder reward/obs and must not bias advantage
-        # normalisation or the policy/value loss.
+        # Drop dummy autoreset steps from the update.
         real_indices = np.flatnonzero(b_masks.cpu().numpy() > 0.5)
 
-        # Normalise advantages over the real transitions only. Clone first so
-        # the in-place write does not mutate the buffer's view.
+        # Normalise advantages over real transitions only.
         b_advantages = b_advantages.clone()
         b_advantages[real_indices] = (
             b_advantages[real_indices] - b_advantages[real_indices].mean()
         ) / (b_advantages[real_indices].std() + 1e-8)
 
-        # Indices for minibatch permutation (real steps only).
         indices = real_indices
 
         # Accumulate update statistics for TensorBoard.
@@ -466,23 +435,28 @@ def train_ppo(
             if kl_early_stop:
                 break
             np.random.shuffle(indices)
-            # ``indices`` holds only real-step rows (dummy autoreset steps
-            # dropped), so iterate over its actual length rather than the full
-            # batch_size.
             for start in range(0, len(indices), minibatch_size):
                 end = start + minibatch_size
                 mb_idx = indices[start:end]
                 if mb_idx.size == 0:
                     continue
 
-                mb_obs = b_obs[mb_idx]
-                mb_actions = b_actions[mb_idx]
+                mb_obs_flat = b_obs[mb_idx]           # (mb, K_MAX * F)
+                mb_actions_flat = b_actions[mb_idx]   # (mb, K_MAX * 3)
                 mb_log_probs_old = b_log_probs_old[mb_idx]
                 mb_advantages = b_advantages[mb_idx]
                 mb_returns = b_returns[mb_idx]
 
-                _, new_log_prob, entropy = actor.get_action_and_log_prob(mb_obs, mb_actions)
-                new_value = critic(mb_obs).squeeze(-1)
+                # Reshape for set actor/critic.
+                mb = mb_obs_flat.shape[0]
+                mb_obs_2d = mb_obs_flat.reshape(mb, K_MAX, F)
+                mb_mask = mb_obs_2d[:, :, ROW_MASK]           # (mb, K_MAX)
+                mb_actions_2d = mb_actions_flat.reshape(mb, K_MAX, 3)
+
+                _, new_log_prob, entropy = actor.get_action_and_log_prob(
+                    mb_obs_2d, mb_mask, mb_actions_2d
+                )
+                new_value = critic(mb_obs_2d, mb_mask).squeeze(-1)  # (mb,)
 
                 log_ratio = new_log_prob - mb_log_probs_old
                 ratio = log_ratio.exp()
