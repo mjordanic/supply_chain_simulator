@@ -488,6 +488,13 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                                 "qty_rejected": result.qty_rejected,
                                 "reason": result.reason,
                             })
+                        # Accumulate sales for the supplier (if intermediate), mirroring
+                        # the sink branch above — ADR 0018 requires observed_sales to
+                        # reflect complete current-tick demand, including purchases by
+                        # downstream intermediates (e.g. shops buying from a DC).
+                        if isinstance(supplier, IntermediateNode) and result.qty_filled > 0:
+                            sup_sales = sim._tick_sales.setdefault(supplier_id, {})
+                            sup_sales[pid] = sup_sales.get(pid, 0) + result.qty_filled
 
 
 def _produce_factories(sim: "Simulation", current_tick: int) -> None:

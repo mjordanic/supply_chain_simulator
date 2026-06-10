@@ -1,6 +1,6 @@
 # 01: Flat-world authoring helper + identity gate
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

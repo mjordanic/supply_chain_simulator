@@ -60,7 +60,8 @@
       "Bash(awk '/^FILE: notebooks\\\\/\\(01|04|05|05a|06|06a\\)/{f=$2} {print f\": \"$0}' /tmp/all_nbs.txt)",
       "Bash(awk '/^FILE: notebooks\\\\/05a/{p=1} /^FILE: notebooks\\\\/06-rl/{p=0} p' /tmp/all_nbs.txt)",
       "Bash(awk '/^FILE: notebooks\\\\/06-rl/{p=1} /^FILE: notebooks\\\\/06a/{p=0} p' /tmp/all_nbs.txt)",
-      "Bash(awk '/^FILE: notebooks\\\\/06a/{p=1} p' /tmp/all_nbs.txt)"
+      "Bash(awk '/^FILE: notebooks\\\\/06a/{p=1} p' /tmp/all_nbs.txt)",
+      "Bash(echo \"exit: $?\")"
     ],
     "deny": [
       "Bash(git push*)",

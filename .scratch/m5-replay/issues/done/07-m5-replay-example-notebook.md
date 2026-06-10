@@ -1,6 +1,6 @@
 # 07: Example notebook — multi-echelon CA replay
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

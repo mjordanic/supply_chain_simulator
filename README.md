@@ -6,7 +6,9 @@ inventory and route orders across multiple upstream suppliers, and demand sinks 
 new cash in the system — all sharing one stochastic world (regional supply/demand, seasonal cycles,
 and disruption events). A live central offer book lets buyers route against real-time supplier
 availability; orders settle through a first-come-first-served allocator and arrive after a physical
-lead time. Each node runs its own decision policy.
+lead time. Each node runs its own decision policy. Demand can be drawn from stochastic
+distributions or replayed from real-world sales data (e.g. the Kaggle M5 / Walmart dataset — see
+[`src/sim/README.md`](src/sim/README.md#real-data-demand-replay-m5)).
 
 The simulator ships with a family of textbook inventory policies — `OrderUpToPolicy` (s,S),
 `ReorderPointPolicy` (s,Q), and two periodic variants, all lifted to multi-supplier routing — that
@@ -167,6 +169,7 @@ Full reference: [`src/rl/README.md`](src/rl/README.md)
 ```
 src/
   sim/         core simulator + textbook policies
+  datasets/    M5 (Kaggle) → setup-directory adapter
   llm/         LLM catalog and market generator
   tuning/      Optuna-based hyperparameter search
   rl/          PPO training stack

@@ -1,6 +1,6 @@
 # 04: PriceReplayPolicy wrapper
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

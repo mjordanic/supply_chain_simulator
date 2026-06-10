@@ -1,6 +1,6 @@
 # 02: ReplayDemandSinkNode — Python-authored replay end-to-end
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

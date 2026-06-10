@@ -1,6 +1,6 @@
 # 05: M5 ingestion + quality report
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

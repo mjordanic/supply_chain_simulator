@@ -801,6 +801,8 @@ __all__ = [
     "PeriodicReorderPolicy",
     # Phase-5 RL graph-engine shim (issue 12)
     "RLIntermediatePolicy",
+    # m5-replay price replay wrapper (issue 04)
+    "PriceReplayPolicy",
 ]
 
 
@@ -2912,3 +2914,84 @@ class PeriodicReorderPolicy(MultiSupplierTextbookPolicy):
     @property
     def inv_before_settle_log(self) -> dict:
         return self._inner.inv_before_settle_log
+
+
+# ---------------------------------------------------------------------------
+# PriceReplayPolicy — observed-price wrapper for IntermediatePolicy (issue 04)
+# ---------------------------------------------------------------------------
+
+
+class PriceReplayPolicy(IntermediatePolicy):
+    """Opt-in wrapper that replays observed selling prices on top of any inner policy.
+
+    Delegates all ordering decisions to ``inner`` unchanged, then overwrites
+    the ``list_price`` portion of the decision with per-product, per-tick
+    daily price arrays.  Products without a price array keep whatever price
+    ``inner`` chose.  Ordering decisions are bit-identical with and without
+    the wrapper (same seeds, same inner policy).
+
+    The wrapper is tick-indexed from ``obs_intermediate["tick"]``.  It knows
+    nothing about Walmart week numbering — weekly->daily expansion is the M5
+    adapter's responsibility (issue 05).  Prices flow through the normal
+    offer-publication path so buyers see them in the central table.
+
+    Parameters
+    ----------
+    inner:
+        Any ``IntermediatePolicy`` instance.  Its ``decide`` is called first;
+        ``PriceReplayPolicy`` only post-processes the ``list_price`` slice.
+    prices:
+        Per-product per-tick price arrays.  ``prices[pid][tick]`` is the
+        observed selling price at that tick for product ``pid``.
+    n_steps:
+        Total number of simulation ticks.  Each array in ``prices`` must have
+        at least ``n_steps`` elements; validated at construction.
+
+    Raises
+    ------
+    ValueError
+        If any ``prices[pid]`` array is shorter than ``n_steps``.
+    """
+
+    def __init__(
+        self,
+        inner: IntermediatePolicy,
+        prices: Mapping[str, list[float]],
+        n_steps: int,
+    ) -> None:
+        # Inherit the inner policy's seed so the wrapper itself has no
+        # separate RNG; all stochastic decisions remain in inner.
+        super().__init__(policy_seed=getattr(inner, "policy_seed", None))
+        self._inner = inner
+        # Validate lengths eagerly so a short array fails at construction
+        # rather than silently at some mid-run tick.
+        for pid, arr in prices.items():
+            if len(arr) < n_steps:
+                raise ValueError(
+                    f"PriceReplayPolicy: prices[{pid!r}] has {len(arr)} elements "
+                    f"but n_steps={n_steps}; array must be at least n_steps long."
+                )
+        # Snapshot so external mutation after construction has no effect.
+        self._prices: dict[str, list[float]] = {pid: list(arr) for pid, arr in prices.items()}
+        self._n_steps = n_steps
+
+    def decide(
+        self,
+        obs_intermediate: Mapping[str, Any],
+        central_table: Any,
+    ) -> dict[str, Any]:
+        """Delegate to inner, then overwrite list_price for covered products.
+
+        The ``order`` and ``min_order_imposed`` keys are passed through
+        untouched; only ``list_price`` is modified.
+        """
+        action = self._inner.decide(obs_intermediate, central_table)
+        tick: int = int(obs_intermediate.get("tick", 0))
+        # Copy so we don't mutate the inner policy's return dict.
+        list_price = dict(action.get("list_price", {}))
+        for pid, arr in self._prices.items():
+            if tick < len(arr):
+                list_price[pid] = float(arr[tick])
+        action = dict(action)
+        action["list_price"] = list_price
+        return action
