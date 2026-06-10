@@ -12,12 +12,11 @@ for logging to TensorBoard under ``eval/*`` keys.
 CRN guarantee
 -------------
 Both the RL and baseline runs for a given ``RLEpisodeSpec`` use the *same*
-``world_seed``, capacity, balance, active subset, and slot permutation.  The
-world trajectory is therefore bit-identical between the two runs, so any
-difference in the returned metrics is attributable to the policy alone.
-
-The CRN tuple (world_seed, capacity, balance, active_subset, allocation_sub_seed) no longer
-includes slot_permutation (removed in ADR 0021 / issue 05). Full eval rework in issue 07.
+``(world_seed, capacity, balance, active_subset, allocation_sub_seed)`` tuple.
+``slot_permutation`` is absent (removed in ADR 0021 / issue 05): permutation
+invariance is structural via the shared-weight set actor-critic.  The world
+trajectory is bit-identical between the two paired runs, so any difference in
+the returned metrics is attributable to the policy alone.
 
 Implementation notes
 --------------------
@@ -33,19 +32,24 @@ Implementation notes
   accumulated into a minimal run-log dict that is fed to the shared
   ``inspect`` + ``metrics`` DataFrame path (ADR 0019). The baseline run uses
   ``Runner.run()`` directly.
+- ``_run_rl`` emits a ``WARNING`` for each tick where the engine rejection log
+  records an ``insufficient_cash`` entry for node "S".  These indicate that the
+  Arbiter's cash budget did not cover the full order — either the budget fraction
+  is too low or the Arbiter has a bug.  One warning per tick (not per rejection).
 
-RL eval path finding (issue 07)
--------------------------------
-``_run_rl`` does NOT go through ``Runner.run()``. It drives the engine with
-the two-phase ``tick_world()`` / ``tick_decide_and_settle()`` API so the RL
-observation encoder can snapshot state between phases. After each
-``tick_decide_and_settle()`` the per-tick engine state is harvested and
-appended to a run-log compatible list; this list is passed to the shared
-``inspect.*`` builders at the end of the episode.
+Checkpoint loading
+------------------
+``evaluate_two_scale`` loads checkpoints through ``src.rl.checkpoint.load()``,
+which validates the stored ``layout_version`` against the current encoder
+constant.  A stale checkpoint raises ``ValueError`` with a descriptive message
+instead of a silent shape mismatch.
 
-``_run_baseline`` DOES use ``Runner.run()`` via the ``Runner`` class — it
-attaches the baseline policy via ``policy_overrides`` and calls
-``Runner.run()`` exactly once.
+K-generalisation recipe
+-----------------------
+Train with ``K_min=1, K_max_episode=10`` (or any sub-range of [1, K_MAX]).
+To evaluate on K=20, set ``K_min=20, K_max_episode=20`` on the eval
+``RLConfig`` — no code changes required, only config knobs.  The shared-weight
+architecture handles arbitrary K up to ``K_MAX=32`` without retraining.
 
 Both paths then call ``inspect.flow_frame`` / ``inspect.purchase_frame`` /
 ``inspect.closing_inventory_frame`` / ``metrics.business_metrics`` /
@@ -56,10 +60,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -308,6 +315,21 @@ def _run_rl(
 
         # Phase 2: demand-pull walk (S.policy.decide() returns pending action).
         sim.tick_decide_and_settle(current_tick)
+
+        # Warn if the engine logged any insufficient_cash rejections for node "S".
+        # These indicate the Arbiter's cash budget did not cover the full order,
+        # which may point to an Arbiter bug.  One warning per tick, not per entry.
+        cash_rejections = [
+            r for r in sim._tick_rejections
+            if r.get("buyer_id") == "S" and r.get("reason") == "insufficient_cash"
+        ]
+        if cash_rejections:
+            logger.warning(
+                "tick %d: node 'S' has %d insufficient_cash rejection(s) — "
+                "Arbiter cash budget may be misconfigured or there is an Arbiter bug.",
+                current_tick,
+                len(cash_rejections),
+            )
 
         # Update rolling sales history.
         last_sales = sim._tick_sales.get("S", {})
@@ -595,10 +617,25 @@ def evaluate_two_scale(
     Parameters
     ----------
     checkpoint_path:
-        Path to a PyTorch checkpoint file (``*.pt``).  Pass ``""`` when
-        the ``_rl_policy_fn_override`` attribute is set (e.g. in smoke tests).
+        Path to a self-describing checkpoint produced by the variable-K train
+        loop (``src.rl.train``).  Loaded via ``src.rl.checkpoint.load()``,
+        which validates the stored ``layout_version`` against the current
+        encoder constant; a stale checkpoint raises ``ValueError``.
+        Pass ``""`` when the ``_rl_policy_fn_override`` attribute is set
+        (e.g. in smoke tests).
     catalog, config, n_seeds, seed_offset:
         See class docstring.
+
+    K-generalisation recipe
+    -----------------------
+    To evaluate a policy trained on K ≤ 10 against K = 20, pass a ``config``
+    with ``K_min=20, K_max_episode=20``.  No code changes are required — the
+    shared-weight ``SetActor`` handles any K up to ``K_MAX=32`` out of the box.
+    Example::
+
+        from src.rl.configs.default import RLConfig
+        eval_cfg = dataclasses.replace(base_cfg, K_min=20, K_max_episode=20)
+        result = evaluate_two_scale(ckpt_path, catalog=catalog, config=eval_cfg)
     """
     from src.sim.distributions import Constant, Uniform
 
@@ -829,31 +866,36 @@ def _cold_start_qty_per_sku(
 
 
 def _load_policy_fn(checkpoint_path: str, config: RLConfig) -> PolicyFn:
-    """Load an RL actor from a PyTorch checkpoint and return a policy callable."""
-    if not os.path.isfile(checkpoint_path):
-        raise FileNotFoundError(
-            f"evaluate_two_scale: checkpoint not found: {checkpoint_path!r}"
-        )
+    """Load a ``SetActor`` from a self-describing checkpoint and return a policy callable.
 
+    Uses ``src.rl.checkpoint.load()`` to validate the stored ``layout_version``
+    against ``OBS_LAYOUT_VERSION``.  A stale checkpoint (produced before ADR 0021
+    or with a different encoder layout) raises ``ValueError`` with a descriptive
+    message instead of a silent shape mismatch.
+    """
     import torch
-    from src.rl.agents.ppo import Actor
-    from src.rl.set_encoder import K_MAX, F
+    import src.rl.checkpoint as _ckpt
+    from src.rl.agents.set_actor_critic import SetActor
+    from src.rl.set_encoder import K_MAX, F, ROW_MASK
 
-    # New env uses K_MAX*F obs and K_MAX*3 actions (ADR 0021).
-    obs_dim = K_MAX * F
-    act_dim = K_MAX * 3
-    actor = Actor(obs_dim=obs_dim, act_dim=act_dim)
+    # checkpoint.load() raises FileNotFoundError / ValueError on bad input.
+    bundle = _ckpt.load(checkpoint_path)
 
-    state = torch.load(checkpoint_path, map_location="cpu")
-    actor_state = state.get("actor", state)
-    actor.load_state_dict(actor_state)
+    actor = SetActor()
+    actor.load_state_dict(bundle["state_dict"])
     actor.eval()
 
     def policy_fn(obs: np.ndarray) -> np.ndarray:
+        """Run the SetActor on a flat obs vector, return flat action vector.
+
+        obs is (K_MAX * F,) produced by encode_set_observation().flatten().
+        The mask channel (ROW_MASK) is extracted from the reshaped tensor.
+        """
         with torch.no_grad():
-            t = torch.from_numpy(obs).float().unsqueeze(0)
-            action, _, _ = actor.get_action_and_log_prob(t)
-            return action.squeeze(0).numpy()
+            obs_2d = torch.from_numpy(obs).float().reshape(1, K_MAX, F)
+            mask = obs_2d[..., ROW_MASK]  # shape (1, K_MAX)
+            action, _, _ = actor.get_action_and_log_prob(obs_2d, mask)
+            return action.squeeze(0).reshape(K_MAX * 3).numpy()
 
     return policy_fn
 
@@ -909,20 +951,45 @@ if __name__ == "__main__":
     import pathlib
 
     parser = argparse.ArgumentParser(
-        description="Run two-scale paired-CRN evaluation for an RL checkpoint.",
+        description=(
+            "Run two-scale paired-CRN evaluation for an RL checkpoint. "
+            "Checkpoint must be a self-describing bundle produced by the variable-K "
+            "train loop (layout_version is validated on load). "
+            "K-generalisation recipe: train with --k-max-episode 10, then evaluate "
+            "on K=20 by passing --k-min 20 --k-max-episode 20 — the shared-weight "
+            "SetActor handles any K up to K_MAX=32 without retraining."
+        ),
     )
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--world", default="rl_train")
     parser.add_argument("--n-seeds", type=int, default=32)
     parser.add_argument("--seed-offset", type=int, default=None)
+    parser.add_argument(
+        "--k-min",
+        type=int,
+        default=None,
+        help="Override K_min for eval episodes (e.g. 20 for K-generalisation eval).",
+    )
+    parser.add_argument(
+        "--k-max-episode",
+        type=int,
+        default=None,
+        help="Override K_max_episode for eval episodes (e.g. 20 for K-generalisation eval).",
+    )
 
     args = parser.parse_args()
 
     from src.rl.episode_sampler import make_synthetic_catalog
 
+    _cli_config_kwargs: dict = {}
+    if args.k_min is not None:
+        _cli_config_kwargs["K_min"] = args.k_min
+    if args.k_max_episode is not None:
+        _cli_config_kwargs["K_max_episode"] = args.k_max_episode
+
     _cli_catalog = make_synthetic_catalog(20)
 
-    _cli_config = RLConfig()
+    _cli_config = RLConfig(**_cli_config_kwargs) if _cli_config_kwargs else RLConfig()
 
     print(f"Loading checkpoint: {args.checkpoint}")
     _result = evaluate_two_scale(
