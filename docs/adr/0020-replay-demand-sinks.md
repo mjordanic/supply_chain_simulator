@@ -1,6 +1,6 @@
 # Replay demand sinks: subclass override, full multiplier chain, burned CRN draws
 
-Status: Accepted (not yet implemented — design agreed 2026-06-09, see `.scratch/m5-replay/STUDY.md`)
+Status: Accepted (implemented 2026-06 — `src/sim/replay_demand_sink.py`, `src/sim/flat_world.py`, `src/datasets/m5.py`)
 
 The simulator gains an optional real-data demand mode: a sink replays an observed per-tick
 demand series (first dataset: M5 Walmart daily unit sales; declared semantics: observed

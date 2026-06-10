@@ -716,3 +716,100 @@ class TestUnlaggedDemandSignal:
             f"wh must place a reorder on tick 1 after observing same-tick sales; "
             f"got orders={orders_tick1}"
         )
+
+    def test_observed_sales_includes_intermediate_buyer_purchases(self):
+        """A supplier intermediate sees same-tick purchases by downstream intermediates.
+
+        factory → dc → shop → sink.  The shop starts with exactly one tick of
+        stock, sells it all to the sink, and reorders from the dc in the same
+        tick (demand-pull walk processes shop before dc).  The dc's
+        ``observed_sales`` must include the shop's filled purchase — not just
+        sink purchases (ADR 0018: complete current-tick demand).
+        """
+        from src.sim.distributions import Constant
+        from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
+        from src.sim.policy import MultiSupplierTextbookPolicy
+        from src.sim.runner import build_world
+        from src.sim.scenario import NodeInstance, Scenario
+
+        catalog = _minimal_catalog()
+        pid = catalog[0].product_id
+
+        demand = 5
+        factory = FactoryNode(
+            id="factory", region="US", init_seed=1,
+            produces_product_id=pid, unit_cost=1.0,
+            capacity_per_tick=200, inventory=500, list_price=1.0, cash=0.0,
+        )
+        dc = IntermediateNode(
+            id="dc", region="US", init_seed=2,
+            carried_products={pid}, capacity=2000, tags=["dc"],
+            inventory={pid: 100}, pending={},
+            list_prices={pid: 1.5}, min_order_imposed={pid: 0}, cash=50_000.0,
+        )
+        shop = IntermediateNode(
+            id="shop", region="US", init_seed=3,
+            carried_products={pid}, capacity=2000, tags=["shop"],
+            inventory={pid: demand},  # exactly one tick's worth of stock
+            pending={},
+            list_prices={pid: 2.0}, min_order_imposed={pid: 0}, cash=50_000.0,
+        )
+        sink = DemandSinkNode(
+            id="sink", region="US", init_seed=4,
+            product_id=pid, demand_dist=Constant(demand),
+            income_rate=5000.0, cash=50_000.0,
+        )
+        shop_policy = MultiSupplierTextbookPolicy(
+            delivery_lag=1,
+            unit_cost=1.5,
+            list_price_out=2.0,
+            cover_horizon_ticks=5,
+            safety_lead_pct_of_lag=0.0,
+        )
+
+        captured_obs: list[dict] = []
+
+        class SpyPolicy:
+            def decide(self, obs, table):
+                captured_obs.append(dict(obs))
+                return {"order": {}, "list_price": {}, "min_order_imposed": {}}
+
+        edges = [
+            EdgeSpec(supplier_id="factory", buyer_id="dc", default_lead_time=1),
+            EdgeSpec(supplier_id="dc", buyer_id="shop", default_lead_time=1),
+            EdgeSpec(supplier_id="shop", buyer_id="sink", default_lead_time=1),
+        ]
+        scenario = Scenario(
+            catalog=catalog,
+            market=_minimal_market_params(),
+            disruption=_minimal_disruption_params(),
+            item_lifecycle=_minimal_lifecycle_params(),
+            n_steps=5,
+            start_date=datetime(2024, 1, 1),
+            world_seed=7,
+            nodes=[
+                NodeInstance(node=factory, init_seed=1),
+                NodeInstance(node=dc, init_seed=2, policy=SpyPolicy()),
+                NodeInstance(node=shop, init_seed=3, policy=shop_policy),
+                NodeInstance(node=sink, init_seed=4),
+            ],
+            edges=edges,
+        )
+        sim = build_world(scenario)
+        sim.tick()
+
+        # The shop must have reordered from the dc on tick 1.
+        shop_to_dc_filled = sum(
+            p["qty_filled"]
+            for p in sim._tick_purchases
+            if p["buyer_id"] == "shop" and p["supplier_id"] == "dc"
+        )
+        assert shop_to_dc_filled > 0, "precondition: shop must buy from dc on tick 1"
+
+        # The dc (processed after the shop) must see those units as same-tick sales.
+        assert len(captured_obs) == 1
+        dc_sales = captured_obs[0].get("observed_sales", {})
+        assert dc_sales.get(pid, 0) == shop_to_dc_filled, (
+            f"dc observed_sales must include the shop's same-tick purchase "
+            f"({shop_to_dc_filled} units); got {dc_sales}"
+        )

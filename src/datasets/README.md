@@ -12,9 +12,9 @@ stores and 1,941 days. This adapter:
 2. Slices by item IDs, store IDs, and a date window.
 3. Expands weekly Walmart prices to daily series with forward/back-fill.
 4. Produces a per-(item, store) data-quality report.
-5. Emits a complete setup directory loadable by `load_setup` — catalog,
-   `setup.yaml`, demand parquet, prices parquet, calendar parquet, and the
-   quality report.
+5. Emits a complete setup directory loadable by `load_setup` — `catalog.csv`,
+   `setup.yaml`, `demand_series.parquet`, `prices.parquet`, `calendar.parquet`,
+   and `quality_report.parquet`.
 
 **Declared semantics:** observed M5 sales = true demand. The M5 series records
 units sold, which can be stockout-censored. The quality report's `longest_zero_run`

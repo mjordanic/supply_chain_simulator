@@ -36,7 +36,7 @@ Unmet demand (insufficient supplier inventory or cash) = lost sale. CRN preserva
 is consumed in catalog-iteration order for every catalog pid every tick, even when the sink is
 not actively buying that pid. See ADR 0015.
 
-**ReplayDemandSinkNode** (planned — ADR 0020, `src/sim/node.py`)
+**ReplayDemandSinkNode** (`ReplayDemandSinkNode(DemandSinkNode)`, `src/sim/replay_demand_sink.py`)
 A `DemandSinkNode` whose demand comes from an observed per-tick series instead of
 `demand_dist` — the real-data (M5) replay mode. `demand_target = series[tick] ×` the full
 ADR 0015 multiplier chain; *pure* replay is achieved by authoring the chain flat (≡ 1.0),
@@ -44,16 +44,22 @@ not by a node flag, so synthetic what-ifs (promo, disruption, elasticity) compos
 replayed demand unchanged. Burns the same `world_rng` draws as the base catalog loop so
 mixed replay/stochastic graphs stay CRN-clean. Declared semantics: observed sales = true
 demand. Authorable in `setup.yaml` as node type `sink_replay` referencing a `series_id`
-in `demand.parquet`. See `.scratch/m5-replay/STUDY.md`.
+in `demand_series.parquet`. See ADR 0020.
 
-**PriceReplayPolicy** (planned — ADR 0020, `src/sim/policy.py`)
+**flat_world** (`flat_world(regions)`, `src/sim/flat_world.py`)
+Authoring helper returning `(MarketParams, ItemLifecycleParams)` whose ADR 0015
+demand-multiplier chain is bit-exactly 1.0 for every (pid, region) on every tick —
+the "flat world" that turns a `ReplayDemandSinkNode` into pure replay.
+
+**PriceReplayPolicy** (`PriceReplayPolicy(IntermediatePolicy)`, `src/sim/policy.py`)
 Wrapper `IntermediatePolicy` that delegates ordering decisions to any inner policy and
 overwrites the `list_price` part of the decision with an observed daily price series.
 Opt-in replay of real selling prices (M5 `sell_prices`); unwrapped policies price freely.
 
-**M5 adapter** (planned, `src/datasets/m5.py`)
+**M5 adapter** (`load_m5_slice` / `emit_m5_setup_dir`, `src/datasets/m5.py`)
 Sibling package (ADR 0010 pattern) converting raw M5 Kaggle files into a standard setup
-dir (`catalog.csv + setup.yaml + demand.parquet + prices.parquet + calendar.parquet`).
+dir (`catalog.csv + setup.yaml + demand_series.parquet + prices.parquet +
+calendar.parquet + quality_report.parquet`).
 Owns slice selection, weekly→daily price expansion via `wm_yr_wk`, ffill/bfill of price
 gaps, and a per-item `quality_report` (price coverage, fill counts, zero-run / suspected
 out-of-stock flags, launch dates). The engine knows nothing about M5. Raw files are
@@ -375,4 +381,4 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0016](docs/adr/0016-allocation-rng-sub-seed.md) — `allocation` sub-seed added to CRN seeding contract; drives deterministic per-phase buyer shuffle. **Accepted.**
 - [ADR 0017](docs/adr/0017-setup-files-as-deterministic-input.md) — Setup files as deterministic input. **Accepted.**
 - [ADR 0018](docs/adr/0018-lateral-links-demand-pull-scheduling.md) — Lateral supplier links + demand-pull topological scheduling (Kahn on reversed graph); type-based validation; min-order-aware routing; rejection log. **Accepted — supersedes ADR 0014.**
-- [ADR 0020](docs/adr/0020-replay-demand-sinks.md) — Replay demand sinks (M5 real-data mode): subclass override, full multiplier chain kept, CRN draws burned. **Accepted — not yet implemented.**
+- [ADR 0020](docs/adr/0020-replay-demand-sinks.md) — Replay demand sinks (M5 real-data mode): subclass override, full multiplier chain kept, CRN draws burned.
