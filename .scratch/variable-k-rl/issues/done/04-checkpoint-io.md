@@ -1,6 +1,6 @@
 # Checkpoint I/O: self-describing checkpoints with layout-version validation
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
