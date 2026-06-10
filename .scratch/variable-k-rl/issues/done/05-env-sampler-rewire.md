@@ -1,6 +1,6 @@
 # Env + episode sampler rewire: variable K, superset catalog, arbiter in the step
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
