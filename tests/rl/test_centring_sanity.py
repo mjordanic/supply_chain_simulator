@@ -66,9 +66,15 @@ def _make_catalog(n: int = 15) -> list:
 
 
 def _make_config() -> RLConfig:
-    """Config with pinned Constant distributions for episode reproducibility."""
+    """Config with pinned Constant distributions for episode reproducibility.
+
+    K is pinned to 5 by setting K_min=K_max_episode=5 (variable-K not exercised here;
+    centring-sanity tests probe the legacy flat-decoder path which remains unchanged).
+    """
     return RLConfig(
         K_active=5,
+        K_min=5,
+        K_max_episode=5,
         episode_length=20,  # shorter for graph-engine speed
         capacity_dist=Constant(500),
         balance_dist=Constant(50_000),
@@ -100,8 +106,8 @@ class TestCentringZeroAction:
         spec = sample_episode(catalog, config, episode_seed=7)
 
         active_pids = list(spec.active_subset)
-        K = config.K_active
-        slot_perm = spec.slot_permutation
+        K = len(active_pids)  # K sampled per episode (ADR 0021)
+        slot_perm = list(range(K))  # slot_permutation removed (ADR 0021)
 
         rl_policy = RLIntermediatePolicy()
         sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
@@ -171,8 +177,8 @@ class TestCentringZeroAction:
         spec = sample_episode(catalog, config, episode_seed=7)
 
         active_pids = list(spec.active_subset)
-        K = config.K_active
-        slot_perm = spec.slot_permutation
+        K = len(active_pids)  # K sampled per episode (ADR 0021)
+        slot_perm = list(range(K))  # slot_permutation removed (ADR 0021)
 
         rl_policy = RLIntermediatePolicy()
         sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
@@ -230,8 +236,8 @@ class TestCentringZeroAction:
         spec = sample_episode(catalog, config, episode_seed=7)
 
         active_pids = list(spec.active_subset)
-        K = config.K_active
-        slot_perm = spec.slot_permutation
+        K = len(active_pids)  # K sampled per episode (ADR 0021)
+        slot_perm = list(range(K))  # slot_permutation removed (ADR 0021)
 
         rl_policy = RLIntermediatePolicy()
         sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
@@ -329,14 +335,16 @@ class TestCentringZeroAction:
         catalog = _make_catalog(n=15)
         config = RLConfig(
             K_active=5,
+            K_min=5,
+            K_max_episode=5,
             episode_length=10,
             capacity_dist=Constant(500),
             balance_dist=Constant(50_000),
         )
         spec = sample_episode(catalog, config, episode_seed=7)
 
-        K = config.K_active
-        slot_perm = spec.slot_permutation
+        K = len(spec.active_subset)  # K sampled per episode (ADR 0021)
+        slot_perm = list(range(K))   # slot_permutation removed (ADR 0021)
         active_pids = list(spec.active_subset)
 
         from src.sim.distributions import Distribution

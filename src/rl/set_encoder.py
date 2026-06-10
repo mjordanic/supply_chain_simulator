@@ -439,12 +439,11 @@ def decode_set_action(
             req = max(0.0, target_lt * rate - position)
             requested[pid] = req
 
-    # Two-pass fair-share allocation (capacity only; cash handled by Arbiter)
-    from src.rl.encoders import fair_share_allocate
-    allocated = fair_share_allocate(requested, per_sku_headroom, global_free_space)
-
+    # Return raw requested quantities; capacity/cash contention is resolved
+    # by the Arbiter in the env step path, not here.
     for pid in active_items:
-        qty = allocated.get(pid, 0)
+        qty = int(round(requested.get(pid, 0.0)))
+        qty = max(0, min(qty, per_sku_headroom.get(pid, 0)))
         if supplier_ids is not None:
             _sup = next(
                 (s for s in supplier_ids if True),

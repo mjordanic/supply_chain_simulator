@@ -127,11 +127,15 @@ class TestObservationSpace:
         assert obs.dtype == np.float32
 
     def test_observation_space_shape_matches_config(self):
-        from src.rl.encoders import observation_dim, action_dim
+        from src.rl.set_encoder import K_MAX, F
         config = _make_config()
         env = RLEnv(catalog=_make_catalog(20), config=config)
-        assert env.observation_space.shape == (observation_dim(config.K_active),)
-        assert env.action_space.shape == (action_dim(config.K_active),)
+        assert env.observation_space.shape == (K_MAX * F,), (
+            f"Expected obs shape ({K_MAX * F},), got {env.observation_space.shape}"
+        )
+        assert env.action_space.shape == (K_MAX * 3,), (
+            f"Expected action shape ({K_MAX * 3},), got {env.action_space.shape}"
+        )
 
     def test_action_space_bounds(self):
         env = _make_env()
@@ -226,9 +230,10 @@ class TestDeterminism:
         env2 = RLEnv(catalog=catalog, config=config)
 
         from random import Random
+        from src.rl.set_encoder import K_MAX
         rng = Random(555)
         action_sequence = [
-            np.array([rng.uniform(-1, 1) for _ in range(config.K_active * 2)], dtype=np.float32)
+            np.array([rng.uniform(-1, 1) for _ in range(K_MAX * 3)], dtype=np.float32)
             for _ in range(config.episode_length)
         ]
 
@@ -329,8 +334,9 @@ class TestGraphEngineIntegration:
         assert set(env._active_subset) == node_s.carried_products
 
     def test_base_demand_prior_is_positive_after_reset(self):
-        """After reset, env._base_demand_prior is a positive float."""
+        """After reset, env._get_base_demand_prior() returns a positive float."""
         env = _make_env()
         env.reset(seed=42)
-        assert hasattr(env, "_base_demand_prior")
-        assert env._base_demand_prior > 0
+        # _base_demand_prior is now computed on demand; _get_base_demand_prior() must be positive.
+        prior = env._get_base_demand_prior()
+        assert prior > 0, f"base_demand_prior={prior} (expected > 0)"

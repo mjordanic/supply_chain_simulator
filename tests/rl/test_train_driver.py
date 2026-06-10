@@ -206,8 +206,8 @@ class TestVecEnvConstruction:
         envs.close()
 
     def test_vec_env_obs_shape(self):
-        """SyncVectorEnv observations have shape (n_envs, obs_dim)."""
-        from src.rl.encoders import observation_dim
+        """SyncVectorEnv observations have shape (n_envs, K_MAX * F)."""
+        from src.rl.set_encoder import K_MAX, F
 
         n_envs = 2
         K = 5
@@ -230,7 +230,7 @@ class TestVecEnvConstruction:
 
         envs = gym.vector.SyncVectorEnv([_factory for _ in range(n_envs)])
         obs, _ = envs.reset(seed=1)
-        expected_dim = observation_dim(K)
+        expected_dim = K_MAX * F
         assert obs.shape == (n_envs, expected_dim)
         envs.close()
 
@@ -276,7 +276,7 @@ class TestDriverEndToEnd:
     def test_final_checkpoint_loadable(self, tmp_path):
         """The final checkpoint can be loaded and its keys match Actor's state dict."""
         from src.rl.agents.ppo import Actor
-        from src.rl.encoders import observation_dim, action_dim
+        from src.rl.set_encoder import K_MAX, F
 
         argv = _tiny_argv(tmp_path)
         main(argv)
@@ -287,8 +287,8 @@ class TestDriverEndToEnd:
 
         # Load the most recent checkpoint.
         loaded = torch.load(pt_files[-1], map_location="cpu")
-        config = RLConfig(K_active=5, K_catalog=20)
-        actor = Actor(observation_dim(config.K_active), action_dim(config.K_active))
+        # New env obs/act spaces use K_MAX * F and K_MAX * 3 (ADR 0021).
+        actor = Actor(K_MAX * F, K_MAX * 3)
         actor.load_state_dict(loaded)  # should not raise
 
     def test_eval_triggered_during_training(self, tmp_path):

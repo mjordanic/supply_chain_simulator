@@ -77,10 +77,10 @@ def _install_baseline_override(config: RLConfig):
     directly as both the "RL" and baseline runner.  The smoke test
     verifies the mechanics, not the exact number.
     """
-    K = config.K_active
+    from src.rl.set_encoder import K_MAX
 
     def _zero_policy(obs: np.ndarray) -> np.ndarray:
-        return np.zeros(K * 2, dtype=np.float32)
+        return np.zeros(K_MAX * 3, dtype=np.float32)
 
     evaluate_two_scale._rl_policy_fn_override = _zero_policy  # type: ignore[attr-defined]
 

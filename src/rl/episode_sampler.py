@@ -69,22 +69,22 @@ class RLEpisodeSpec:
         (FactoryNode "F" → IntermediateNode "S" → DemandSinkNode "D_<pid>").
     active_subset
         The K product ids selected for this episode, in catalog order.
-        Retained so per-tick KPI traces can iterate the active SKUs in a
-        stable order.
-    slot_permutation
-        A tuple of length K mapping *slot index* → *position in
-        ``active_subset``*.
+        K is sampled per episode from [K_min, K_max_episode] in the config.
     capacity
         The IntermediateNode capacity for this episode (int).
     balance
         The IntermediateNode opening cash for this episode (float).
     world_seed
         The world seed for the scenario (convenience pass-through).
+
+    Note
+    ----
+    ``slot_permutation`` has been removed (ADR 0021). Permutation invariance
+    is now structural via the shared-weight set actor-critic.
     """
 
     scenario: Scenario
     active_subset: tuple[str, ...]
-    slot_permutation: tuple[int, ...]
     capacity: int
     balance: float
     world_seed: int
@@ -100,34 +100,31 @@ EpisodeSpec = RLEpisodeSpec
 
 
 # ---------------------------------------------------------------------------
-# RL-only sub-seed constant (5th stream)
+# Sub-seed re-export (now just the 4 shared sim sub-seeds; slot stream retired)
 # ---------------------------------------------------------------------------
-
-_SLOT_PRIME = 0x165667B1
-_SLOT_OFFSET = 0x0000_0005
-_MASK_32 = 0xFFFF_FFFF
 
 # Re-export the shared params so test imports like
 #   ``from src.rl.episode_sampler import _SUB_SEED_PARAMS``
-# continue to work. The RL module adds "slot" on top of sim's four.
+# continue to work. The RL module no longer adds a "slot" stream.
 from src.sim.episode_sampler import _SUB_SEED_PARAMS as _SIM_SUB_SEED_PARAMS
 
-_SUB_SEED_PARAMS: dict[str, tuple[int, int]] = {
-    **_SIM_SUB_SEED_PARAMS,
-    "slot": (_SLOT_PRIME, _SLOT_OFFSET),
-}
+_SUB_SEED_PARAMS: dict[str, tuple[int, int]] = dict(_SIM_SUB_SEED_PARAMS)
+# Also add a "k" sub-seed for per-episode K sampling.
+_K_PRIME = 0x27D4EB2F
+_K_OFFSET = 0x0000_0009
+_MASK_32 = 0xFFFF_FFFF
 
 
 def _derive_seed(episode_seed: int, purpose: str) -> int:
     """Return a deterministic 32-bit sub-seed for ``purpose``.
 
     Delegates to sim's ``_derive_seed`` for the four shared purposes;
-    handles "slot" locally.
+    handles "k" (per-episode K sampling) locally.
     """
     if purpose in _SIM_SUB_SEED_PARAMS:
         return _sim_derive_seed(episode_seed, purpose)
-    if purpose == "slot":
-        return (episode_seed * _SLOT_PRIME + _SLOT_OFFSET) & _MASK_32
+    if purpose == "k":
+        return (episode_seed * _K_PRIME + _K_OFFSET) & _MASK_32
     raise KeyError(f"Unknown sub-seed purpose: {purpose!r}")
 
 
@@ -293,11 +290,11 @@ def sample_episode(
     Parameters
     ----------
     catalog:
-        The full product universe (length >= ``config.K_active``).
+        The full product universe.
     config:
-        ``RLConfig`` instance; ``K_active``, ``capacity_dist``,
-        ``balance_dist``, ``delivery_lag``, ``holding_rate``, ``order_fee``,
-        and ``episode_length`` are consumed here.
+        ``RLConfig`` instance.  K is sampled per episode from
+        ``[K_min, K_max_episode]``; capacity, balance, delivery_lag,
+        holding_rate, order_fee, and episode_length are consumed here.
     episode_seed:
         Single integer seed. Any two calls with the same seed and the same
         ``(catalog, config)`` produce identical ``RLEpisodeSpec``
@@ -317,7 +314,15 @@ def sample_episode(
     capacity_seed = _derive_seed(episode_seed, "capacity")
     balance_seed = _derive_seed(episode_seed, "balance")
     world_seed = _derive_seed(episode_seed, "world")
-    slot_seed = _derive_seed(episode_seed, "slot")
+    k_seed = _derive_seed(episode_seed, "k")
+
+    # --- sample K for this episode ---
+    k_rng = Random(k_seed)
+    K_min = config.K_min
+    K_max_ep = config.K_max_episode
+    all_pids = [w.product_id for w in catalog]
+    K_max_feasible = min(K_max_ep, len(all_pids))
+    K = k_rng.randint(K_min, K_max_feasible)
 
     # --- sample capacity and balance ---
     capacity_rng = Random(capacity_seed)
@@ -328,11 +333,9 @@ def sample_episode(
 
     # --- sample active subset (without replacement) ---
     assortment_rng = Random(assortment_seed)
-    all_pids = [w.product_id for w in catalog]
-    K = config.K_active
     if K > len(all_pids):
         raise ValueError(
-            f"sample_episode: K_active={K} exceeds catalog size {len(all_pids)}"
+            f"sample_episode: K={K} exceeds catalog size {len(all_pids)}"
         )
     active_pids = assortment_rng.sample(all_pids, K)
     # Sort to canonical catalog order so the tuple is stable.
@@ -340,12 +343,6 @@ def sample_episode(
     active_subset: tuple[str, ...] = tuple(
         sorted(active_pids, key=lambda p: pid_order[p])
     )
-
-    # --- derive RL-only slot permutation ---
-    slot_rng = Random(slot_seed)
-    perm = list(range(K))
-    slot_rng.shuffle(perm)
-    slot_permutation: tuple[int, ...] = tuple(perm)
 
     # --- build the graph-mode Scenario ---
     scenario = _build_rl_graph_scenario(
@@ -368,7 +365,6 @@ def sample_episode(
     return RLEpisodeSpec(
         scenario=scenario,
         active_subset=active_subset,
-        slot_permutation=slot_permutation,
         capacity=capacity,
         balance=balance,
         world_seed=world_seed,

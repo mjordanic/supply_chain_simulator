@@ -3,11 +3,12 @@
 Acceptance criteria covered:
   - Determinism: same episode_seed → identical RLEpisodeSpec across all fields
   - Assortment coverage: every product appears across many seeds
+  - Variable K: K sampled per episode from [K_min, K_max_episode]
   - Distribution sanity: capacities and balances inside configured ranges
   - Scenario validity: returned graph-mode Scenario runs through Runner for
     at least one tick without raising
-  - Seed splitting independence: freezing the assortment sub-seed and varying
-    the rest changes capacity/balance/slot_perm but not the active_subset
+  - Seed splitting independence: freezing one sub-seed doesn't change others
+  - slot_permutation removed (ADR 0021)
 """
 
 from __future__ import annotations
@@ -46,9 +47,15 @@ def _make_catalog(n: int = 20) -> list:
 
 
 def _make_config(K_active: int = 5) -> RLConfig:
-    """RLConfig with pinned Uniform distributions for deterministic range checks."""
+    """RLConfig with pinned Uniform distributions and fixed K for deterministic range checks.
+
+    K is pinned to K_active by setting K_min=K_max_episode=K_active.
+    Tests that want variable K create their own config.
+    """
     return RLConfig(
         K_active=K_active,
+        K_min=K_active,
+        K_max_episode=K_active,
         episode_length=5,
         capacity_dist=Uniform(150, 400),
         balance_dist=Uniform(15_000, 40_000),
@@ -70,7 +77,6 @@ class TestDeterminism:
         spec2 = sample_episode(catalog, config, episode_seed=42)
 
         assert spec1.active_subset == spec2.active_subset
-        assert spec1.slot_permutation == spec2.slot_permutation
         assert spec1.world_seed == spec2.world_seed
         assert spec1.capacity == spec2.capacity
         assert spec1.balance == pytest.approx(spec2.balance)
@@ -305,21 +311,14 @@ class TestSeedSplitting:
 
         return base_spec, matching
 
-    def test_slot_permutation_independent_of_assortment(self):
-        """Different slot_permutations can exist even with the same active_subset."""
+    def test_slot_permutation_removed(self):
+        """slot_permutation is no longer a field of RLEpisodeSpec (ADR 0021)."""
         catalog = _make_catalog(20)
         config = _make_config(K_active=5)
-
-        base_spec, matching = self._find_same_assortment_specs(
-            catalog, config, base_seed=0
+        spec = sample_episode(catalog, config, episode_seed=0)
+        assert not hasattr(spec, "slot_permutation"), (
+            "slot_permutation should have been removed from RLEpisodeSpec"
         )
-
-        if not matching:
-            pytest.skip("Could not find two seeds sharing the same assortment")
-
-        all_perms = [base_spec.slot_permutation] + [s.slot_permutation for s in matching]
-        unique_perms = set(all_perms)
-        assert len(unique_perms) > 1 or len(matching) < 3
 
     def test_derive_seed_uniqueness(self):
         """_derive_seed produces distinct values for each purpose."""
@@ -369,23 +368,28 @@ class TestSeedSplitting:
 
 
 class TestRLEpisodeSpecStructure:
-    def test_slot_permutation_is_permutation_of_range_K(self):
-        """slot_permutation is a valid permutation of [0, K)."""
+    def test_no_slot_permutation_field(self):
+        """RLEpisodeSpec no longer has a slot_permutation field (ADR 0021)."""
         catalog = _make_catalog(20)
+        config = _make_config(K_active=5)
+        spec = sample_episode(catalog, config, episode_seed=0)
+        assert not hasattr(spec, "slot_permutation")
 
-        for K in [3, 5]:
-            config = _make_config(K_active=K)
-            for seed in range(30):
-                spec = sample_episode(catalog, config, episode_seed=seed)
-                perm = spec.slot_permutation
-                assert sorted(perm) == list(range(K))
+    def test_variable_k_range(self):
+        """K sampled per episode is within [K_min, K_max_episode]."""
+        catalog = _make_catalog(20)
+        config = RLConfig(K_min=3, K_max_episode=7, K_active=5, episode_length=5)
+        for seed in range(50):
+            spec = sample_episode(catalog, config, episode_seed=seed)
+            K = len(spec.active_subset)
+            assert 3 <= K <= 7, f"K={K} out of [3, 7] range for seed={seed}"
 
     def test_too_large_K_raises(self):
-        """K_active > catalog size raises ValueError."""
-        catalog = _make_catalog(3)
-        config = _make_config(K_active=5)  # 5 > 3
+        """K sampled > catalog size raises ValueError (catalog too small)."""
+        catalog = _make_catalog(2)
+        config = RLConfig(K_min=3, K_max_episode=3, K_active=3, episode_length=5)
 
-        with pytest.raises(ValueError, match="K_active"):
+        with pytest.raises(ValueError):
             sample_episode(catalog, config, episode_seed=0)
 
     def test_start_date_default_and_override(self):

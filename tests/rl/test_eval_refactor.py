@@ -53,7 +53,8 @@ def _make_config(episode_length: int = 5) -> RLConfig:
 
 
 def _zero_policy(obs: np.ndarray) -> np.ndarray:
-    return np.zeros(10, dtype=np.float32)
+    from src.rl.set_encoder import K_MAX
+    return np.zeros(K_MAX * 3, dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------

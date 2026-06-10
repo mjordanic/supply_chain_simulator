@@ -220,6 +220,8 @@ class TestSampleEpisodeWithSetupDir:
     def _make_config(self, K_active: int = 3) -> RLConfig:
         return RLConfig(
             K_active=K_active,
+            K_min=K_active,
+            K_max_episode=K_active,
             episode_length=5,
             capacity_dist=Uniform(150, 400),
             balance_dist=Uniform(15_000, 40_000),
@@ -247,6 +249,8 @@ class TestSampleEpisodeWithSetupDir:
 
         config = RLConfig(
             K_active=3,
+            K_min=3,
+            K_max_episode=3,
             episode_length=1,
             capacity_dist=Uniform(150, 400),
             balance_dist=Uniform(15_000, 40_000),
@@ -267,6 +271,8 @@ class TestCRNDeterminism:
     def _make_config(self) -> RLConfig:
         return RLConfig(
             K_active=3,
+            K_min=3,
+            K_max_episode=3,
             episode_length=5,
             capacity_dist=Constant(300),
             balance_dist=Constant(20_000.0),
@@ -327,6 +333,8 @@ class TestOrderUpToPolicyAnchor:
 
         config = RLConfig(
             K_active=3,
+            K_min=3,
+            K_max_episode=3,
             episode_length=10,
             capacity_dist=Constant(300),
             balance_dist=Constant(20_000.0),
@@ -350,6 +358,8 @@ class TestOrderUpToPolicyAnchor:
         config = RLConfig(
             episode_length=5,
             K_active=3,
+            K_min=3,
+            K_max_episode=3,
             n_eval_seeds=3,
             eval_seed_offset=10_000_000,
             capacity_dist=Constant(200),
@@ -358,8 +368,10 @@ class TestOrderUpToPolicyAnchor:
 
         specs = build_eval_seeds(catalog, config, n_seeds=3)
 
+        from src.rl.set_encoder import K_MAX
+
         def zero_policy(obs: "np.ndarray") -> "np.ndarray":
-            return np.zeros(config.K_active * 2, dtype=np.float32)
+            return np.zeros(K_MAX * 3, dtype=np.float32)
 
         def baseline_factory():
             return OrderUpToPolicy(policy_seed=0)

@@ -63,8 +63,9 @@ def _make_baseline_factory() -> callable:
 
 def _random_policy_fn(obs: np.ndarray) -> np.ndarray:
     """A random RL policy: uniformly samples action in [-1, 1]."""
+    from src.rl.set_encoder import K_MAX
     rng = np.random.default_rng(seed=int(abs(obs.sum() * 1e6)) % (2**31))
-    return rng.uniform(-1.0, 1.0, size=(10,)).astype(np.float32)
+    return rng.uniform(-1.0, 1.0, size=(K_MAX * 3,)).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -75,13 +76,14 @@ def _random_policy_fn(obs: np.ndarray) -> np.ndarray:
 class TestReturnedDictFormat:
     def test_keys_are_eval_prefixed(self):
         """All returned keys must start with 'eval/'."""
+        from src.rl.set_encoder import K_MAX
         catalog = _make_catalog()
         config = _make_config(n_eval_seeds=2)
 
         specs = build_eval_seeds(catalog, config, n_seeds=2)
 
         def zero_policy(obs):
-            return np.zeros(10, dtype=np.float32)
+            return np.zeros(K_MAX * 3, dtype=np.float32)
 
         result = evaluate(zero_policy, _make_baseline_factory(), specs, config=config)
         for key in result:
@@ -89,13 +91,14 @@ class TestReturnedDictFormat:
 
     def test_values_are_floats(self):
         """All values in the returned dict must be Python floats."""
+        from src.rl.set_encoder import K_MAX
         catalog = _make_catalog()
         config = _make_config(n_eval_seeds=2)
 
         specs = build_eval_seeds(catalog, config, n_seeds=2)
 
         def zero_policy(obs):
-            return np.zeros(10, dtype=np.float32)
+            return np.zeros(K_MAX * 3, dtype=np.float32)
 
         result = evaluate(zero_policy, _make_baseline_factory(), specs, config=config)
         for key, val in result.items():
@@ -105,12 +108,13 @@ class TestReturnedDictFormat:
 
     def test_required_keys_present(self):
         """The result must contain the core eval keys."""
+        from src.rl.set_encoder import K_MAX
         catalog = _make_catalog()
         config = _make_config(n_eval_seeds=2)
         specs = build_eval_seeds(catalog, config, n_seeds=2)
 
         def zero_policy(obs):
-            return np.zeros(10, dtype=np.float32)
+            return np.zeros(K_MAX * 3, dtype=np.float32)
 
         result = evaluate(zero_policy, _make_baseline_factory(), specs, config=config)
 
@@ -161,8 +165,9 @@ class TestCRNSelfEval:
 
         for spec in specs:
             # Run rl twice with same zero-action policy → must be identical.
+            from src.rl.set_encoder import K_MAX as _K_MAX
             def zero_policy(obs):
-                return np.zeros(config.K_active * 2, dtype=np.float32)
+                return np.zeros(_K_MAX * 3, dtype=np.float32)
 
             m1 = _run_rl(zero_policy, spec, config=config)
             m2 = _run_rl(zero_policy, spec, config=config)
@@ -238,8 +243,9 @@ class TestRandomVsBaseline:
             # reproducible across two calls with the same obs tensor).
             key = int(np.round(obs.sum() * 1e3)) % 10007
             if key not in action_cache:
+                from src.rl.set_encoder import K_MAX
                 action_cache[key] = fixed_rng.uniform(
-                    -1.0, 1.0, size=(config.K_active * 2,)
+                    -1.0, 1.0, size=(K_MAX * 3,)
                 ).astype(np.float32)
             return action_cache[key]
 
@@ -261,16 +267,17 @@ class TestRandomVsBaseline:
 
     def test_random_vs_baseline_different_from_baseline_vs_baseline(self):
         """Random policy result differs from self-eval result."""
+        from src.rl.set_encoder import K_MAX
         catalog = _make_catalog()
         config = _make_config(episode_length=8, n_eval_seeds=3)
 
         specs = build_eval_seeds(catalog, config, n_seeds=3)
 
         def zero_policy(obs: np.ndarray) -> np.ndarray:
-            return np.zeros(config.K_active * 2, dtype=np.float32)
+            return np.zeros(K_MAX * 3, dtype=np.float32)
 
         def ones_policy(obs: np.ndarray) -> np.ndarray:
-            return np.ones(config.K_active * 2, dtype=np.float32)
+            return np.ones(K_MAX * 3, dtype=np.float32)
 
         result_zero = evaluate(zero_policy, _make_baseline_factory(), specs, config=config)
         result_ones = evaluate(ones_policy, _make_baseline_factory(), specs, config=config)
@@ -371,7 +378,7 @@ class TestEvalSeedDisjointness:
         assert len(specs1) == len(specs2)
         for i, (s1, s2) in enumerate(zip(specs1, specs2)):
             assert s1.active_subset == s2.active_subset, f"spec[{i}] active_subset differs"
-            assert s1.slot_permutation == s2.slot_permutation, f"spec[{i}] slot_perm differs"
+            # slot_permutation removed (ADR 0021) — no assertion needed.
             assert s1.scenario.world_seed == s2.scenario.world_seed, f"spec[{i}] world_seed differs"
 
 
@@ -383,12 +390,13 @@ class TestEvalSeedDisjointness:
 class TestEvaluateFiniteOutput:
     def test_all_output_values_finite(self):
         """Every value in the result dict must be a finite float."""
+        from src.rl.set_encoder import K_MAX
         catalog = _make_catalog()
         config = _make_config(episode_length=5, n_eval_seeds=3)
         specs = build_eval_seeds(catalog, config, n_seeds=3)
 
         def zero_policy(obs: np.ndarray) -> np.ndarray:
-            return np.zeros(config.K_active * 2, dtype=np.float32)
+            return np.zeros(K_MAX * 3, dtype=np.float32)
 
         result = evaluate(zero_policy, _make_baseline_factory(), specs, config=config)
 
@@ -397,12 +405,13 @@ class TestEvaluateFiniteOutput:
 
     def test_win_rate_in_unit_interval(self):
         """win_rate must be in [0, 1]."""
+        from src.rl.set_encoder import K_MAX
         catalog = _make_catalog()
         config = _make_config(episode_length=5, n_eval_seeds=4)
         specs = build_eval_seeds(catalog, config, n_seeds=4)
 
         def zero_policy(obs: np.ndarray) -> np.ndarray:
-            return np.zeros(config.K_active * 2, dtype=np.float32)
+            return np.zeros(K_MAX * 3, dtype=np.float32)
 
         result = evaluate(zero_policy, _make_baseline_factory(), specs, config=config)
         wr = result["eval/win_rate"]

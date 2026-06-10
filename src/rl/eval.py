@@ -16,8 +16,8 @@ Both the RL and baseline runs for a given ``RLEpisodeSpec`` use the *same*
 world trajectory is therefore bit-identical between the two runs, so any
 difference in the returned metrics is attributable to the policy alone.
 
-The CRN tuple is now expanded to include the ``allocation`` sub-seed (ADR 0016):
-    (world_seed, capacity, balance, active_subset, slot_permutation, allocation_sub_seed)
+The CRN tuple (world_seed, capacity, balance, active_subset, allocation_sub_seed) no longer
+includes slot_permutation (removed in ADR 0021 / issue 05). Full eval rework in issue 07.
 
 Implementation notes
 --------------------
@@ -64,8 +64,9 @@ from typing import Any, Callable
 import numpy as np
 
 from src.rl.configs.default import RLConfig
-from src.rl.encoders import compute_effective_rate, decode_action, encode_observation
+from src.rl.encoders import compute_effective_rate
 from src.rl.episode_sampler import RLEpisodeSpec, sample_episode
+from src.rl.set_encoder import K_MAX, encode_set_observation, decode_set_action
 from src.sim.policy import (
     IntermediatePolicy,
     OrderUpToPolicy,
@@ -240,13 +241,11 @@ def _run_rl(
     sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
     node_s = sim.nodes["S"]
 
-    K = config.K_active
     active_subset = spec.active_subset
     initial_cash = float(node_s.cash)
     sales_history: dict[str, deque] = {
         pid: deque(maxlen=100) for pid in active_subset
     }
-    slot_perm = spec.slot_permutation
     supplier_ids_for = {pid: [f"F_{pid}"] for pid in active_subset}
 
     # Derive market-demand prior for cold-start ordering.
@@ -276,35 +275,28 @@ def _run_rl(
         # Compute effective rate once per tick.
         effective_rate = compute_effective_rate(sales_history, base_demand_prior)
 
-        # Encode obs.
-        obs = encode_observation(
+        # Encode obs using set encoder (shape K_MAX*F, consistent with RLEnv).
+        obs = encode_set_observation(
             node=node_s,
             market=sim.market,
-            registry=sim.item_registry,
-            step=tick,
-            slot_perm=slot_perm,
-            K_active=K,
-            central_table=central_table,
             active_subset=active_subset,
-            supplier_ids_for=supplier_ids_for,
             initial_cash=initial_cash,
             sales_history=sales_history,
-            effective_rate=effective_rate,
-        )
+            central_table=central_table,
+            supplier_ids_for=supplier_ids_for,
+        ).flatten()
 
         # Call RL policy function.
         action_vec = rl_policy_fn(obs)
 
-        # Decode action.
+        # Decode action (K_MAX, 3) using set decoder.
         all_supplier_ids = [f"F_{pid}" for pid in active_subset]
-        action_dict = decode_action(
-            np.asarray(action_vec, dtype=np.float32),
-            slot_perm,
+        action_dict = decode_set_action(
+            np.asarray(action_vec, dtype=np.float32).reshape(K_MAX, 3),
             node_s,
-            K,
-            base_prices,
-            supplier_ids=all_supplier_ids,
             active_subset=active_subset,
+            base_prices=base_prices,
+            supplier_ids=all_supplier_ids,
             effective_rate=effective_rate,
             target_centre_lead_times=config.target_centre_lead_times,
             target_half_span_lead_times=config.target_half_span_lead_times,
@@ -777,13 +769,11 @@ def _cold_start_qty_per_sku(
     sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
     node_s = sim.nodes["S"]
 
-    K = config.K_active
     active_subset = spec.active_subset
     initial_cash = float(node_s.cash)
     sales_history: dict[str, deque] = {
         pid: deque(maxlen=100) for pid in active_subset
     }
-    slot_perm = spec.slot_permutation
     supplier_ids_for = {pid: [f"F_{pid}"] for pid in active_subset}
 
     market_base_demand = getattr(spec.scenario.market, "base_demand", None)
@@ -801,33 +791,26 @@ def _cold_start_qty_per_sku(
 
     effective_rate = compute_effective_rate(sales_history, base_demand_prior)
 
-    obs = encode_observation(
+    obs = encode_set_observation(
         node=node_s,
         market=sim.market,
-        registry=sim.item_registry,
-        step=0,
-        slot_perm=slot_perm,
-        K_active=K,
-        central_table=central_table,
         active_subset=active_subset,
-        supplier_ids_for=supplier_ids_for,
         initial_cash=initial_cash,
         sales_history=sales_history,
-        effective_rate=effective_rate,
-    )
+        central_table=central_table,
+        supplier_ids_for=supplier_ids_for,
+    ).flatten()
 
     action_vec = rl_policy_fn(obs)
     base_prices = {pid: float(node_s.list_prices.get(pid, 1.0)) for pid in active_subset}
     all_supplier_ids = [f"F_{pid}" for pid in active_subset]
 
-    action_dict = decode_action(
-        np.asarray(action_vec, dtype=np.float32),
-        slot_perm,
+    action_dict = decode_set_action(
+        np.asarray(action_vec, dtype=np.float32).reshape(K_MAX, 3),
         node_s,
-        K,
-        base_prices,
-        supplier_ids=all_supplier_ids,
         active_subset=active_subset,
+        base_prices=base_prices,
+        supplier_ids=all_supplier_ids,
         effective_rate=effective_rate,
         target_centre_lead_times=config.target_centre_lead_times,
         target_half_span_lead_times=config.target_half_span_lead_times,
@@ -854,11 +837,12 @@ def _load_policy_fn(checkpoint_path: str, config: RLConfig) -> PolicyFn:
 
     import torch
     from src.rl.agents.ppo import Actor
-    from src.rl.encoders import observation_dim, action_dim
+    from src.rl.set_encoder import K_MAX, F
 
-    obs_dim = observation_dim(config.K_active)
-    act_dim = action_dim(config.K_active)
-    actor = Actor(obs_dim=obs_dim, action_dim=act_dim)
+    # New env uses K_MAX*F obs and K_MAX*3 actions (ADR 0021).
+    obs_dim = K_MAX * F
+    act_dim = K_MAX * 3
+    actor = Actor(obs_dim=obs_dim, act_dim=act_dim)
 
     state = torch.load(checkpoint_path, map_location="cpu")
     actor_state = state.get("actor", state)

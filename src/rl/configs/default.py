@@ -70,10 +70,30 @@ class RLConfig:
     """Number of ticks per episode (half-year at daily resolution)."""
 
     K_active: int = 5
-    """Number of active SKUs per episode (sampled from the catalog)."""
+    """Number of active SKUs per episode (sampled from the catalog).
+
+    Used as the fixed K when both ``K_min`` and ``K_max`` are ``None``
+    (legacy path).  When ``K_min`` / ``K_max`` are set, K is sampled per
+    episode from ``[K_min, K_max]`` and this field is ignored.
+    """
+
+    K_min: int = 1
+    """Minimum K sampled per episode (inclusive). Default [1, 20] per ADR 0021."""
+
+    K_max_episode: int = 20
+    """Maximum K sampled per episode (inclusive). Default [1, 20] per ADR 0021.
+
+    Named ``K_max_episode`` to avoid shadowing ``K_MAX`` from set_encoder.
+    """
 
     K_catalog: int = 100
-    """Total size of the product universe from which K_active are sampled."""
+    """Total size of the product universe from which K is sampled each episode."""
+
+    arbiter_mode: str = "proportional"
+    """Arbiter allocation mode: 'proportional' (default) or 'greedy'."""
+
+    cash_budget_fraction: float = 1.0
+    """Cash budget = node.cash * cash_budget_fraction, costed at offer prices."""
 
     # ------------------------------------------------------------------
     # Episode randomisation
