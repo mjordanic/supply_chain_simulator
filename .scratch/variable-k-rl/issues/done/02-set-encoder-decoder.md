@@ -1,6 +1,6 @@
 # Set encoder/decoder: (K_max, F) layout with mask, slimmed row, layout version
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
