@@ -280,6 +280,69 @@ class TestKGeneralisationEval:
 
 
 # ---------------------------------------------------------------------------
+# Tests: RL arm run log flows through standard inspect path
+# ---------------------------------------------------------------------------
+
+
+class TestRLRunLogInspectPath:
+    """Regression: _run_rl produces a run log compatible with the standard
+    inspect + metrics path (ADR 0019 rebuild criterion)."""
+
+    def test_rl_run_log_flows_through_inspect_builders(self):
+        """The RL arm's run log must be parseable by flow_frame, purchase_frame,
+        closing_inventory_frame, and node_timeseries_df without error."""
+        from src.rl.eval import _run_rl, build_eval_seeds
+        from src.sim.inspect import (
+            flow_frame,
+            purchase_frame,
+            closing_inventory_frame,
+            node_timeseries_df,
+        )
+        from src.sim.runner import Runner as _RealRunner
+        from src.rl.node_policy import RLNodePolicy
+        import src.rl.eval as eval_mod
+        from unittest.mock import patch
+
+        catalog = _make_catalog()
+        config = _make_config(episode_length=5)
+        specs = build_eval_seeds(catalog, config, n_seeds=1)
+        spec = specs[0]
+
+        # Intercept the Runner.run() call inside _run_rl to capture the run_log.
+        captured_logs: list = []
+        _orig_run = _RealRunner.run
+
+        def _capturing_run(self):
+            log = _orig_run(self)
+            captured_logs.append(log)
+            return log
+
+        with patch.object(eval_mod.Runner, "run", _capturing_run):
+            _run_rl(_zero_policy, spec, config=config)
+
+        assert len(captured_logs) == 1, "Expected exactly one Runner.run() call in _run_rl"
+        run_log = captured_logs[0]
+
+        # Verify the run log flows through all standard inspect builders.
+        ff = flow_frame(run_log)
+        pf = purchase_frame(run_log)
+        cif = closing_inventory_frame(run_log)
+        ts_df = node_timeseries_df(run_log, spec.scenario)
+
+        # All four builders must return non-None DataFrames.
+        assert ff is not None, "flow_frame returned None"
+        assert pf is not None, "purchase_frame returned None"
+        assert cif is not None, "closing_inventory_frame returned None"
+        assert ts_df is not None, "node_timeseries_df returned None"
+
+        # The flow frame must contain rows for node 'S'.
+        assert "node_id" in ff.columns, "flow_frame missing 'node_id' column"
+        assert "S" in ff["node_id"].values, (
+            "flow_frame contains no rows for node 'S' — RL arm not logged"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Tests: insufficient_cash warning
 # ---------------------------------------------------------------------------
 
@@ -288,9 +351,13 @@ class TestInsufficientCashWarning:
     """_run_rl emits a WARNING when the rejection log has insufficient_cash for 'S'."""
 
     def test_insufficient_cash_warning_emitted(self):
-        """Inject a fake insufficient_cash rejection and verify the warning fires."""
+        """Inject an insufficient_cash rejection into the run log and verify the warning fires.
+
+        The new _run_rl uses Runner.run(); we patch the Runner so its run() returns a
+        run_log that includes a rejection entry for node 'S'.
+        """
         from src.rl.eval import _run_rl, build_eval_seeds
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
         import src.rl.eval as eval_mod
 
         catalog = _make_catalog()
@@ -298,41 +365,46 @@ class TestInsufficientCashWarning:
         specs = build_eval_seeds(catalog, config, n_seeds=1)
         spec = specs[0]
 
-        # Capture the sim object and inject a rejection after tick_decide_and_settle.
-        sim_obj_holder: list = []
+        # Run a real episode once to get a valid run_log shape, then inject a rejection.
+        from src.sim.runner import Runner as _RealRunner
+        from src.rl.node_policy import RLNodePolicy
 
-        def _patched_build_world(scenario, policy_overrides=None):
-            from src.sim.runner import build_world as _real_build_world
-            sim = _real_build_world(scenario, policy_overrides=policy_overrides)
-            sim_obj_holder.append(sim)
-            _orig = sim.tick_decide_and_settle
+        _real_runner = _RealRunner(spec.scenario, policy_overrides={
+            "S": RLNodePolicy.from_policy_fn(_zero_policy, config)
+        })
+        real_log = _real_runner.run()
 
-            def _injecting_tick_decide(tick):
-                _orig(tick)
-                # Inject one insufficient_cash rejection for "S" on every tick.
-                sim._tick_rejections.append({
-                    "tick": tick,
-                    "buyer_id": "S",
-                    "supplier_id": "F_P0000",
-                    "pid": "P0000",
-                    "qty_requested": 5,
-                    "qty_filled": 0,
-                    "qty_rejected": 5,
-                    "reason": "insufficient_cash",
-                })
+        # Inject an insufficient_cash rejection on tick 0.
+        real_log["ticks"][0].setdefault("rejections", []).append({
+            "tick": real_log["ticks"][0]["tick"],
+            "buyer_id": "S",
+            "supplier_id": "F_P0000",
+            "pid": "P0000",
+            "qty_requested": 5,
+            "qty_filled": 0,
+            "qty_rejected": 5,
+            "reason": "insufficient_cash",
+        })
 
-            sim.tick_decide_and_settle = _injecting_tick_decide
-            return sim
+        def _patched_runner_init(self, scenario, *, policy_overrides=None):
+            self.scenario = scenario
+            self._sim = MagicMock()
 
-        with patch("src.rl.eval.build_world", side_effect=_patched_build_world):
-            with patch.object(eval_mod.logger, "warning") as mock_warn:
-                _run_rl(_zero_policy, spec, config=config)
-                # Warning must have been called at least once for the injected rejection.
-                assert mock_warn.called, (
-                    "Expected logger.warning to be called for insufficient_cash rejection"
-                )
-                # Check the message content contains the expected phrase.
-                first_call_fmt = mock_warn.call_args_list[0][0][0]
-                assert "insufficient_cash" in first_call_fmt, (
-                    f"Warning message does not mention 'insufficient_cash': {first_call_fmt!r}"
-                )
+        def _patched_runner_run(self):
+            return real_log
+
+        with (
+            patch.object(eval_mod.Runner, "__init__", _patched_runner_init),
+            patch.object(eval_mod.Runner, "run", _patched_runner_run),
+            patch.object(eval_mod.logger, "warning") as mock_warn,
+        ):
+            _run_rl(_zero_policy, spec, config=config)
+            # Warning must have been called at least once for the injected rejection.
+            assert mock_warn.called, (
+                "Expected logger.warning to be called for insufficient_cash rejection"
+            )
+            # Check the message content contains the expected phrase.
+            first_call_fmt = mock_warn.call_args_list[0][0][0]
+            assert "insufficient_cash" in first_call_fmt, (
+                f"Warning message does not mention 'insufficient_cash': {first_call_fmt!r}"
+            )

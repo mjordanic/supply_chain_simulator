@@ -25,17 +25,19 @@ Implementation notes
   future agent without rewriting plumbing.
 - The baseline policy is ``OrderUpToPolicy`` wrapped in ``SingleSupplierAdapter``
   so it runs on the graph engine's ``IntermediateNode``.
-- The RL run uses a bespoke two-phase stepping loop (``tick_world()`` /
-  ``tick_decide_and_settle()``) because the RL observation encoder must run
-  between phases. The per-tick engine state (``_tick_purchases``,
-  ``_tick_decision_state``, ``_tick_sink_demand``, closing inventory) is
-  accumulated into a minimal run-log dict that is fed to the shared
-  ``inspect`` + ``metrics`` DataFrame path (ADR 0019). The baseline run uses
-  ``Runner.run()`` directly.
+- Both the RL arm and the baseline arm run through the identical ``Runner.run()``
+  engine code path.  The RL policy callable is wrapped in ``RLNodePolicy`` (via
+  ``RLNodePolicy.from_policy_fn()``) and attached via ``policy_overrides``.  This
+  ensures the Arbiter is applied at eval exactly as in training, and that the
+  RL run log flows through the same ``inspect`` + ``metrics`` DataFrame builders
+  as the baseline run (ADR 0019).
 - ``_run_rl`` emits a ``WARNING`` for each tick where the engine rejection log
   records an ``insufficient_cash`` entry for node "S".  These indicate that the
   Arbiter's cash budget did not cover the full order — either the budget fraction
   is too low or the Arbiter has a bug.  One warning per tick (not per rejection).
+- The cold-start order-quantity probe is rebuilt on the same path; it now measures
+  post-arbiter allocations — the real order — rather than raw proposals (semantics
+  change noted in ADR 0022).
 
 Checkpoint loading
 ------------------
@@ -62,7 +64,6 @@ import dataclasses
 import json
 import logging
 import os
-from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -71,13 +72,11 @@ logger = logging.getLogger(__name__)
 import numpy as np
 
 from src.rl.configs.default import RLConfig
-from src.rl.encoders import compute_effective_rate
 from src.rl.episode_sampler import RLEpisodeSpec, sample_episode
-from src.rl.set_encoder import K_MAX, encode_set_observation, decode_set_action
+from src.rl.node_policy import RLNodePolicy
 from src.sim.policy import (
     IntermediatePolicy,
     OrderUpToPolicy,
-    RLIntermediatePolicy,
 )
 from src.sim.runner import build_world, Runner
 from src.sim.scenario import (
@@ -222,18 +221,21 @@ def _run_rl(
     *,
     config: RLConfig,
 ) -> dict[str, float]:
-    """Run the RL policy on ``spec`` for one full episode.
+    """Run the RL policy on ``spec`` for one full episode via ``Runner.run()``.
 
-    Uses the graph engine's two-phase tick API:
-      sim.tick_world() → encode obs → decode action →
-      RLIntermediatePolicy.set_pending_action() →
-      sim.tick_decide_and_settle().
+    Wraps ``rl_policy_fn`` in an ``RLNodePolicy`` (via
+    ``RLNodePolicy.from_policy_fn()``) and attaches it via
+    ``policy_overrides={"S": rl_policy}``.  The run flows through the
+    identical engine code path as the baseline arm, so the Arbiter is
+    applied at eval exactly as in training.
 
-    After each tick the engine's internal per-tick state (``_tick_purchases``,
-    ``_tick_decision_state``, ``_tick_sink_demand``, closing inventory) is
-    harvested into a minimal run-log dict.  At the end of the episode this
-    run-log is passed to the shared ``inspect`` + ``metrics`` DataFrame builders
-    (ADR 0019) to produce KPIs on the same code path as the baseline.
+    After the run, ``_run_rl`` scans the per-tick rejection logs for
+    ``insufficient_cash`` entries on node "S" and emits one ``WARNING``
+    per affected tick.
+
+    Run log is fed to the shared ``inspect`` + ``metrics`` DataFrame
+    builders (ADR 0019) to produce KPIs on the same code path as the
+    baseline.
     """
     from src.sim.inspect import (
         flow_frame,
@@ -242,23 +244,10 @@ def _run_rl(
         node_timeseries_df,
     )
     from src.sim.metrics import business_metrics, profit_decomposition
-    from src.sim.node import IntermediateNode
-
-    rl_policy = RLIntermediatePolicy()
-    sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
-    node_s = sim.nodes["S"]
-
-    active_subset = spec.active_subset
-    initial_cash = float(node_s.cash)
-    sales_history: dict[str, deque] = {
-        pid: deque(maxlen=100) for pid in active_subset
-    }
-    supplier_ids_for = {pid: [f"F_{pid}"] for pid in active_subset}
+    from src.sim.distributions import Distribution as _Distribution
+    from random import Random as _Random
 
     # Derive market-demand prior for cold-start ordering.
-    from random import Random as _Random
-    from src.sim.distributions import Distribution as _Distribution
-
     market_base_demand = getattr(spec.scenario.market, "base_demand", None)
     if isinstance(market_base_demand, _Distribution):
         prior_rng = _Random(spec.world_seed + 1)
@@ -268,181 +257,30 @@ def _run_rl(
     else:
         base_demand_prior = 1.0
 
-    episode_length = spec.scenario.n_steps
-    base_prices = {pid: float(node_s.list_prices.get(pid, 1.0)) for pid in active_subset}
+    rl_policy = RLNodePolicy.from_policy_fn(
+        rl_policy_fn,
+        config,
+        base_demand_prior=base_demand_prior,
+    )
 
-    # Accumulate per-tick log entries for the shared inspect builders.
-    tick_entries: list[dict[str, Any]] = []
+    runner = Runner(spec.scenario, policy_overrides={"S": rl_policy})
+    run_log = runner.run()
 
-    for tick in range(episode_length):
-        # Phase 1: advance world, publish offers.
-        current_tick = sim.tick_world()
-        central_table = getattr(sim, "_current_table", None)
-
-        # Compute effective rate once per tick.
-        effective_rate = compute_effective_rate(sales_history, base_demand_prior)
-
-        # Encode obs using set encoder (shape K_MAX*F, consistent with RLEnv).
-        obs = encode_set_observation(
-            node=node_s,
-            market=sim.market,
-            active_subset=active_subset,
-            initial_cash=initial_cash,
-            sales_history=sales_history,
-            central_table=central_table,
-            supplier_ids_for=supplier_ids_for,
-        ).flatten()
-
-        # Call RL policy function.
-        action_vec = rl_policy_fn(obs)
-
-        # Decode action (K_MAX, 3) using set decoder.
-        all_supplier_ids = [f"F_{pid}" for pid in active_subset]
-        action_dict = decode_set_action(
-            np.asarray(action_vec, dtype=np.float32).reshape(K_MAX, 3),
-            node_s,
-            active_subset=active_subset,
-            base_prices=base_prices,
-            supplier_ids=all_supplier_ids,
-            effective_rate=effective_rate,
-            target_centre_lead_times=config.target_centre_lead_times,
-            target_half_span_lead_times=config.target_half_span_lead_times,
-            target_max_lead_times=config.target_max_lead_times,
-        )
-
-        # Inject action into RLIntermediatePolicy shim.
-        rl_policy.set_pending_action(action_dict)
-
-        # Phase 2: demand-pull walk (S.policy.decide() returns pending action).
-        sim.tick_decide_and_settle(current_tick)
-
-        # Warn if the engine logged any insufficient_cash rejections for node "S".
-        # These indicate the Arbiter's cash budget did not cover the full order,
-        # which may point to an Arbiter bug.  One warning per tick, not per entry.
+    # Emit insufficient_cash warnings — one per tick where node "S" was
+    # rejected for cash reasons.  Mirrors the pre-rebuild warning semantics.
+    for tick_log in run_log["ticks"]:
+        tick = tick_log.get("tick", "?")
         cash_rejections = [
-            r for r in sim._tick_rejections
+            r for r in tick_log.get("rejections", [])
             if r.get("buyer_id") == "S" and r.get("reason") == "insufficient_cash"
         ]
         if cash_rejections:
             logger.warning(
                 "tick %d: node 'S' has %d insufficient_cash rejection(s) — "
                 "Arbiter cash budget may be misconfigured or there is an Arbiter bug.",
-                current_tick,
+                tick,
                 len(cash_rejections),
             )
-
-        # Update rolling sales history.
-        last_sales = sim._tick_sales.get("S", {})
-        for pid in active_subset:
-            qty = last_sales.get(pid, 0)
-            if pid in sales_history:
-                sales_history[pid].append(qty)
-
-        # Harvest per-tick engine state into a run-log compatible entry.
-        # This mirrors what Runner._snapshot_tick() does for the standard path.
-        node_cash: dict[str, float] = {}
-        node_inventory: dict[str, Any] = {}
-        node_pending: dict[str, Any] = {}
-
-        for node_id, node in sim.nodes.items():
-            from src.sim.node import DemandSinkNode, FactoryNode
-            node_cash[node_id] = float(node.cash)
-            if isinstance(node, FactoryNode):
-                node_inventory[node_id] = {"_total": node.inventory}
-                node_pending[node_id] = {}
-            elif isinstance(node, IntermediateNode):
-                node_inventory[node_id] = dict(node.inventory)
-                pending_totals: dict[str, int] = {}
-                for sup_pending in node.pending.values():
-                    for pid, qty in sup_pending.items():
-                        pending_totals[pid] = pending_totals.get(pid, 0) + qty
-                node_pending[node_id] = pending_totals
-            else:
-                node_inventory[node_id] = {}
-                node_pending[node_id] = {}
-
-        # Build node_flows from decision_state + sink_demand + sales.
-        purchases = list(sim._tick_purchases)
-        decision_state = sim._tick_decision_state
-        sink_demand = sim._tick_sink_demand
-
-        sales_by: dict[tuple[str, str], int] = {}
-        demand_by: dict[tuple[str, str], int] = {}
-        for p in purchases:
-            key = (p["supplier_id"], p["pid"])
-            sales_by[key] = sales_by.get(key, 0) + p["qty_filled"]
-            demand_by[key] = demand_by.get(key, 0) + p["qty_requested"]
-
-        node_flows: list[dict[str, Any]] = []
-        for node_id, pidmap in decision_state.items():
-            for pid, st in pidmap.items():
-                key = (node_id, pid)
-                node_flows.append({
-                    "node_id": node_id,
-                    "pid": pid,
-                    "sales": sales_by.get(key, 0),
-                    "demand": demand_by.get(key, 0),
-                    "price": st["price"],
-                    "stockout": st["on_hand"] == 0,
-                })
-        for sink_id, pidmap in sink_demand.items():
-            for pid, dt in pidmap.items():
-                node_flows.append({
-                    "node_id": sink_id,
-                    "pid": pid,
-                    "sales": 0,
-                    "demand": int(dt),
-                    "price": None,
-                    "stockout": False,
-                })
-
-        purchases_log = [
-            {
-                "buyer_id": p["buyer_id"],
-                "supplier_id": p["supplier_id"],
-                "pid": p["pid"],
-                "qty_filled": p["qty_filled"],
-                "cash_paid": p["cash_paid"],
-            }
-            for p in purchases
-        ]
-
-        # Derive node_orders for completeness (inspect builders don't need it).
-        node_orders: dict[str, dict[str, int]] = {
-            nid: {}
-            for nid, n in sim.nodes.items()
-            if isinstance(n, IntermediateNode)
-        }
-        for p in purchases:
-            buyer = sim.nodes.get(p["buyer_id"])
-            if isinstance(buyer, IntermediateNode):
-                d = node_orders[p["buyer_id"]]
-                d[p["pid"]] = d.get(p["pid"], 0) + p["qty_requested"]
-
-        tick_entries.append({
-            "tick": current_tick,
-            "node_cash": node_cash,
-            "node_inventory": node_inventory,
-            "node_pending": node_pending,
-            "node_orders": node_orders,
-            "node_flows": node_flows,
-            "purchases": purchases_log,
-        })
-
-    # Build the run_log dict compatible with inspect builders.
-    run_log: dict[str, Any] = {
-        "n_steps": episode_length,
-        "ticks": tick_entries,
-        "global": {
-            "time": {
-                "simulation_step": list(range(episode_length + 1)),
-                "simulation_date": [None] * (episode_length + 1),
-            },
-            "market_supply": {},
-            "market_demand": {},
-            "events": {"occurrences": [None] * episode_length},
-        },
-    }
 
     ff = flow_frame(run_log)
     pf = purchase_frame(run_log)
@@ -798,21 +636,17 @@ def _cold_start_qty_per_sku(
     spec: RLEpisodeSpec,
     config: RLConfig,
 ) -> float:
-    """Return the mean per-active-SKU order qty emitted by the RL policy on tick 0."""
+    """Return the mean per-active-SKU order qty emitted by the RL policy on tick 0.
+
+    Uses ``RLNodePolicy`` + the two-phase tick API to obtain post-arbiter
+    allocations (the real order, not raw proposals).  This matches the
+    semantics of the rebuilt eval harness.
+    """
     from src.sim.distributions import Distribution as _Distribution
     from random import Random as _Random
+    from src.sim.observation import build_intermediate_obs
 
-    rl_policy = RLIntermediatePolicy()
-    sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
-    node_s = sim.nodes["S"]
-
-    active_subset = spec.active_subset
-    initial_cash = float(node_s.cash)
-    sales_history: dict[str, deque] = {
-        pid: deque(maxlen=100) for pid in active_subset
-    }
-    supplier_ids_for = {pid: [f"F_{pid}"] for pid in active_subset}
-
+    # Derive market-demand prior (same derivation as _run_rl).
     market_base_demand = getattr(spec.scenario.market, "base_demand", None)
     if isinstance(market_base_demand, _Distribution):
         prior_rng = _Random(spec.world_seed + 1)
@@ -822,46 +656,35 @@ def _cold_start_qty_per_sku(
     else:
         base_demand_prior = 1.0
 
-    # Only need tick 0 to measure cold-start.
+    rl_policy = RLNodePolicy.from_policy_fn(
+        rl_policy_fn,
+        config,
+        base_demand_prior=base_demand_prior,
+    )
+
+    sim = build_world(spec.scenario, policy_overrides={"S": rl_policy})
+    node_s = sim.nodes["S"]
+
+    # Phase 1: advance world + publish offers.
     current_tick = sim.tick_world()
     central_table = getattr(sim, "_current_table", None)
 
-    effective_rate = compute_effective_rate(sales_history, base_demand_prior)
+    # Build the intermediate obs dict that Runner injects into decide().
+    obs = build_intermediate_obs(node_s, tick=current_tick)
+    obs["observed_sales"] = sim._tick_sales.get("S", {})
+    obs["direct_supplier_ids"] = sim.graph.suppliers_of("S")
 
-    obs = encode_set_observation(
-        node=node_s,
-        market=sim.market,
-        active_subset=active_subset,
-        initial_cash=initial_cash,
-        sales_history=sales_history,
-        central_table=central_table,
-        supplier_ids_for=supplier_ids_for,
-    ).flatten()
-
-    action_vec = rl_policy_fn(obs)
-    base_prices = {pid: float(node_s.list_prices.get(pid, 1.0)) for pid in active_subset}
-    all_supplier_ids = [f"F_{pid}" for pid in active_subset]
-
-    action_dict = decode_set_action(
-        np.asarray(action_vec, dtype=np.float32).reshape(K_MAX, 3),
-        node_s,
-        active_subset=active_subset,
-        base_prices=base_prices,
-        supplier_ids=all_supplier_ids,
-        effective_rate=effective_rate,
-        target_centre_lead_times=config.target_centre_lead_times,
-        target_half_span_lead_times=config.target_half_span_lead_times,
-        target_max_lead_times=config.target_max_lead_times,
-    )
+    # Call decide() directly to get the post-arbiter action dict.
+    action_dict = rl_policy.decide(obs, central_table)
 
     orders = action_dict.get("order", {})
-    # Count total qty across all order lines.
+    # Count total qty across all post-arbiter order lines.
     total_qty = 0
     for pid, order_lines in orders.items():
         for _sup, qty in order_lines:
             total_qty += qty
 
-    n_active = max(len(active_subset), 1)
+    n_active = max(len(spec.active_subset), 1)
     return float(total_qty) / n_active
 
 
