@@ -196,8 +196,20 @@ resource exhaustion is decided by the arbiter — visible to the policy — rath
 pid-iteration order in the engine. Two variants behind a config switch: **proportional fair-share**
 (scale all proposals by the binding feasibility ratio) and **priority greedy** (fill in order of
 the actor's learned per-product priority scalar until resources exhaust). Default: proportional.
-Engine-side clipping in `execute_buy` remains as a backstop and should be a no-op. From the
-actor's perspective the arbiter is environment dynamics. See ADR 0021 Decision 4.
+Engine-side clipping in `execute_buy` remains as a backstop and should be a no-op.
+
+**Two-homes design.** The Arbiter has two complementary roles depending on context:
+- *During training* (inside `RLEnv.step()`): environment dynamics — it shapes reward before the
+  engine sees the order, so the policy learns to plan within capacity and cash constraints.
+  From the actor's perspective it is part of the world, not part of the policy. (ADR 0021 Decision 4.)
+- *At eval / deployment* (inside `RLNodePolicy.decide()`): the Arbiter travels with the policy
+  as a self-contained component. `RLNodePolicy.from_checkpoint()` reconstructs the Arbiter from
+  the saved config, so train/eval dynamics are identical through one shared `arbitrate_orders`
+  helper — no separate Arbiter instance at eval, no bespoke eval loop. (ADR 0022 Decision 1.)
+
+The two-homes design makes train/eval parity structural: the same code path runs whether the
+policy is being trained in `RLEnv` or evaluated in a `Runner`-driven run log. See ADR 0021 Decision 4,
+ADR 0022 Decision 1.
 
 **Implicit assortment** (`src/rl/set_encoder.py`, `src/rl/env.py`)
 "Stop carrying a product" is expressed through the existing order-up-to head (target 0 = stop,
@@ -405,4 +417,5 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0017](docs/adr/0017-setup-files-as-deterministic-input.md) — Setup files as deterministic input. **Accepted.**
 - [ADR 0018](docs/adr/0018-lateral-links-demand-pull-scheduling.md) — Lateral supplier links + demand-pull topological scheduling (Kahn on reversed graph); type-based validation; min-order-aware routing; rejection log. **Accepted — supersedes ADR 0014.**
 - [ADR 0020](docs/adr/0020-replay-demand-sinks.md) — Replay demand sinks (M5 real-data mode): subclass override, full multiplier chain kept, CRN draws burned.
-- [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — Variable-K RL: shared-weight per-product policy, deterministic arbiter owning capacity + cash, implicit assortment, no mid-episode churn. **Proposed — supersedes ADR 0004 Decision 2.**
+- [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — Variable-K RL: shared-weight per-product policy, deterministic arbiter owning capacity + cash, implicit assortment, no mid-episode churn. **Accepted — supersedes ADR 0004 Decision 2.**
+- [ADR 0022](docs/adr/0022-rl-policy-as-first-class-intermediate-policy-eval-via-runner.md) — `RLNodePolicy` as a first-class `IntermediatePolicy`; eval rebuilt on `Runner.run()`; Arbiter travels with the policy; eval-history discontinuity noted. **Accepted.**

@@ -1,6 +1,6 @@
 # 06: Docs — ADR 0022, RL README attach section, CONTEXT.md Arbiter entry
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

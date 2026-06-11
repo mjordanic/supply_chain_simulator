@@ -22,7 +22,7 @@ node size and across K values up to `K_max = 32` without retraining.
 4. [Monitoring training](#monitoring-training)
 5. [Checkpoints](#checkpoints)
 6. [Comparing a trained policy against `OrderUpToPolicy`](#comparing-a-trained-policy-against-orderuptopolicy)
-7. [Using a trained policy in a multi-echelon graph](#using-a-trained-policy-in-a-multi-echelon-graph)
+7. [Attaching a trained checkpoint to any intermediate node](#attaching-a-trained-checkpoint-to-any-intermediate-node)
 8. [CLI flags](#cli-flags)
 9. [How the env relates to `Runner`](#how-the-env-relates-to-runner)
 10. [Further reading](#further-reading)
@@ -361,25 +361,54 @@ detail that the TensorBoard-aggregated scalars hide. It:
 eval-cadence checkpoints — model selection, bootstrap CI on the uplift, regime analysis
 (does scale-invariance hold across capacity and balance ranges?), and behavioral signature.
 
-## Using a trained policy in a multi-echelon graph
+## Attaching a trained checkpoint to any intermediate node
 
 Training and eval both run on the **degenerate 3-node graph** (`FactoryNode("F_<pid>") →
 IntermediateNode("S") → DemandSinkNode("D_<pid>")`) — one trainable node. The
 scale-invariance package means a trained actor generalises across node size and SKU
-assortment, so conceptually it should drop onto any single `IntermediateNode` in a larger
-graph.
+assortment, so it can be attached to any single `IntermediateNode` in a larger graph via
+the standard `policy_overrides` API (ADR 0022).
 
-**This is not wired up yet.** Unlike a *tuned* textbook policy — which is a plain
-`IntermediatePolicy` you attach with
-`Runner(scenario, policy_overrides={"shop-1": tuned}).run()` (see
+```python
+from src.rl.node_policy import RLNodePolicy
+from src.sim.runner import Runner
+
+# Load checkpoint and build a policy — one instance per Runner.run() call.
+policy = RLNodePolicy.from_checkpoint("runs/fashion_run/checkpoints/actor_step0001000000.pt")
+
+# Attach to any intermediate node by its node id.
+runner = Runner(scenario, policy_overrides={"shop-1": policy})
+run_log = runner.run()
+```
+
+`from_checkpoint` validates the stored `layout_version` against the current encoder
+constant and reads `arbiter_mode` / `cash_budget_fraction` from the saved config, so the
+Arbiter configuration matches the one the policy trained under automatically.
+
+**Conventions to follow:**
+
+- **One instance per run.** `RLNodePolicy` is stateful (rolling sales history, opening-cash
+  anchor, contention carry-forward). There is no `reset()` method; always create a fresh
+  instance for each `Runner.run()` call.
+- **Deterministic default.** `from_checkpoint` sets `deterministic=True` — the
+  squashed-Gaussian distribution means are used, not a stochastic sample. Pass
+  `deterministic=False` and a `policy_seed` for stochastic rollouts.
+- **Assortment limit.** The managed product set defaults to the node's `list_prices` keys
+  at the first `decide()` call. If the assortment exceeds `K_MAX = 32`, `RLNodePolicy`
+  raises a hard error at that tick.
+
+**Out-of-distribution note.** Attaching a checkpoint trained on the degenerate 3-node
+graph to a node in a deeper multi-echelon topology is an API demo, not a transfer-learning
+guarantee. The policy was trained on synthetic single-node episodes; behaviour in a real
+multi-echelon graph with longer lead times or different upstream supply dynamics is
+untested. See `notebooks/06a-analyze-a-trained-agent.ipynb` for a worked OOD-attach
+example with explicit caveats.
+
+Unlike a *tuned* textbook policy — which is a plain `IntermediatePolicy` you attach the
+same way (see
 [`src/tuning/README.md`](../tuning/README.md#deploying-a-tuned-policy-in-a-multi-echelon-graph))
-— a trained `SetActor` cannot be run through `Runner.run()` as-is.
-`RLIntermediatePolicy.decide()` only returns an action pre-injected via
-`set_pending_action()` inside the env's two-phase loop, and `encode_set_observation` needs
-the `CentralTable` and episode-level context (initial cash, active subset, sales history)
-that a node's `decide(obs_intermediate, central_table)` is never handed. Reusing a
-checkpoint inside an arbitrary multi-echelon graph is a planned follow-up — see
-[`TODO.md`](../../TODO.md) §8 for the two implementation options.
+— `RLNodePolicy` carries the `SetActor` weights and the Arbiter inline, so the dependency
+on `torch` is present at inference time.
 
 ## CLI flags
 
@@ -445,7 +474,9 @@ both batch scenario runs and RL episodes.
 ## Further reading
 
 - [`CONTEXT.md`](../../CONTEXT.md) — domain and architecture glossary
-- [ADR 0021](../../docs/adr/0021-variable-k-shared-weight-policy.md) — variable-K design
+- [ADR 0021](../../docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — variable-K design
   decisions (shared-weight actor, implicit assortment, Arbiter, self-describing checkpoints)
+- [ADR 0022](../../docs/adr/0022-rl-policy-as-first-class-intermediate-policy-eval-via-runner.md) — `RLNodePolicy`
+  as a first-class `IntermediatePolicy`; eval via `Runner`; Arbiter travels with the policy; eval-history discontinuity
 - [ADR 0004](../../docs/adr/0004-rl-training-env.md) — original RL env design; ADR 0021
   supersedes its slot-shuffle and assortment-head decisions
