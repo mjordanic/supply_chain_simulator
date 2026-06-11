@@ -1,6 +1,6 @@
 # 05: Notebook 06 — prose update and full re-execution
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
