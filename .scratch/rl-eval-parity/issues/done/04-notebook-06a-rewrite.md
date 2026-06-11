@@ -1,6 +1,6 @@
 # 04: Notebook 06a — fixed-path re-run, fresh analysis, attach-and-run demo
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
