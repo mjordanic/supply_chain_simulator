@@ -1,0 +1,186 @@
+product_id,name,category,base_price,unit_cost,seasonality,related_products,init_stock_share
+P0000,Essential Cotton Crew Tee,Women’s Apparel,24.0,8.0,all_season,Classic Crew Neck Tee:0.95;Everyday Stretch Tee:0.9;Soft Touch Long Sleeve Tee:0.72,1.0
+P0001,Ribbed Knit Tank,Women’s Apparel,28.0,9.0,spring/summer,Seamless Camisole:0.9;Lace Trim Camisole:0.68;Essential Cotton Crew Tee:0.42,1.0
+P0002,Tie-Front Poplin Blouse,Women’s Apparel,42.0,15.0,spring/summer,Slim Fit Oxford Shirt:0.63;Paper Touch Shirt:0.6;Ruffle Shoulder Blouse:0.58,1.0
+P0003,Fluid Midi Wrap Dress,Women’s Apparel,68.0,26.0,spring/summer,Smocked Midi Dress:0.76;Fitted Ponte Dress:0.55;Belted Shirt Dress:0.48,1.0
+P0004,Slim Straight Ankle Jean,Women’s Apparel,59.0,23.0,all_season,Relaxed Denim Jean:0.66;Five-Pocket Stretch Jean:0.74;Wide-Leg Crop Jean:0.51,1.0
+P0005,High-Waist Pleated Trousers,Women’s Apparel,64.0,25.0,fall/winter,Slim Fit Trousers:0.82;Relaxed Linen Blazer:0.7;Double-Breasted Blazer:0.64,1.0
+P0006,Soft Touch Cardigan,Women’s Apparel,54.0,20.0,fall/winter,Cable Knit Pullover:0.58;Merino Crew Sweater:0.52;Belted Cardigan Coat:0.63,1.0
+P0007,Oversized Trench Coat,Women’s Apparel,110.0,48.0,spring,Warm Handle Wool Coat:0.58;Tailored Wool Coat:0.55;Packable Rain Shell:0.46,1.0
+P0008,Pointelle Sweater Vest,Women’s Apparel,38.0,14.0,spring,Longline Knit Vest:0.83;Merino Crew Sweater:0.5;Cable Knit Pullover:0.48,1.0
+P0009,Fitted Mock Neck Top,Women’s Apparel,32.0,11.0,fall/winter,Ribbed Mock Neck:0.92;Mesh Long Sleeve Top:0.58;Silk-Blend Shell Top:0.46,1.0
+P0010,Linen Blend Utility Shorts,Women’s Apparel,36.0,13.0,spring/summer,Paperbag Waist Shorts:0.77;Pleated Tailored Shorts:0.56;Relaxed Linen Shirt:0.47,1.0
+P0011,Satin Slip Skirt,Women’s Apparel,46.0,17.0,all_season,Woven Wrap Midi Skirt:0.67;Tiered Maxi Skirt:0.5;Silk-Blend Shell Top:0.54,1.0
+P0012,Relaxed Wide-Leg Jumpsuit,Women’s Apparel,72.0,29.0,spring/summer,Printed Palazzo Pants:0.46;Relaxed Linen Blazer:0.44;Minimalist Dress Sneaker:0.33,1.0
+P0013,Cropped Denim Jacket,Women’s Apparel,62.0,24.0,spring,Stretch Denim Jacket:0.9;Relaxed Denim Jean:0.64;Wide-Leg Crop Jean:0.58,1.0
+P0014,Ballet Sleeve Knit Top,Women’s Apparel,34.0,12.0,all_season,Puff Sleeve Knit Top:0.84;Breezy Off-Shoulder Top:0.51;Knit Wrap Top:0.49,1.0
+P0015,Stretch Ponte Leggings,Women’s Apparel,39.0,14.0,all_season,Moisture-Wick Legging:0.86;Slim Knit Jogger:0.55;Relaxed Lounge Jogger:0.43,1.0
+P0016,Tiered Maxi Skirt,Women’s Apparel,58.0,22.0,spring/summer,Smocked Midi Dress:0.57;Woven Wrap Midi Skirt:0.69;Embroidered Peasant Blouse:0.54,1.0
+P0017,Double-Breasted Blazer,Women’s Apparel,98.0,41.0,fall/winter,Slim Fit Blazer:0.91;Relaxed Linen Blazer:0.66;High-Waist Pleated Trousers:0.62,1.0
+P0018,Knit Polo Top,Women’s Apparel,35.0,12.0,spring/summer,Textured Knit Polo:0.86;Performance Polo:0.64;Stretch Chino Pants:0.45,1.0
+P0019,Embroidered Peasant Blouse,Women’s Apparel,44.0,16.0,spring/summer,Ruffle Shoulder Blouse:0.7;Breezy Off-Shoulder Top:0.58;Tiered Maxi Skirt:0.5,1.0
+P0020,Belted Shirt Dress,Women’s Apparel,74.0,30.0,spring/summer,Textured Midi Shirt Dress:0.88;Smocked Midi Dress:0.57;Oversized Trench Coat:0.41,1.0
+P0021,Faux Leather Mini Skirt,Women’s Apparel,48.0,18.0,fall/winter,Satin Slip Skirt:0.56;Mesh Long Sleeve Top:0.46;Draped Evening Top:0.52,1.0
+P0022,Textured Boucle Jacket,Women’s Apparel,89.0,37.0,fall/winter,Double-Breasted Blazer:0.55;Slim Fit Blazer:0.5;Warm Handle Wool Coat:0.47,1.0
+P0023,Relaxed Hoodie Dress,Women’s Apparel,66.0,25.0,all_season,Essential Hoodie:0.83;Modern Crew Sweatshirt:0.56;Stretch Knit Mule:0.42,1.0
+P0024,Seamless Camisole,Women’s Apparel,22.0,7.0,spring/summer,Lace Trim Camisole:0.89;Ribbed Knit Tank:0.72;Soft Touch Long Sleeve Tee:0.44,1.0
+P0025,Paperbag Waist Shorts,Women’s Apparel,34.0,12.0,spring/summer,Pleated Tailored Shorts:0.72;Linen Blend Utility Shorts:0.68;Relaxed Linen Shirt:0.41,1.0
+P0026,Merino Turtleneck Sweater,Women’s Apparel,79.0,31.0,fall/winter,Ribbed Mock Neck:0.8;Merino Crew Sweater:0.73;Wool Blend Scarf:0.52,1.0
+P0027,Utility Cargo Pants,Women’s Apparel,62.0,24.0,all_season,Washed Cargo Pants:0.92;Tapered Utility Pant:0.68;Canvas Field Jacket:0.48,1.0
+P0028,Puff Sleeve Knit Top,Women’s Apparel,36.0,13.0,spring/summer,Ballet Sleeve Knit Top:0.84;Ruffle Shoulder Blouse:0.55;Knit Wrap Top:0.46,1.0
+P0029,Draped Evening Top,Women’s Apparel,52.0,19.0,fall/winter,Embellished Knit Top:0.74;Silk-Blend Shell Top:0.7;Faux Leather Mini Skirt:0.44,1.0
+P0030,Chino Culotte Pants,Women’s Apparel,49.0,18.0,spring/summer,Stretch Chino Pants:0.76;Slim Fit Trousers:0.48;Paper Touch Shirt:0.41,1.0
+P0031,Quilted Shirt Jacket,Women’s Apparel,88.0,36.0,fall/winter,Quilted Vest:0.73;Corduroy Shirt Jacket:0.67;Faux Suede Shacket:0.55,1.0
+P0032,Embellished Knit Top,Women’s Apparel,46.0,17.0,all_season,Draped Evening Top:0.75;Silk-Blend Shell Top:0.52;Faux Leather Clutch:0.43,1.0
+P0033,Smocked Midi Dress,Women’s Apparel,71.0,28.0,spring/summer,Fluid Midi Wrap Dress:0.77;Tiered Maxi Skirt:0.58;Embroidered Peasant Blouse:0.45,1.0
+P0034,Relaxed Linen Blazer,Women’s Apparel,96.0,39.0,spring/summer,Double-Breasted Blazer:0.7;High-Waist Pleated Trousers:0.66;Linen Resort Shirt:0.44,1.0
+P0035,Layered Hem Tunic,Women’s Apparel,41.0,15.0,all_season,Slim Straight Ankle Jean:0.47;Stretch Ponte Leggings:0.58;Seamless Camisole:0.42,1.0
+P0036,Stretch Denim Jacket,Women’s Apparel,67.0,26.0,spring,Cropped Denim Jacket:0.9;Relaxed Denim Jean:0.62;Wide-Leg Crop Jean:0.55,1.0
+P0037,Ruffle Shoulder Blouse,Women’s Apparel,43.0,16.0,spring/summer,Embroidered Peasant Blouse:0.72;Tie-Front Poplin Blouse:0.54;Tiered Maxi Skirt:0.46,1.0
+P0038,Cable Knit Pullover,Women’s Apparel,74.0,29.0,fall/winter,Colorblock Sweater:0.74;Merino Crew Sweater:0.63;Soft Touch Cardigan:0.56,1.0
+P0039,Straight-Leg Knit Pant,Women’s Apparel,58.0,21.0,all_season,Relaxed Lounge Jogger:0.48;Slim Knit Jogger:0.44;Merino Turtleneck Sweater:0.4,1.0
+P0040,Mesh Long Sleeve Top,Women’s Apparel,31.0,10.0,spring/summer,Fitted Mock Neck Top:0.59;Draped Evening Top:0.55;Faux Leather Mini Skirt:0.49,1.0
+P0041,A-Line Twill Skirt,Women’s Apparel,47.0,17.0,all_season,Paper Touch Shirt:0.46;Slim Fit Oxford Shirt:0.42;Ballet Sleeve Knit Top:0.45,1.0
+P0042,Colorblock Sweater,Women’s Apparel,69.0,27.0,fall/winter,Cable Knit Pullover:0.76;Merino Crew Sweater:0.6;Knit Beanie:0.4,1.0
+P0043,Paper Touch Shirt,Women’s Apparel,39.0,14.0,all_season,Slim Fit Oxford Shirt:0.82;Tie-Front Poplin Blouse:0.59;A-Line Twill Skirt:0.43,1.0
+P0044,Belted Cardigan Coat,Women’s Apparel,104.0,44.0,fall/winter,Soft Touch Cardigan:0.68;Oversized Trench Coat:0.58;Warm Handle Wool Coat:0.52,1.0
+P0045,Silk-Blend Shell Top,Women’s Apparel,57.0,22.0,spring/summer,Seamless Camisole:0.64;Draped Evening Top:0.69;Satin Slip Skirt:0.53,1.0
+P0046,Everyday Stretch Tee,Women’s Apparel,23.0,8.0,all_season,Classic Crew Neck Tee:0.88;Essential Cotton Crew Tee:0.86;Breton Stripe Tee:0.5,1.0
+P0047,Wide-Leg Crop Jean,Women’s Apparel,61.0,24.0,all_season,Slim Straight Ankle Jean:0.58;Relaxed Denim Jean:0.62;Cropped Denim Jacket:0.46,1.0
+P0048,Faux Suede Shacket,Women’s Apparel,86.0,35.0,fall/winter,Textured Overshirt:0.7;Corduroy Shirt Jacket:0.66;Stretch Carpenter Pants:0.42,1.0
+P0049,Tie-Sleeve Popover,Women’s Apparel,37.0,13.0,spring/summer,Tie-Front Poplin Blouse:0.78;Paper Touch Shirt:0.56;Ruffle Shoulder Blouse:0.48,1.0
+P0050,Textured Midi Shirt Dress,Women’s Apparel,76.0,31.0,spring/summer,Ballet Flat:0.82;Structured Tote Bag:0.7;Classic Leather Belt:0.58,1.0
+P0051,Knit Wrap Top,Women’s Apparel,33.0,12.0,all_season,Satin Slip Skirt:0.66;High-Waist Pleated Trousers:0.6;Slim Straight Ankle Jean:0.5,1.0
+P0052,Pleated Tailored Shorts,Women’s Apparel,45.0,16.0,spring/summer,Double-Breasted Blazer:0.74;Ribbed Knit Tank:0.52;Minimalist Dress Sneaker:0.42,1.0
+P0053,Warm Handle Wool Coat,Women’s Apparel,128.0,56.0,winter,Wool Blend Scarf:0.82;Knit Beanie:0.62;Classic Chelsea Boot:0.56,1.0
+P0054,Embroidered Denim Shirt,Women’s Apparel,53.0,20.0,all_season,Relaxed Denim Jean:0.7;Canvas Baseball Cap:0.38;Classic Leather Belt:0.34,1.0
+P0055,Lace Trim Camisole,Women’s Apparel,26.0,9.0,spring/summer,Soft Touch Cardigan:0.72;Satin Slip Skirt:0.63;Straight-Leg Knit Pant:0.34,1.0
+P0056,Fitted Ponte Dress,Women’s Apparel,69.0,27.0,all_season,Block Heel Pump:0.8;Structured Tote Bag:0.5;Pearl Drop Earrings:0.48,1.0
+P0057,Longline Knit Vest,Women’s Apparel,41.0,15.0,fall/winter,Slim Fit Oxford Shirt:0.68;Straight Leg Twill Pants:0.52;Minimalist Dress Sneaker:0.3,1.0
+P0058,Printed Palazzo Pants,Women’s Apparel,55.0,21.0,spring/summer,Silk-Blend Shell Top:0.72;Ballet Flat:0.46;Chunky Chain Necklace:0.36,1.0
+P0059,Breezy Off-Shoulder Top,Women’s Apparel,35.0,12.0,spring/summer,Tiered Maxi Skirt:0.66;Espadrille Wedge:0.6;Pearl Drop Earrings:0.44,1.0
+P0060,Woven Wrap Midi Skirt,Women’s Apparel,49.0,18.0,spring/summer,Ribbed Knit Tank:0.64;Ballet Flat:0.52;Braided Waist Belt:0.4,1.0
+P0061,Textured Stripe Tee,Women’s Apparel,29.0,10.0,all_season,Five-Pocket Stretch Jean:0.62;Canvas Low Top Sneaker:0.56;Cropped Denim Jacket:0.42,1.0
+P0062,Slim Fit Oxford Shirt,Men’s Apparel,44.0,16.0,all_season,Slim Fit Trousers:0.74;Double-Breasted Blazer:0.7;Lace-Up Derby Shoe:0.64,1.0
+P0063,Brushed Flannel Shirt,Men’s Apparel,48.0,18.0,fall/winter,Relaxed Denim Jean:0.66;Combat Lace Boot:0.48;Canvas Field Jacket:0.46,1.0
+P0064,Classic Crew Neck Tee,Men’s Apparel,22.0,7.0,all_season,Five-Pocket Stretch Jean:0.68;Canvas Low Top Sneaker:0.58;Cropped Denim Jacket:0.42,1.0
+P0065,Stretch Chino Pants,Men’s Apparel,52.0,20.0,all_season,Slim Fit Oxford Shirt:0.7;Slip-On Loafer:0.58;Braided Waist Belt:0.3,1.0
+P0066,Relaxed Denim Jean,Men’s Apparel,58.0,23.0,all_season,Classic Crew Neck Tee:0.7;Canvas Low Top Sneaker:0.62;Cropped Denim Jacket:0.44,1.0
+P0067,Lightweight Bomber Jacket,Men’s Apparel,84.0,34.0,spring,Classic Crew Neck Tee:0.58;Relaxed Denim Jean:0.5;Chunky Retro Sneaker:0.48,1.0
+P0068,Merino Crew Sweater,Men’s Apparel,76.0,29.0,fall/winter,Tailored Wool Coat:0.66;Slim Fit Trousers:0.6;Classic Chelsea Boot:0.48,1.0
+P0069,Linen Resort Shirt,Men’s Apparel,46.0,17.0,spring/summer,Stretch Chino Pants:0.62;Slide Sport Sandal:0.56;Woven Straw Tote:0.4,1.0
+P0070,Performance Polo,Men’s Apparel,36.0,13.0,spring/summer,Straight Leg Twill Pants:0.62;Slip-On Loafer:0.5;Canvas Baseball Cap:0.34,1.0
+P0071,Textured Overshirt,Men’s Apparel,62.0,24.0,fall/winter,Classic Crew Neck Tee:0.58;Relaxed Denim Jean:0.56;Combat Lace Boot:0.42,1.0
+P0072,Slim Fit Trousers,Men’s Apparel,64.0,25.0,all_season,Slim Fit Oxford Shirt:0.78;Double-Breasted Blazer:0.72;Monk Strap Dress Shoe:0.66,1.0
+P0073,Short Sleeve Henley,Men’s Apparel,28.0,9.0,spring/summer,Relaxed Denim Jean:0.62;Canvas Low Top Sneaker:0.46;Essential Hoodie:0.34,1.0
+P0074,Quilted Vest,Men’s Apparel,68.0,26.0,fall/winter,Brushed Flannel Shirt:0.6;Relaxed Denim Jean:0.52;Combat Lace Boot:0.5,1.0
+P0075,Corduroy Shirt Jacket,Men’s Apparel,79.0,31.0,fall/winter,Classic Crew Neck Tee:0.56;Relaxed Denim Jean:0.54;Suede Chukka Boots:0.5,1.0
+P0076,Essential Hoodie,Men’s Apparel,54.0,20.0,all_season,Slim Knit Jogger:0.72;Canvas Low Top Sneaker:0.58;Relaxed Denim Jean:0.38,1.0
+P0077,Tailored Wool Coat,Men’s Apparel,138.0,61.0,winter,Merino Crew Sweater:0.68;Slim Fit Trousers:0.6;Classic Chelsea Boot:0.58,1.0
+P0078,Washed Cargo Pants,Men’s Apparel,59.0,22.0,all_season,Canvas Field Jacket:0.7;Classic Crew Neck Tee:0.52;Combat Lace Boot:0.62,1.0
+P0079,Seersucker Button-Up,Men’s Apparel,41.0,15.0,spring/summer,Stretch Chino Pants:0.6;Slip-On Loafer:0.42;Woven Straw Tote:0.3,1.0
+P0080,Pique Golf Shirt,Men’s Apparel,38.0,14.0,spring/summer,Straight Leg Twill Pants:0.56;Slip-On Loafer:0.48;Canvas Baseball Cap:0.32,1.0
+P0081,Straight Leg Twill Pants,Men’s Apparel,57.0,21.0,all_season,Slim Fit Oxford Shirt:0.64;Double-Breasted Blazer:0.58;Monk Strap Dress Shoe:0.5,1.0
+P0082,Thermal Base Layer Top,Men’s Apparel,34.0,12.0,winter,Packable Rain Shell:0.46;Outdoor Trek Sandal:0.18;Waterproof Hiking Boot:0.52,1.0
+P0083,Packable Rain Shell,Men’s Apparel,92.0,38.0,spring,Waterproof Hiking Boot:0.7;Trail Running Shoe:0.44;Textured Mini Backpack:0.3,1.0
+P0084,Soft Touch Long Sleeve Tee,Men’s Apparel,26.0,8.0,all_season,Five-Pocket Stretch Jean:0.58;Canvas Low Top Sneaker:0.5;Soft Touch Cardigan:0.4,1.0
+P0085,Textured Knit Polo,Men’s Apparel,43.0,16.0,spring/summer,Straight Leg Twill Pants:0.58;Slip-On Loafer:0.52;Braided Waist Belt:0.3,1.0
+P0086,Utility Denim Shirt,Men’s Apparel,49.0,18.0,all_season,Washed Cargo Pants:0.64;Combat Lace Boot:0.46;Canvas Baseball Cap:0.34,1.0
+P0087,Slim Fit Blazer,Men’s Apparel,124.0,52.0,fall/winter,Slim Fit Trousers:0.78;Monk Strap Dress Shoe:0.68;Structured Tote Bag:0.38,1.0
+P0088,Relaxed Lounge Jogger,Men’s Apparel,39.0,13.0,all_season,Modern Crew Sweatshirt:0.72;Essential Hoodie:0.68;Canvas Low Top Sneaker:0.46,1.0
+P0089,Ribbed Mock Neck,Men’s Apparel,32.0,11.0,fall/winter,Slim Fit Trousers:0.54;Double-Breasted Blazer:0.52;Classic Chelsea Boot:0.38,1.0
+P0090,Canvas Field Jacket,Men’s Apparel,88.0,35.0,spring,Washed Cargo Pants:0.72;Combat Lace Boot:0.64;Classic Crew Neck Tee:0.42,1.0
+P0091,Modern Crew Sweatshirt,Men’s Apparel,46.0,17.0,all_season,Relaxed Lounge Jogger:0.74;Canvas Low Top Sneaker:0.5;Essential Hoodie:0.46,1.0
+P0092,Five-Pocket Stretch Jean,Men’s Apparel,61.0,24.0,all_season,Classic Crew Neck Tee:0.68;Canvas Low Top Sneaker:0.6;Cropped Denim Jacket:0.44,1.0
+P0093,Tapered Utility Pant,Men’s Apparel,63.0,25.0,all_season,Utility Denim Shirt:0.64;Canvas Field Jacket:0.58;Combat Lace Boot:0.56,1.0
+P0094,Oxford Stripe Shirt,Men’s Apparel,45.0,16.0,all_season,Slim Fit Trousers:0.66;Double-Breasted Blazer:0.62;Lace-Up Derby Shoe:0.58,1.0
+P0095,Wool Blend Overcoat,Men’s Apparel,148.0,65.0,winter,Merino Crew Sweater:0.7;Wool Blend Scarf:0.84;Classic Chelsea Boot:0.6,1.0
+P0096,Sport Mesh Tee,Men’s Apparel,24.0,7.0,spring/summer,Athletic Training Shoe:0.56;Moisture-Wick Legging:0.38;Seamless Sports Bra:0.34,1.0
+P0097,Double Pocket Workshirt,Men’s Apparel,47.0,17.0,all_season,Stretch Carpenter Pants:0.74;Combat Lace Boot:0.62;Canvas Field Jacket:0.5,1.0
+P0098,Slim Knit Jogger,Men’s Apparel,42.0,15.0,all_season,Essential Hoodie:0.72;Modern Crew Sweatshirt:0.58;Canvas Low Top Sneaker:0.44,1.0
+P0099,Suede Chukka Boots,Men’s Apparel,96.0,40.0,fall/winter,Relaxed Denim Jean:0.48;Textured Overshirt:0.42;Merino Crew Sweater:0.4,1.0
+P0100,Breton Stripe Tee,Men’s Apparel,27.0,9.0,all_season,Classic Crew Neck Tee:0.78;Relaxed Denim Jean:0.64;Canvas Low Top Sneaker:0.55,1.0
+P0101,Relaxed Linen Shirt,Men’s Apparel,44.0,16.0,spring/summer,Linen Resort Shirt:0.82;Relaxed Wide-Leg Jumpsuit:0.48;Stretch Chino Pants:0.46,1.0
+P0102,Fleece Zip Jacket,Men’s Apparel,72.0,28.0,fall/winter,Essential Hoodie:0.7;Modern Crew Sweatshirt:0.62;Relaxed Lounge Jogger:0.5,1.0
+P0103,Stretch Carpenter Pants,Men’s Apparel,56.0,21.0,all_season,Utility Cargo Pants:0.84;Double Pocket Workshirt:0.52;Canvas Field Jacket:0.43,1.0
+P0104,Minimalist Dress Sneaker,Footwear,78.0,30.0,all_season,Canvas Low Top Sneaker:0.8;Slim Straight Ankle Jean:0.56;Relaxed Denim Jean:0.45,1.0
+P0105,Court Leather Sneaker,Footwear,88.0,35.0,all_season,Canvas Low Top Sneaker:0.72;Athletic Training Shoe:0.5;Minimalist Dress Sneaker:0.58,1.0
+P0106,Trail Running Shoe,Footwear,95.0,38.0,spring/summer,Knit Running Shoe:0.88;Reflective Run Vest:0.58;Moisture-Wick Legging:0.6,1.0
+P0107,Classic Chelsea Boot,Footwear,124.0,52.0,fall/winter,Suede Chukka Boots:0.62;Suede Ankle Boot:0.77;Slim Straight Ankle Jean:0.49,1.0
+P0108,Waterproof Hiking Boot,Footwear,138.0,59.0,fall/winter,Packable Rain Shell:0.66;Tapered Utility Pant:0.53;Outdoor Trek Sandal:0.35,1.0
+P0109,Strappy Flat Sandal,Footwear,54.0,19.0,spring/summer,Espadrille Wedge:0.74;Breezy Off-Shoulder Top:0.42;Fluid Midi Wrap Dress:0.46,1.0
+P0110,Block Heel Pump,Footwear,86.0,34.0,all_season,Slim Fit Blazer:0.68;Fitted Ponte Dress:0.72;Draped Evening Top:0.58,1.0
+P0111,Slip-On Loafer,Footwear,92.0,37.0,all_season,Slim Fit Trousers:0.66;Paper Touch Shirt:0.53;Double-Breasted Blazer:0.57,1.0
+P0112,Athletic Training Shoe,Footwear,82.0,31.0,all_season,Seamless Sports Bra:0.74;High-Rise Bike Short:0.68;Performance Track Jacket:0.54,1.0
+P0113,Canvas Low Top Sneaker,Footwear,64.0,23.0,spring/summer,Relaxed Denim Jean:0.7;Classic Crew Neck Tee:0.62;Stretch Denim Jacket:0.5,1.0
+P0114,Suede Ankle Boot,Footwear,118.0,49.0,fall/winter,Classic Chelsea Boot:0.74;Merino Turtleneck Sweater:0.47;Wide-Leg Crop Jean:0.45,1.0
+P0115,Espadrille Wedge,Footwear,74.0,28.0,spring/summer,Strappy Flat Sandal:0.76;Tiered Maxi Skirt:0.55;Breezy Off-Shoulder Top:0.43,1.0
+P0116,Ballet Flat,Footwear,58.0,21.0,all_season,Fluid Midi Wrap Dress:0.56;A-Line Twill Skirt:0.52;Tie-Front Poplin Blouse:0.44,1.0
+P0117,Platform Slide,Footwear,62.0,22.0,spring/summer,Faux Leather Mini Skirt:0.41;Ribbed Knit Tank:0.44;Relaxed Lounge Jogger:0.32,1.0
+P0118,Knit Running Shoe,Footwear,90.0,36.0,all_season,Trail Running Shoe:0.9;Running Shorts:0.66;Quick-Dry Training Tee:0.64,1.0
+P0119,Weatherproof Snow Boot,Footwear,145.0,63.0,winter,Insulated Snow Boot:0.86;Warm Handle Wool Coat:0.58;Knit Beanie:0.5,1.0
+P0120,Perforated Slip-On,Footwear,67.0,24.0,spring/summer,Canvas Low Top Sneaker:0.5;Relaxed Denim Jean:0.42;Short Sleeve Henley:0.38,1.0
+P0121,Monk Strap Dress Shoe,Footwear,112.0,46.0,all_season,Lace-Up Derby Shoe:0.83;Slim Fit Trousers:0.68;Slim Fit Blazer:0.63,1.0
+P0122,Chunky Retro Sneaker,Footwear,84.0,33.0,all_season,Canvas Low Top Sneaker:0.54;Relaxed Denim Jean:0.49;Modern Crew Sweatshirt:0.46,1.0
+P0123,Slide Sport Sandal,Footwear,46.0,16.0,spring/summer,Outdoor Trek Sandal:0.76;Athletic Training Shoe:0.45;High-Rise Bike Short:0.41,1.0
+P0124,Lace-Up Derby Shoe,Footwear,118.0,48.0,all_season,Monk Strap Dress Shoe:0.82;Slim Fit Trousers:0.71;Double-Breasted Blazer:0.62,1.0
+P0125,Outdoor Trek Sandal,Footwear,69.0,25.0,spring/summer,Waterproof Hiking Boot:0.7;Packable Rain Shell:0.48;Tapered Utility Pant:0.44,1.0
+P0126,Combat Lace Boot,Footwear,132.0,55.0,fall/winter,Suede Ankle Boot:0.55;Stretch Carpenter Pants:0.5;Faux Suede Shacket:0.46,1.0
+P0127,Stretch Knit Mule,Footwear,57.0,20.0,all_season,Ballet Flat:0.58;Fluid Midi Wrap Dress:0.5;Soft Touch Cardigan:0.36,1.0
+P0128,Velcro Kids Sneaker,Footwear,52.0,18.0,all_season,Boys' Graphic Hoodie:0.47;Youth Fleece Sweatshirt:0.44;Children's Raincoat:0.4,1.0
+P0129,Insulated Snow Boot,Footwear,128.0,54.0,winter,Weatherproof Snow Boot:0.86;Knit Beanie:0.53;Cashmere Wrap Scarf:0.52,1.0
+P0130,Classic Leather Belt,Accessories,42.0,12.0,all_season,Braided Waist Belt:0.79;Slim Fit Trousers:0.54;Double-Breasted Blazer:0.41,1.0
+P0131,Crossbody Camera Bag,Accessories,78.0,28.0,all_season,Structured Tote Bag:0.5;Quilted Belt Bag:0.56;Leather Card Holder:0.37,1.0
+P0132,Structured Tote Bag,Accessories,96.0,36.0,all_season,Crossbody Camera Bag:0.57;Woven Straw Tote:0.69;Slim Leather Wallet:0.42,1.0
+P0133,Canvas Baseball Cap,Accessories,28.0,8.0,spring/summer,Reversible Bucket Hat:0.71;Printed Silk Bandana:0.45;Sport Mesh Tee:0.35,1.0
+P0134,Wool Blend Scarf,Accessories,34.0,10.0,fall/winter,Cashmere Wrap Scarf:0.82;Knit Beanie:0.68;Tailored Wool Coat:0.51,1.0
+P0135,Chunky Chain Necklace,Accessories,46.0,14.0,all_season,Statement Cuff Bracelet:0.7;Minimal Hoop Earrings:0.56;Pearl Drop Earrings:0.33,1.0
+P0136,Slim Leather Wallet,Accessories,54.0,18.0,all_season,Leather Card Holder:0.86;Travel Passport Case:0.66;Crossbody Camera Bag:0.35,1.0
+P0137,Oversized Sun Hat,Accessories,38.0,11.0,spring/summer,Woven Straw Tote:0.72;Strappy Flat Sandal:0.5;Fluid Midi Wrap Dress:0.42,1.0
+P0138,Minimal Hoop Earrings,Accessories,32.0,9.0,all_season,Pearl Drop Earrings:0.63;Statement Cuff Bracelet:0.48;Chunky Chain Necklace:0.46,1.0
+P0139,Printed Silk Bandana,Accessories,24.0,7.0,spring/summer,Canvas Baseball Cap:0.52;Crossbody Camera Bag:0.33;Reversible Bucket Hat:0.36,1.0
+P0140,Quilted Belt Bag,Accessories,66.0,24.0,all_season,Crossbody Camera Bag:0.7;Textured Mini Backpack:0.52;Slim Leather Wallet:0.38,1.0
+P0141,Reversible Bucket Hat,Accessories,30.0,9.0,spring/summer,Canvas Baseball Cap:0.72;Oversized Sun Hat:0.58;Printed Silk Bandana:0.41,1.0
+P0142,Pearl Drop Earrings,Accessories,44.0,13.0,all_season,Minimal Hoop Earrings:0.64;Faux Leather Clutch:0.43;Draped Evening Top:0.39,1.0
+P0143,Faux Leather Clutch,Accessories,58.0,19.0,all_season,Pearl Drop Earrings:0.44;Draped Evening Top:0.67;Block Heel Pump:0.55,1.0
+P0144,Knit Beanie,Accessories,26.0,8.0,fall/winter,Wool Blend Scarf:0.79;Insulated Snow Boot:0.56;Canvas Baseball Cap:0.32,1.0
+P0145,Travel Passport Case,Accessories,36.0,11.0,all_season,Slim Leather Wallet:0.71;Textured Mini Backpack:0.41;Crossbody Camera Bag:0.34,1.0
+P0146,Braided Waist Belt,Accessories,29.0,8.0,all_season,Classic Leather Belt:0.84,1.0
+P0147,Chain Link Bracelet,Accessories,35.0,10.0,all_season,Statement Cuff Bracelet:0.72;Minimal Hoop Earrings:0.49;Chunky Chain Necklace:0.58,1.0
+P0148,Satin Hair Bow Set,Accessories,22.0,6.0,spring/summer,Pearl Drop Earrings:0.35;Minimal Hoop Earrings:0.31;Printed Silk Bandana:0.33,1.0
+P0149,Woven Straw Tote,Accessories,48.0,15.0,spring/summer,Oversized Sun Hat:0.8;Espadrille Wedge:0.55;Structured Tote Bag:0.62,1.0
+P0150,Leather Card Holder,Accessories,41.0,12.0,all_season,Slim Leather Wallet:0.82;Travel Passport Case:0.68;Structured Tote Bag:0.42,1.0
+P0151,Cashmere Wrap Scarf,Accessories,62.0,21.0,fall/winter,Wool Blend Scarf:0.78;Knit Beanie:0.44;Merino Turtleneck Sweater:0.36,1.0
+P0152,Statement Cuff Bracelet,Accessories,39.0,11.0,all_season,Chain Link Bracelet:0.66;Minimal Hoop Earrings:0.4;Pearl Drop Earrings:0.34,1.0
+P0153,Textured Mini Backpack,Accessories,74.0,26.0,all_season,Crossbody Camera Bag:0.64;Quilted Belt Bag:0.48;Reversible Bucket Hat:0.32,1.0
+P0154,Sports Wristband Set,Activewear,18.0,5.0,all_season,Quick-Dry Training Tee:0.35;Seamless Sports Bra:0.33;Athletic Training Shoe:0.3,1.0
+P0155,Quick-Dry Training Tee,Activewear,29.0,10.0,spring/summer,Sport Mesh Tee:0.76;Performance Polo:0.42;Running Shorts:0.58,1.0
+P0156,High-Rise Bike Short,Activewear,34.0,12.0,spring/summer,Moisture-Wick Legging:0.67;Seamless Sports Bra:0.62;Yoga Cropped Top:0.45,1.0
+P0157,Seamless Sports Bra,Activewear,36.0,13.0,all_season,High-Rise Bike Short:0.72;Moisture-Wick Legging:0.58;Yoga Cropped Top:0.64,1.0
+P0158,Moisture-Wick Legging,Activewear,48.0,18.0,all_season,Seamless Sports Bra:0.67;Quick-Dry Training Tee:0.46;Pullover Training Hoodie:0.34,1.0
+P0159,Pullover Training Hoodie,Activewear,58.0,22.0,fall/winter,Recovery Lounge Jogger:0.76;Soft Fleece Jogger:0.73;Insulated Gym Fleece:0.56,1.0
+P0160,Mesh Vent Tank,Activewear,24.0,8.0,spring/summer,Core Training Tank:0.75;Running Shorts:0.44;High-Rise Bike Short:0.41,1.0
+P0161,Performance Track Jacket,Activewear,74.0,29.0,all_season,Stretch Warmup Jacket:0.79;Reflective Run Vest:0.43;Athletic Zip Pant:0.55,1.0
+P0162,Running Shorts,Activewear,31.0,11.0,spring/summer,Quick-Dry Training Tee:0.64;Trail Running Shoe:0.52;Athletic Training Shoe:0.48,1.0
+P0163,Yoga Cropped Top,Activewear,27.0,9.0,spring/summer,Seamless Sports Bra:0.66;High-Rise Bike Short:0.59;Stretch Ponte Leggings:0.43,1.0
+P0164,Athletic Zip Pant,Activewear,52.0,19.0,all_season,Performance Track Jacket:0.62;Stretch Warmup Jacket:0.57;Athletic Training Shoe:0.39,1.0
+P0165,Court Skort,Activewear,38.0,14.0,spring/summer,Breathable Tennis Polo:0.78;Court Leather Sneaker:0.56;Performance Polo:0.41,1.0
+P0166,Insulated Gym Fleece,Activewear,69.0,26.0,fall/winter,Pullover Training Hoodie:0.68;Soft Fleece Jogger:0.55;Recovery Lounge Jogger:0.47,1.0
+P0167,Recovery Lounge Jogger,Activewear,46.0,16.0,all_season,Pullover Training Hoodie:0.71;Soft Fleece Jogger:0.69;Modern Crew Sweatshirt:0.38,1.0
+P0168,Reflective Run Vest,Activewear,44.0,15.0,all_season,Trail Running Shoe:0.63;Running Shorts:0.58;Quick-Dry Training Tee:0.4,1.0
+P0169,Breathable Tennis Polo,Activewear,33.0,12.0,spring/summer,Court Skort:0.8;Court Leather Sneaker:0.46;Pique Golf Shirt:0.38,1.0
+P0170,Bike Mesh Short,Activewear,30.0,10.0,spring/summer,Seamless Sports Bra:0.61;Yoga Cropped Top:0.46;Sport Mesh Tee:0.33,1.0
+P0171,Core Training Tank,Activewear,23.0,7.0,spring/summer,Mesh Vent Tank:0.78;Quick-Dry Training Tee:0.55;High-Rise Bike Short:0.42,1.0
+P0172,Stretch Warmup Jacket,Activewear,63.0,24.0,all_season,Performance Track Jacket:0.77;Athletic Zip Pant:0.58;Running Shorts:0.31,1.0
+P0173,Seam-Taped Shell,Activewear,82.0,32.0,spring,Packable Rain Shell:0.82;Children's Raincoat:0.35;Trail Running Shoe:0.3,1.0
+P0174,Soft Fleece Jogger,Activewear,41.0,15.0,fall/winter,Recovery Lounge Jogger:0.81;Pullover Training Hoodie:0.67;Insulated Gym Fleece:0.5,1.0
+P0175,Girls' Glitter Tee,Kids’ Apparel,24.0,7.0,all_season,Satin Hair Bow Set:0.42;Mini Print Sundress:0.31,1.0
+P0176,Boys' Graphic Hoodie,Kids’ Apparel,38.0,13.0,fall/winter,Youth Fleece Sweatshirt:0.74;Little Explorer Jogger:0.49;Canvas Baseball Cap:0.32,1.0
+P0177,Toddler Play Denim,Kids’ Apparel,32.0,11.0,all_season,Little Explorer Jogger:0.53;Kids' Puffer Vest:0.39;Velcro Kids Sneaker:0.45,1.0
+P0178,Kids' Puffer Vest,Kids’ Apparel,44.0,16.0,fall/winter,Children's Raincoat:0.46;Youth Fleece Sweatshirt:0.41;Velcro Kids Sneaker:0.3,1.0
+P0179,Stretch Jersey Legging,Kids’ Apparel,18.0,5.0,all_season,Girls' Glitter Tee:0.57;Youth Fleece Sweatshirt:0.49;Little Explorer Jogger:0.36,1.0
+P0180,School Polo Shirt,Kids’ Apparel,21.0,6.0,all_season,Pique Golf Shirt:0.66;Slim Fit Oxford Shirt:0.38;Velcro Kids Sneaker:0.24,1.0
+P0181,Children's Raincoat,Kids’ Apparel,46.0,17.0,spring,Packable Rain Shell:0.74;Kids' Puffer Vest:0.45;Weatherproof Snow Boot:0.33,1.0
+P0182,Little Explorer Jogger,Kids’ Apparel,27.0,8.0,all_season,Youth Fleece Sweatshirt:0.7;Boys' Graphic Hoodie:0.58;Girls' Glitter Tee:0.34,1.0
+P0183,Youth Fleece Sweatshirt,Kids’ Apparel,29.0,9.0,fall/winter,Boys' Graphic Hoodie:0.72;Little Explorer Jogger:0.63;Kids' Puffer Vest:0.44,1.0
+P0184,Mini Print Sundress,Kids’ Apparel,26.0,7.0,spring/summer,Strappy Flat Sandal:0.67;Oversized Sun Hat:0.5;Satin Hair Bow Set:0.41,1.0

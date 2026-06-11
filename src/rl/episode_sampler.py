@@ -28,7 +28,7 @@ No I/O, no module-level mutable state, no global RNG.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from random import Random
 from typing import TYPE_CHECKING, Any
@@ -170,6 +170,18 @@ def _build_rl_graph_scenario(
     from src.sim.scenario import NodeInstance
     from src.sim.graph import EdgeSpec
 
+    # Resolve market params up front so node regions match the market's
+    # region keys (a hardcoded "US" breaks setups with other region names).
+    market = market_params if market_params is not None else default_market_params()
+    region = market.regions[0]
+
+    # Default disruption params target region "US"; retarget them to the
+    # market's regions so events never hit a region absent from market_state.
+    if disruption_params is None:
+        disruption_params = replace(
+            default_disruption_params(), regions=list(market.regions)
+        )
+
     # Use first active pid's catalog entry to size the factory unit_cost.
     pid_to_ware: dict[str, Ware] = {w.product_id: w for w in catalog}
 
@@ -183,7 +195,7 @@ def _build_rl_graph_scenario(
         factory_id = f"F_{pid}"
         factory = FactoryNode(
             id=factory_id,
-            region="US",
+            region=region,
             init_seed=init_seed + i,
             produces_product_id=pid,
             unit_cost=float(ware.unit_cost),
@@ -206,7 +218,7 @@ def _build_rl_graph_scenario(
 
     intermediate = IntermediateNode(
         id="S",
-        region="US",
+        region=region,
         init_seed=init_seed + len(active_subset),
         carried_products=set(active_subset),
         capacity=capacity,
@@ -227,7 +239,7 @@ def _build_rl_graph_scenario(
         from src.sim.distributions import Uniform
         sink = DemandSinkNode(
             id=f"D_{pid}",
-            region="US",
+            region=region,
             init_seed=init_seed + len(active_subset) + 1 + j,
             product_id=pid,
             demand_dist=Uniform(2, 8),
@@ -253,10 +265,8 @@ def _build_rl_graph_scenario(
 
     scenario = Scenario(
         catalog=catalog,
-        market=market_params if market_params is not None else default_market_params(),
-        disruption=(
-            disruption_params if disruption_params is not None else default_disruption_params()
-        ),
+        market=market,
+        disruption=disruption_params,
         item_lifecycle=(
             lifecycle_params if lifecycle_params is not None else default_lifecycle_params()
         ),

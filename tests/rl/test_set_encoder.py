@@ -484,6 +484,32 @@ def test_decode_price_bounds():
             )
 
 
+def test_decode_routes_each_pid_to_its_own_supplier():
+    """Each product's order line must target that product's factory, not supplier_ids[0]."""
+    K = 3
+    pids = [f"P{i:04d}" for i in range(K)]
+    base_prices = {pid: 18.0 for pid in pids}
+    node = _make_node(pids, capacity=5000.0, inventory={pid: 0 for pid in pids})
+    effective_rate = {pid: 10.0 for pid in pids}
+    supplier_ids = [f"F_{pid}" for pid in pids]
+
+    # Max order-up-to for every active row → every pid orders a positive qty
+    action = np.zeros((K_MAX, 3), dtype=np.float32)
+    action[:K, 1] = 1.0
+
+    result = decode_set_action(
+        action, node, active_subset=pids, base_prices=base_prices,
+        effective_rate=effective_rate, supplier_ids=supplier_ids,
+    )
+
+    for pid, lines in result["order"].items():
+        assert lines, f"{pid}: expected a positive order"
+        for supplier_id, qty in lines:
+            assert supplier_id == f"F_{pid}", (
+                f"{pid}: order routed to {supplier_id}, expected F_{pid}"
+            )
+
+
 def test_decode_action_result_keys():
     """decode_set_action returns dict with 'order', 'list_price', 'min_order_imposed'."""
     pids = ["P0001"]

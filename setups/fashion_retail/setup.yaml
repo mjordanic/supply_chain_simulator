@@ -1,0 +1,62 @@
+market:
+  cycle_len: 365
+  cycle_amp: 0.0065
+  init_demand: 0.9
+  init_supply: 0.9
+  peak_factor: 1.45
+  off_factor: 0.72
+  season_months:
+    spring:
+    - 3
+    - 4
+    - 5
+    summer:
+    - 6
+    - 7
+    - 8
+    fall:
+    - 9
+    - 10
+    - 11
+    winter:
+    - 12
+    - 1
+    - 2
+  regions:
+  - north_america
+  - europe
+  - asia_pacific
+  correlation: 0.7
+  trend_update_interval: 20
+  min_value: 0.2
+  max_value: 2.0
+  stage_multipliers:
+    introduction: 0.7
+    growth: 1.5
+    maturity: 1.0
+    decline: 0.2
+    dead: 0.05
+  price_elasticity: -1.35
+  promo_multiplier: 1.0
+  demand_factor_min: 0.1
+  supply_factor_min: 0.01
+  cross_inv_lo: 0.3
+  cross_inv_hi: 0.7
+  cross_factor_range:
+  - 0.3
+  - 1.6
+  trend:
+    value: 1.001
+    kind: constant
+  demand_shock:
+    mean: 0.0
+    std: 0.01
+    kind: normal
+  supply_shock:
+    mean: 0.0
+    std: 0.01
+    kind: normal
+  base_demand:
+    low: 5
+    high: 20
+    kind: uniform

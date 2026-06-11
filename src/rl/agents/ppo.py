@@ -258,7 +258,7 @@ def train_ppo(
     envs,
     config: RLConfig,
     writer: SummaryWriter,
-    eval_fn: Callable[[SetActor], dict[str, float]] | None = None,
+    eval_fn: Callable[[SetActor, int], dict[str, float]] | None = None,
     *,
     device: torch.device | None = None,
     seed: int = 0,
@@ -288,8 +288,9 @@ def train_ppo(
     writer:
         A ``torch.utils.tensorboard.SummaryWriter`` open for writing.
     eval_fn:
-        Optional callable ``(actor: SetActor) → dict[str, float]``.  Called
-        every ``config.eval_cadence_env_steps`` global env steps.
+        Optional callable ``(actor: SetActor, global_step: int) → dict[str, float]``.
+        Called every ``config.eval_cadence_env_steps`` global env steps; receives
+        the global env-step count so checkpoints can be named by it.
     device:
         Torch device.  When ``None``, uses CUDA if available, else CPU.
     seed:
@@ -528,7 +529,7 @@ def train_ppo(
         # Optional eval pass.
         # ----------------------------------------------------------------
         if eval_fn is not None and global_step >= next_eval_step:
-            eval_metrics = eval_fn(actor)
+            eval_metrics = eval_fn(actor, global_step)
             for k, v in eval_metrics.items():
                 writer.add_scalar(k, v, global_step)
             writer.flush()

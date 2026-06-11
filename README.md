@@ -138,6 +138,9 @@ parameters are the modeller's domain.
 | P0192 | Women's Leather Tote Bag | Accessories | 118.00 | 46.00 | all_season |
 | P0241 | Kids' Graphic Tee Pack | Kids' Apparel | 24.00 | 7.50 | spring/summer |
 
+(Sample excerpts from generated worlds — the full files are not committed; the generation
+command is in [`src/llm/README.md`](src/llm/README.md#example).)
+
 Full reference: [`src/llm/README.md`](src/llm/README.md)
 
 ### Hyperparameter tuning (`src/tuning/`)

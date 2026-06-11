@@ -66,8 +66,11 @@ default chunk sizes that's ~6 calls; for `n=1000` it's ~46.
 
 ## Sample catalogs
 
-Two cached worlds ship in `data/worlds/`. The `catalog.csv` files inside them can be loaded
-directly with `load_catalog` or placed into a setup directory.
+The excerpts below illustrate what the pipeline produces for two archetypes. The full worlds
+are **not** committed (`data/` is git-ignored) — regenerate them with the command in
+[Example](#example). The only committed, key-free sample is
+`notebooks/example_catalogs/fashion_retail/` (8 items + a `market:` block), which notebook
+`01-generate-with-llm.ipynb` uses as its offline fallback.
 
 ### `sports_cars_100` (102 items across 7 categories)
 
@@ -137,6 +140,25 @@ catalog, market = builder.build_setup(n_items=50, setup_dir="setups/fashion_reta
 # catalog  → list[Ware]
 # market   → MarketParams
 ```
+
+The same generation as a one-shot shell command — e.g. to create the 200-item setup used by
+the RL training quickstart in [`src/rl/README.md`](../rl/README.md#quickstart):
+
+```bash
+export OPENAI_API_KEY=sk-...
+uv run python - <<'EOF'
+from src.llm.world_builder import WorldBuilder
+from src.llm.openai_client import OpenAIClient
+
+WorldBuilder(archetype="fashion_retail", client=OpenAIClient()).build_setup(
+    n_items=200, setup_dir="setups/fashion_retail"
+)
+EOF
+```
+
+For RL training that directory is complete as-is — `src.rl.train --setup-dir` reads only
+`catalog.csv` and the `market:` block. The scaffold step below is needed only when you want
+to run the setup through `main.py run` (which requires `nodes:`/`edges:`).
 
 Then either hand-author the `nodes:` and `edges:` blocks in `setup.yaml`, or use the scaffolder:
 

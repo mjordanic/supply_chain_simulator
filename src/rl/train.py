@@ -144,7 +144,7 @@ def _make_eval_fn(
     market_params: MarketParams | None = None,
     disruption_params: DisruptionParams | None = None,
 ) -> Any:
-    """Return a closure ``(actor) → dict[str, float]`` usable as ``eval_fn``."""
+    """Return a closure ``(actor, global_step) → dict[str, float]`` usable as ``eval_fn``."""
     from src.rl.set_encoder import K_MAX, F, ROW_MASK
 
     eval_specs = build_eval_seeds(
@@ -154,9 +154,7 @@ def _make_eval_fn(
         disruption_params=disruption_params,
     )
 
-    checkpoint_counter: list[int] = [0]
-
-    def _eval_fn(actor: SetActor) -> dict[str, float]:
+    def _eval_fn(actor: SetActor, global_step: int) -> dict[str, float]:
         actor.eval()
 
         def _rl_policy(obs_np: np.ndarray) -> np.ndarray:
@@ -177,9 +175,7 @@ def _make_eval_fn(
             config=config,
         )
 
-        step = checkpoint_counter[0]
-        _save_checkpoint(actor, step, config)
-        checkpoint_counter[0] += 1
+        _save_checkpoint(actor, global_step, config)
 
         actor.train()
         return metrics

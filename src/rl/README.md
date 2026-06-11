@@ -116,7 +116,12 @@ no-op when the Arbiter is correctly configured.
 
 ## Quickstart
 
-The fastest end-to-end smoke run uses a synthetic catalog (no LLM, no `OPENAI_API_KEY`):
+The full workflow is three steps: **create the training data** (a setup directory with a
+catalog and market), **train**, then **evaluate** the trained policy against
+`OrderUpToPolicy`.
+
+For a fast end-to-end smoke run, skip straight to training — with no `--setup-dir` the
+stack uses a synthetic catalog (no LLM, no `OPENAI_API_KEY`):
 
 ```bash
 uv run python -m src.rl.train \
@@ -131,7 +136,44 @@ Outputs:
 - `runs/smoke/checkpoints/actor_step{step:010d}.pt` — self-describing checkpoint bundles,
   saved each time the CRN eval fires and once at `total_env_steps`
 
-A full 1 M-step run against a catalog from a setup directory:
+### Step 1 — create the training data (setup directory)
+
+Training against a realistic catalog needs a setup directory containing `catalog.csv` and a
+`setup.yaml` with at least a `market:` block. The RL stack reads **only those two pieces** —
+no `nodes:`/`edges:` topology is required (the env builds its own degenerate per-episode
+graph), so a freshly LLM-generated directory is usable for training as-is, without the
+scaffold step.
+
+Generate one with the LLM world builder (one-time; needs `OPENAI_API_KEY`; ~10 LLM calls
+for 200 items — see [`src/llm/README.md`](../llm/README.md) for details):
+
+```bash
+export OPENAI_API_KEY=sk-...
+uv run python - <<'EOF'
+from src.llm.world_builder import WorldBuilder
+from src.llm.openai_client import OpenAIClient
+
+WorldBuilder(archetype="fashion_retail", client=OpenAIClient()).build_setup(
+    n_items=200, setup_dir="setups/fashion_retail"
+)
+EOF
+```
+
+The setup directory doubles as a cache: re-running the command loads the existing files and
+makes no LLM calls.
+
+**No LLM / no API key?** Synthetic data works too: skip this step, drop `--setup-dir` from
+the training command, and the stack builds a synthetic catalog of `--k-catalog` products
+(e.g. `--k-catalog 200`). Synthetic products have uniform pricing and `all_season`
+seasonality — fine for validating the pipeline, less interesting to learn on.
+
+Either way the catalog is a **superset**: each episode samples K products from it at
+random, with K drawn from `[--k-min, --k-max-episode]` (default 1–20, hard cap
+`K_max = 32`), so one run trains across many assortment sizes.
+
+### Step 2 — train
+
+A full 1 M-step run against the setup directory from step 1:
 
 ```bash
 uv run python -m src.rl.train \
@@ -144,6 +186,29 @@ uv run python -m src.rl.train \
 When `--setup-dir` is provided, the catalog and market are loaded from `catalog.csv` and
 the `market:` block of `setup.yaml`. Otherwise the stack falls back to a synthetic catalog
 of size `--k-catalog`.
+
+### Step 3 — evaluate against `OrderUpToPolicy`
+
+Three paths, from cheapest to deepest:
+
+- **During training (automatic).** Every `--eval-cadence-env-steps` (default 50 000) the
+  loop runs a CRN-paired eval against `OrderUpToPolicy` and logs the `eval/*` scalars —
+  `eval/paired_uplift` is the headline number. Watch live with
+  `uv run tensorboard --logdir runs/` (see [Monitoring training](#monitoring-training)).
+
+- **Offline, per-seed detail.** `notebooks/06-rl-train-and-eval.ipynb` loads a checkpoint
+  and reproduces the CRN eval with per-seed breakdowns;
+  `notebooks/06a-analyze-a-trained-agent.ipynb` adds model selection across checkpoints,
+  bootstrap CIs, and regime analysis. See
+  [Comparing a trained policy against `OrderUpToPolicy`](#comparing-a-trained-policy-against-orderuptopolicy).
+
+- **Two-scale CLI.** A terminal-only generalisation check (note: it evaluates on a
+  synthetic catalog, not the training setup):
+
+  ```bash
+  uv run python -m src.rl.eval \
+    --checkpoint runs/fashion_run/checkpoints/actor_step0001000000.pt
+  ```
 
 ## Monitoring training
 

@@ -446,7 +446,7 @@ def decode_set_action(
         qty = max(0, min(qty, per_sku_headroom.get(pid, 0)))
         if supplier_ids is not None:
             _sup = next(
-                (s for s in supplier_ids if True),
+                (s for s in supplier_ids if s == f"F_{pid}"),
                 f"F_{pid}",
             )
             order_dict[pid] = [(_sup, qty)] if qty > 0 else []
