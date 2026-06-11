@@ -1,6 +1,6 @@
 # 03: Rebuild the offline eval harness on RLNodePolicy + Runner
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
