@@ -33,9 +33,9 @@ Public API
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal, Protocol
 
-__all__ = ["allocate"]
+__all__ = ["allocate", "arbitrate_orders"]
 
 _Mode = Literal["proportional", "greedy"]
 
@@ -106,6 +106,115 @@ def allocate(
         )
     else:
         raise ValueError(f"Unknown mode {mode!r}; expected 'proportional' or 'greedy'.")
+
+
+# ---------------------------------------------------------------------------
+# Shared arbitration helper
+# ---------------------------------------------------------------------------
+
+
+class _NodeSnapshot(Protocol):
+    """Structural interface for the subset of node state arbitrate_orders reads."""
+
+    inventory: dict[str, Any]
+    pending: dict[str, Any]
+    capacity: Any
+    cash: Any
+
+
+class _ArbiterConfig(Protocol):
+    """Structural interface for the config fields arbitrate_orders reads."""
+
+    arbiter_mode: str
+    cash_budget_fraction: float
+
+
+def arbitrate_orders(
+    raw_orders: dict[str, list[tuple[str, float]]],
+    active_subset: tuple[str, ...],
+    node: _NodeSnapshot,
+    unit_prices: dict[str, float],
+    priorities: dict[str, float],
+    config: _ArbiterConfig,
+) -> dict[str, list[tuple[str, int]]]:
+    """Resolve per-product order contention and return an arbitrated order dict.
+
+    This is the single code path for arbitration dynamics. Both the training
+    env (``RLEnv.step``) and ``RLNodePolicy`` call this function.
+
+    Parameters
+    ----------
+    raw_orders:
+        Per-product order lists as produced by ``decode_set_action``; each
+        value is a list of ``(supplier_id, qty)`` tuples. The aggregate
+        per-product quantity is summed to form proposals.
+    active_subset:
+        Ordered tuple of active product ids for the current episode tick.
+    node:
+        A duck-typed node object exposing ``.inventory``, ``.pending``,
+        ``.capacity``, and ``.cash``.
+    unit_prices:
+        Dict mapping product id → unit purchase price (central-table offer).
+    priorities:
+        Dict mapping product id → priority scalar (only used in greedy mode).
+    config:
+        An object exposing ``.arbiter_mode`` and ``.cash_budget_fraction``.
+
+    Returns
+    -------
+    dict[str, list[tuple[str, int]]]
+        Arbitrated order dict: each surviving product has one order line
+        ``[(f"F_{pid}", qty)]`` with integer qty > 0; products with zero
+        allocation return an empty list ``[]``.
+    """
+    # Sum per-product proposals from the raw order lists.
+    proposed: dict[str, float] = {}
+    for pid in active_subset:
+        lines = raw_orders.get(pid, [])
+        proposed[pid] = float(sum(qty for _, qty in lines))
+
+    # Flatten pending (may be nested by supplier or flat by pid).
+    inventory = dict(node.inventory)
+    raw_pending = getattr(node, "pending", {})
+    if raw_pending and isinstance(next(iter(raw_pending.values()), None), dict):
+        pending: dict[str, int] = {}
+        for sup_pend in raw_pending.values():
+            for pid, qty in sup_pend.items():
+                pending[pid] = pending.get(pid, 0) + qty
+    else:
+        pending = dict(raw_pending) if raw_pending else {}
+
+    # Compute global free space and per-SKU headroom.
+    capacity_val = float(getattr(node, "capacity", max(1, len(active_subset) * 100)))
+    total_inv = sum(float(v) for v in inventory.values())
+    total_pend = sum(float(v) for v in pending.values())
+    global_free_space = max(0, int(capacity_val - total_inv - total_pend))
+
+    per_sku_headroom: dict[str, int] = {}
+    for pid in active_subset:
+        inv_pid = float(inventory.get(pid, 0))
+        pend_pid = float(pending.get(pid, 0))
+        per_sku_headroom[pid] = max(0, int(capacity_val - inv_pid - pend_pid))
+
+    cash_budget = float(node.cash) * config.cash_budget_fraction
+
+    allocated = allocate(
+        proposed=proposed,
+        per_sku_headroom=per_sku_headroom,
+        global_free_space=global_free_space,
+        cash_budget=cash_budget,
+        unit_prices=unit_prices,
+        priorities=priorities,
+        mode=config.arbiter_mode,  # type: ignore[arg-type]
+    )
+
+    # Build arbitrated order dict: one line per surviving product.
+    order_dict: dict[str, list[tuple[str, int]]] = {}
+    for pid in active_subset:
+        qty = allocated.get(pid, 0)
+        order_dict[pid] = [(f"F_{pid}", qty)] if qty > 0 else []
+
+    return order_dict
 
 
 # ---------------------------------------------------------------------------

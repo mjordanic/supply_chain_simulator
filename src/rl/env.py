@@ -40,7 +40,7 @@ from src.rl.set_encoder import (
     encode_set_observation,
     decode_set_action,
 )
-from src.rl.arbiter import allocate as _arbiter_allocate
+from src.rl.arbiter import arbitrate_orders as _arbitrate_orders
 from src.sim.policy import RLIntermediatePolicy
 from src.sim.runner import Simulation, build_world
 from src.sim.scenario import (
@@ -249,54 +249,19 @@ class RLEnv(gym.Env):
 
         # --- Arbiter: resolve contention ---
         raw_orders = decoded.get("order", {})
-        proposed: dict[str, float] = {}
-        for pid in active_subset:
-            lines = raw_orders.get(pid, [])
-            proposed[pid] = float(sum(qty for _, qty in lines))
-
-        # Compute per-SKU headroom and global free space.
-        inventory = dict(node_s.inventory)
-        raw_pending = getattr(node_s, "pending", {})
-        if raw_pending and isinstance(next(iter(raw_pending.values()), None), dict):
-            pending: dict[str, int] = {}
-            for sup_pend in raw_pending.values():
-                for pid, qty in sup_pend.items():
-                    pending[pid] = pending.get(pid, 0) + qty
-        else:
-            pending = dict(raw_pending) if raw_pending else {}
-
-        capacity_val = float(getattr(node_s, "capacity", max(1, len(active_subset) * 100)))
-        total_inv = sum(float(v) for v in inventory.values())
-        total_pend = sum(float(v) for v in pending.values())
-        global_free_space = max(0, int(capacity_val - total_inv - total_pend))
-
-        per_sku_headroom: dict[str, int] = {}
-        for pid in active_subset:
-            inv_pid = float(inventory.get(pid, 0))
-            pend_pid = float(pending.get(pid, 0))
-            per_sku_headroom[pid] = max(0, int(capacity_val - inv_pid - pend_pid))
-
-        cash_budget = float(node_s.cash) * self.config.cash_budget_fraction
 
         priorities: dict[str, float] = {}
         for i, pid in enumerate(active_subset):
             priorities[pid] = float(action_arr[i, 2])
 
-        allocated = _arbiter_allocate(
-            proposed=proposed,
-            per_sku_headroom=per_sku_headroom,
-            global_free_space=global_free_space,
-            cash_budget=cash_budget,
+        order_dict = _arbitrate_orders(
+            raw_orders=raw_orders,
+            active_subset=active_subset,
+            node=node_s,
             unit_prices=unit_prices,
             priorities=priorities,
-            mode=self.config.arbiter_mode,
+            config=self.config,
         )
-
-        # Build arbitrated order dict.
-        order_dict: dict[str, list] = {}
-        for pid in active_subset:
-            qty = allocated.get(pid, 0)
-            order_dict[pid] = [(f"F_{pid}", qty)] if qty > 0 else []
 
         action_dict = {
             "order": order_dict,
@@ -318,6 +283,13 @@ class RLEnv(gym.Env):
             qty_sold = last_sales.get(pid, 0)
             if pid in self._sales_history:
                 self._sales_history[pid].append(qty_sold)
+
+        # Derive per-pid allocated quantities from order_dict for observation/info.
+        allocated = {
+            pid: order_dict[pid][0][1] if order_dict.get(pid) else 0
+            for pid in active_subset
+        }
+        proposed = {pid: float(sum(qty for _, qty in raw_orders.get(pid, []))) for pid in active_subset}
 
         # Build next observation (pass proposed/prices for contention features).
         self._step_count += 1

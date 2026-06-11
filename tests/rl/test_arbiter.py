@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.rl.arbiter import allocate
+from src.rl.arbiter import allocate, arbitrate_orders
 
 
 # ---------------------------------------------------------------------------
@@ -477,3 +477,159 @@ def test_greedy_deterministic_on_equal_priority():
         mode="greedy",
     )
     assert result1 == result2  # deterministic
+
+
+# ---------------------------------------------------------------------------
+# arbitrate_orders — shared helper
+# ---------------------------------------------------------------------------
+
+class _FakeNode:
+    """Minimal node stand-in for arbitrate_orders tests."""
+
+    def __init__(
+        self,
+        inventory: dict,
+        pending: dict,
+        capacity: float,
+        cash: float,
+        costs: dict | None = None,
+        list_prices: dict | None = None,
+    ) -> None:
+        self.inventory = inventory
+        self.pending = pending
+        self.capacity = capacity
+        self.cash = cash
+        self.costs = costs or {}
+        self.list_prices = list_prices or {}
+
+
+class _FakeConfig:
+    arbiter_mode: str = "proportional"
+    cash_budget_fraction: float = 1.0
+
+
+def _make_raw_orders(pids: list[str], qty: float = 10.0) -> dict:
+    """Build a raw_orders dict as decode_set_action would produce it."""
+    return {pid: [(f"F_{pid}", qty)] for pid in pids}
+
+
+def test_arbitrate_orders_returns_order_dict_structure():
+    """arbitrate_orders returns a dict mapping pid → [(supplier, qty)] list."""
+    pids = ["A", "B"]
+    node = _FakeNode(
+        inventory={"A": 5, "B": 3},
+        pending={},
+        capacity=1000.0,
+        cash=500.0,
+    )
+    config = _FakeConfig()
+    unit_prices = {"A": 1.0, "B": 1.0}
+    priorities = {"A": 1.0, "B": 1.0}
+    raw_orders = _make_raw_orders(pids, qty=10.0)
+
+    result = arbitrate_orders(
+        raw_orders=raw_orders,
+        active_subset=tuple(pids),
+        node=node,
+        unit_prices=unit_prices,
+        priorities=priorities,
+        config=config,
+    )
+    # Must return a dict with the same keys as active_subset.
+    assert set(result.keys()) == set(pids)
+    # Each value is a list (possibly empty if qty==0).
+    for pid in pids:
+        assert isinstance(result[pid], list)
+
+
+def test_arbitrate_orders_respects_cash_budget():
+    """When cash is tiny, arbitrate_orders returns zero-qty (empty list) for all."""
+    pids = ["A", "B"]
+    # cash=0 forces cash_budget=0 → no allocations
+    node = _FakeNode(
+        inventory={},
+        pending={},
+        capacity=1000.0,
+        cash=0.0,
+    )
+    config = _FakeConfig()
+    unit_prices = {"A": 1.0, "B": 1.0}
+    priorities = {"A": 1.0, "B": 1.0}
+    raw_orders = _make_raw_orders(pids, qty=10.0)
+
+    result = arbitrate_orders(
+        raw_orders=raw_orders,
+        active_subset=tuple(pids),
+        node=node,
+        unit_prices=unit_prices,
+        priorities=priorities,
+        config=config,
+    )
+    for pid in pids:
+        assert result[pid] == [], f"Expected empty list for {pid} when cash=0"
+
+
+def test_arbitrate_orders_supplier_prefix_matches():
+    """Supplier in the returned order line uses F_<pid> convention."""
+    pids = ["X"]
+    node = _FakeNode(inventory={}, pending={}, capacity=1000.0, cash=10_000.0)
+    config = _FakeConfig()
+    raw_orders = _make_raw_orders(pids, qty=5.0)
+    result = arbitrate_orders(
+        raw_orders=raw_orders,
+        active_subset=tuple(pids),
+        node=node,
+        unit_prices={"X": 1.0},
+        priorities={"X": 1.0},
+        config=config,
+    )
+    # Should have one line with supplier "F_X" and qty > 0.
+    assert len(result["X"]) == 1
+    supplier, qty = result["X"][0]
+    assert supplier == "F_X"
+    assert qty > 0
+
+
+def test_arbitrate_orders_consistent_with_direct_allocate():
+    """arbitrate_orders result must equal calling allocate() + building order_dict by hand."""
+    pids = ["A", "B", "C"]
+    inventory = {"A": 10, "B": 5, "C": 0}
+    capacity = 200.0
+    cash = 300.0
+    unit_prices = {"A": 2.0, "B": 3.0, "C": 1.0}
+    priorities = {"A": 1.0, "B": 2.0, "C": 3.0}
+    qty = 20.0
+    raw_orders = _make_raw_orders(pids, qty=qty)
+
+    node = _FakeNode(inventory=inventory, pending={}, capacity=capacity, cash=cash)
+    config = _FakeConfig()
+
+    result = arbitrate_orders(
+        raw_orders=raw_orders,
+        active_subset=tuple(pids),
+        node=node,
+        unit_prices=unit_prices,
+        priorities=priorities,
+        config=config,
+    )
+
+    # Compute expected via allocate() directly.
+    proposed = {pid: qty for pid in pids}
+    total_inv = sum(float(v) for v in inventory.values())
+    global_free_space = max(0, int(capacity - total_inv))
+    per_sku_headroom = {pid: max(0, int(capacity - float(inventory.get(pid, 0)))) for pid in pids}
+    cash_budget = cash * config.cash_budget_fraction
+    expected_alloc = allocate(
+        proposed=proposed,
+        per_sku_headroom=per_sku_headroom,
+        global_free_space=global_free_space,
+        cash_budget=cash_budget,
+        unit_prices=unit_prices,
+        priorities=priorities,
+        mode=config.arbiter_mode,
+    )
+    expected = {
+        pid: [(f"F_{pid}", expected_alloc[pid])] if expected_alloc[pid] > 0 else []
+        for pid in pids
+    }
+    assert result == expected
