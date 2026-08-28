@@ -199,6 +199,30 @@ edges:
 
 See `setups/three_node_chain/` and `setups/two_factories_two_shops/` for complete hand-authored examples.
 
+### Lateral supplier links
+
+Validation is by node *type*, not echelon depth, so an `intermediate` may sell to another
+`intermediate` — a warehouse can source from a peer. Below, a satellite shop has two lanes to
+the same product: a slow direct one from the factory and a fast lateral one from the hub. Its
+order-up-to policy routes across both, and the hub therefore doubles as a local supplier while
+still serving its own sink.
+
+![Lateral cross-stocking topology](../../docs/images/topology_lateral_cross_stocking.png)
+
+```yaml
+edges:
+  - {supplier: factory-1, buyer: hub,       lead_time: 3}   # fast factory lane
+  - {supplier: factory-1, buyer: satellite, lead_time: 5}   # slow direct lane
+  - {supplier: hub,       buyer: satellite, lead_time: 1}   # lateral cross-stock
+  - {supplier: hub,       buyer: sink-hub,  lead_time: 1}
+  - {supplier: satellite, buyer: sink-sat,  lead_time: 1}
+```
+
+The only structural constraint is that the *union* of all edges stays acyclic — a node pair
+trades in one direction across all products, so same-tick opposite-direction flows between two
+peers are not supported. Worked end-to-end in
+[`notebooks/03-topology-gallery.ipynb`](../../notebooks/03-topology-gallery.ipynb) (topology 5).
+
 ## Real-data demand replay (M5)
 
 The simulator can replay observed real-world demand instead of sampling it. Three pieces

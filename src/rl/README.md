@@ -144,8 +144,12 @@ no `nodes:`/`edges:` topology is required (the env builds its own degenerate per
 graph), so a freshly LLM-generated directory is usable for training as-is, without the
 scaffold step.
 
-Generate one with the LLM world builder (one-time; needs `OPENAI_API_KEY`; ~10 LLM calls
-for 200 items — see [`src/llm/README.md`](../llm/README.md) for details):
+`setups/fashion_retail/` is committed and ready to train against (185 SKUs across 6
+categories, plus a `market:` block) — no API key needed for the training runs below.
+
+To train on a different domain, generate a new directory with the LLM world builder (needs
+`OPENAI_API_KEY`; ~10 LLM calls for 200 items — see
+[`src/llm/README.md`](../llm/README.md) for details):
 
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -153,14 +157,14 @@ uv run python - <<'EOF'
 from src.llm.world_builder import WorldBuilder
 from src.llm.openai_client import OpenAIClient
 
-WorldBuilder(archetype="fashion_retail", client=OpenAIClient()).build_setup(
-    n_items=200, setup_dir="setups/fashion_retail"
+WorldBuilder(archetype="sports_cars", client=OpenAIClient()).build_setup(
+    n_items=200, setup_dir="setups/sports_cars"
 )
 EOF
 ```
 
 The setup directory doubles as a cache: re-running the command loads the existing files and
-makes no LLM calls.
+makes no LLM calls — so pass a fresh `setup_dir` when you actually want a new world.
 
 **No LLM / no API key?** Synthetic data works too: skip this step, drop `--setup-dir` from
 the training command, and the stack builds a synthetic catalog of `--k-catalog` products

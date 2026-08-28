@@ -66,11 +66,16 @@ default chunk sizes that's ~6 calls; for `n=1000` it's ~46.
 
 ## Sample catalogs
 
-The excerpts below illustrate what the pipeline produces for two archetypes. The full worlds
-are **not** committed (`data/` is git-ignored) — regenerate them with the command in
-[Example](#example). The only committed, key-free sample is
-`notebooks/example_catalogs/fashion_retail/` (8 items + a `market:` block), which notebook
-`01-generate-with-llm.ipynb` uses as its offline fallback.
+The excerpts below illustrate what the pipeline produces for two archetypes.
+
+A committed 185-item **fashion_retail** catalog + market block lives at
+`setups/fashion_retail/` (RL training data; no `nodes:`/`edges:`). The 8-item offline
+fallback used by notebook `01-generate-with-llm.ipynb` is
+`notebooks/example_catalogs/fashion_retail/`. The **sports_cars** world and the
+`fashion_retail_250` table below are illustrative excerpts from earlier generations that
+are **not** committed — regenerate with the command in [Example](#example). Do not
+point `build_setup(..., setup_dir="setups/fashion_retail")` at a new `n_items` expecting
+a fresh generation: that directory is a cache hit and returns the committed 185 SKUs.
 
 ### `sports_cars_100` (102 items across 7 categories)
 
@@ -135,14 +140,17 @@ builder = WorldBuilder(archetype="fashion_retail", client=OpenAIClient())
 
 # On first call: runs the LLM pipeline and writes catalog.csv + market block.
 # On subsequent calls: loads from disk, no LLM calls.
-catalog, market = builder.build_setup(n_items=50, setup_dir="setups/fashion_retail")
+# Use a fresh directory — setups/fashion_retail/ already holds a committed 185-SKU cache.
+catalog, market = builder.build_setup(n_items=50, setup_dir="setups/my_fashion")
 
 # catalog  → list[Ware]
 # market   → MarketParams
 ```
 
-The same generation as a one-shot shell command — e.g. to create the 200-item setup used by
-the RL training quickstart in [`src/rl/README.md`](../rl/README.md#quickstart):
+The committed `setups/fashion_retail/` directory is already complete for RL training —
+`src.rl.train --setup-dir setups/fashion_retail` reads only `catalog.csv` and the `market:`
+block. To generate a *new* world instead, pass a fresh `setup_dir` (a second call against
+an existing directory is a cache hit and skips the LLM):
 
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -151,27 +159,26 @@ from src.llm.world_builder import WorldBuilder
 from src.llm.openai_client import OpenAIClient
 
 WorldBuilder(archetype="fashion_retail", client=OpenAIClient()).build_setup(
-    n_items=200, setup_dir="setups/fashion_retail"
+    n_items=200, setup_dir="setups/my_fashion"
 )
 EOF
 ```
 
-For RL training that directory is complete as-is — `src.rl.train --setup-dir` reads only
-`catalog.csv` and the `market:` block. The scaffold step below is needed only when you want
-to run the setup through `main.py run` (which requires `nodes:`/`edges:`).
+The scaffold step below is needed only when you want to run the setup through `main.py run`
+(which requires `nodes:`/`edges:`).
 
 Then either hand-author the `nodes:` and `edges:` blocks in `setup.yaml`, or use the scaffolder:
 
 ```bash
-uv run python main.py scaffold setups/fashion_retail/catalog.csv \
-  --out setups/fashion_retail/setup.yaml \
+uv run python main.py scaffold setups/my_fashion/catalog.csv \
+  --out setups/my_fashion/setup.yaml \
   --shop-count 2 --sink-density 0.5
 ```
 
 Run it:
 
 ```bash
-uv run python main.py run setups/fashion_retail
+uv run python main.py run setups/my_fashion
 ```
 
 ## Test seam
