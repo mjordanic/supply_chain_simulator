@@ -1,0 +1,13 @@
+.git
+.venv
+data
+runs
+notebooks
+tests
+docs
+**__pycache__
+.pytest_cache
+.mypy_cache
+*.pyc
+.env
+data/m5

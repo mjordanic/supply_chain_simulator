@@ -1,0 +1,121 @@
+# Dual-supplier demo setup (web UI).
+# Topology: f-lo (cheap, slow) ─┬─► shop-1 ──► sink-1
+#           f-hi (fast, pricey) ─┘
+# Four nodes, one product. shop-1 is the CRN comparison node.
+# No API key required.
+
+run:
+  n_steps: 30
+  start_date: "2024-01-01"
+  world_seed: 42
+
+market:
+  cycle_len: 20
+  cycle_amp: 0.0
+  init_demand: 1.0
+  init_supply: 1.0
+  peak_factor: 1.0
+  off_factor: 1.0
+  season_months: {}
+  regions: [US]
+  correlation: 0.0
+  trend_update_interval: 100
+  min_value: 0.5
+  max_value: 2.0
+  stage_multipliers:
+    introduction: 1.0
+    growth: 1.0
+    maturity: 1.0
+    decline: 1.0
+    dead: 0.0
+  price_elasticity: 0.0
+  promo_multiplier: 1.0
+  demand_factor_min: 0.1
+  supply_factor_min: 0.01
+  cross_inv_lo: 0.3
+  cross_inv_hi: 0.7
+  cross_factor_range: [0.5, 1.5]
+  trend: {kind: constant, value: 1.0}
+  demand_shock: {kind: constant, value: 0.0}
+  supply_shock: {kind: constant, value: 0.0}
+  base_demand: {kind: constant, value: 15.0}
+
+disruption:
+  event_prob: 0.0
+  types: [natural_disaster]
+  regions: [US]
+  severity: {kind: constant, value: 0.0}
+  duration: {kind: constant, value: 1}
+
+nodes:
+  - id: f-lo
+    type: factory
+    region: US
+    produces_product_id: P0000
+    unit_cost: 5.0
+    capacity_per_tick: 30
+    inventory: 100
+    list_price: 5.0
+    cash: 0.0
+    policy:
+      name: static_factory
+      params:
+        target_inventory: 300
+
+  - id: f-hi
+    type: factory
+    region: US
+    produces_product_id: P0000
+    unit_cost: 8.0
+    capacity_per_tick: 60
+    inventory: 100
+    list_price: 8.0
+    cash: 0.0
+    policy:
+      name: static_factory
+      params:
+        target_inventory: 400
+
+  - id: shop-1
+    type: intermediate
+    region: US
+    carried_products: [P0000]
+    capacity: 300
+    tags: [shop]
+    inventory:
+      P0000: 30
+    list_prices:
+      P0000: 12.0
+    min_order_imposed:
+      P0000: 0
+    cash: 1000.0
+    policy:
+      name: order_up_to
+      params:
+        cover_horizon_ticks: 14
+        safety_lead_pct_of_lag: 0.333
+        delivery_lag: 3
+        unit_cost: 5.0
+        list_price_out: 12.0
+
+  - id: sink-1
+    type: demand_sink
+    region: US
+    product_id: P0000
+    demand_dist: {kind: normal, mean: 15.0, std: 3.0}
+    income_rate: 300.0
+    cash: 1000.0
+    policy:
+      name: default_demand_sink
+      params: {}
+
+edges:
+  - supplier: f-lo
+    buyer: shop-1
+    lead_time: 4
+  - supplier: f-hi
+    buyer: shop-1
+    lead_time: 2
+  - supplier: shop-1
+    buyer: sink-1
+    lead_time: 1

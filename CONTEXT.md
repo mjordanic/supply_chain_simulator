@@ -419,3 +419,4 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0020](docs/adr/0020-replay-demand-sinks.md) — Replay demand sinks (M5 real-data mode): subclass override, full multiplier chain kept, CRN draws burned.
 - [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — Variable-K RL: shared-weight per-product policy, deterministic arbiter owning capacity + cash, implicit assortment, no mid-episode churn. **Accepted — supersedes ADR 0004 Decision 2.**
 - [ADR 0022](docs/adr/0022-rl-policy-as-first-class-intermediate-policy-eval-via-runner.md) — `RLNodePolicy` as a first-class `IntermediatePolicy`; eval rebuilt on `Runner.run()`; Arbiter travels with the policy; eval-history discontinuity noted. **Accepted.**
+- [ADR 0023](docs/adr/0023-web-demo-cloud-run.md) — Streamlit CRN lab as a sibling `Runner` consumer; Cloud Run slim image (not Fargate, not full `uv sync`). **Accepted.**

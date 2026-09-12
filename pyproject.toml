@@ -37,6 +37,9 @@ dev = [
     "nbconvert>=7.17.1",
     "pytest>=8.0.0",
 ]
+web = [
+    "streamlit>=1.63.0",
+]
 
 [tool.uv]
 package = false

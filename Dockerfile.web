@@ -1,0 +1,32 @@
+# Slim Cloud Run image for the Streamlit CRN lab (ADR 0023).
+# Do not `uv sync` the repo — that pulls torch/transformers.
+
+FROM python:3.12-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PORT=8080 \
+    UV_SYSTEM_PYTHON=1
+
+RUN uv pip install --no-cache \
+    streamlit \
+    plotly \
+    pandas \
+    numpy \
+    pyarrow \
+    pydantic \
+    pyyaml \
+    python-dotenv
+
+COPY src/__init__.py src/__init__.py
+COPY src/sim src/sim
+COPY src/web src/web
+COPY setups/three_node_chain setups/three_node_chain
+COPY setups/demo_two_suppliers setups/demo_two_suppliers
+
+EXPOSE 8080
+
+CMD ["sh", "-c", "streamlit run src/web/app.py --server.port=${PORT} --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false"]
