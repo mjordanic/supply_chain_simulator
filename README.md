@@ -21,7 +21,9 @@ adapter** that turns Walmart sales into a loadable setup directory.
 
 It is a demo project — the goal is to be readable and easy to extend, not production-grade.
 
-A limited Streamlit visual slice of the engine is documented in [Light web demo](#light-web-demo).
+A limited Streamlit visual slice of the engine is live at
+[https://supply-chain-simulator-321519234624.europe-west1.run.app](https://supply-chain-simulator-321519234624.europe-west1.run.app)
+and documented in [Light web demo](#light-web-demo).
 
 ![Market supply and demand per region](docs/images/sim_market_supply_demand.png)
 
@@ -44,6 +46,8 @@ Common-Random-Numbers (CRN) run. It is the same `Runner` as `main.py run`, not a
 second engine. The rest of the repo — custom DAGs, the LLM world generator, Optuna,
 PPO / `RLNodePolicy`, M5 demand replay, notebooks, and parquet exports — is not in
 this UI.
+
+**Live:** [https://supply-chain-simulator-321519234624.europe-west1.run.app](https://supply-chain-simulator-321519234624.europe-west1.run.app)
 
 **Full project:** [github.com/mjordanic/supply_chain_simulator](https://github.com/mjordanic/supply_chain_simulator)
 
@@ -83,6 +87,8 @@ Opens [http://localhost:8501](http://localhost:8501). Click **Compare** after ch
 a preset and knobs.
 
 ### Cloud Run
+
+**Live:** [https://supply-chain-simulator-321519234624.europe-west1.run.app](https://supply-chain-simulator-321519234624.europe-west1.run.app)
 
 The hosted image (`Dockerfile.web`) is **slim**: it does **not** `uv sync` this repo (that would pull torch). Idle cost is ~$0 with min instances 0.
 
