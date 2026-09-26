@@ -88,8 +88,18 @@ Cursor also loads `.cursor/skills/implement-issues` and `.cursor/agents/`.
 Each issue is implemented by reading `/implement` (`.agents/skills/implement/SKILL.md`).
 On Cursor the orchestrator dispatches `issue-implementer` itself so the model slug
 reaches `/implement`. On Claude Code a `wave-runner` does that dispatch.
-Default implementer model is `grok`. Isolation for `cap > 1` without a GitHub remote
-is `worktree`, not `cloud`.
+Default implementer model is `grok`. Isolation for `cap > 1` is `cloud` when
+`origin` tracks the integration branch and `.cursor/environment.json` is on
+that remote commit. Without a remote, or if that file is missing from `HEAD`,
+isolation is `worktree`.
+
+## Cursor Cloud specific instructions
+
+Cloud agents boot from `.cursor/Dockerfile` and run `uv sync --group dev`
+before the task. Tests are `uv run pytest`. Smoke tests do not need
+`OPENAI_API_KEY`; tests marked `live` skip when it is unset. Raw M5 files are
+not in the repo. A missing `data/m5/` directory is the expected case, and the
+M5 notebook must skip rather than fail. Do not commit `runs/` or `data/`.
 
 `.agents/commands/implement-issues.md` is a symlink to the skill.
 `.claude/commands/implement-issues.md` and `.claude/agents/` point at the same files.
