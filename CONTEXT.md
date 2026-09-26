@@ -44,7 +44,9 @@ not by a node flag, so synthetic what-ifs (promo, disruption, elasticity) compos
 replayed demand unchanged. Burns the same `world_rng` draws as the base catalog loop so
 mixed replay/stochastic graphs stay CRN-clean. Declared semantics: observed sales = true
 demand. Authorable in `setup.yaml` as node type `sink_replay` referencing a `series_id`
-in `demand_series.parquet`. See ADR 0020.
+in `demand_series.parquet`. Headline use remains an exam. ADR 0026 allows one extra use:
+fit a reward-free predictor on an earlier window and score it on a later window, reported
+apart from zero-shot transfer. See ADR 0020, ADR 0026.
 
 **flat_world** (`flat_world(regions)`, `src/sim/flat_world.py`)
 Authoring helper returning `(MarketParams, ItemLifecycleParams)` whose ADR 0015
@@ -105,6 +107,10 @@ Buyer routing is min-order-aware: a supplier whose `min_order` can't be met is s
 buyer falls through to the next feasible supplier instead of taking a silent lost sale.
 `shuffle_buyers(buyers, allocation_rng)` performs one deterministic per-phase buyer
 shuffle using the `allocation_rng` stream. See ADR 0012, ADR 0016, and ADR 0018.
+
+**Ration**
+The policy's split of one intermediate's free capacity and cash across its SKUs, before any order is placed. The textbook family rations by equal fair-share (`_allocate_two_pass_fair_share`). The learned replenishment policy rations by priority: a cover and a priority per SKU, then a greedy fill down that order. Engine **Allocation** still runs afterwards and may short the granted quantity. A joint model of every SKU's dynamics at once is deferred.
+_Avoid_: Allocation, fair-share (fair-share is one ration rule, not the name of the split)
 
 **Rejection log** (run-log `ticks[i]["rejections"]`, ADR 0018)
 Always-on per-tick stream for debugging rejected/lost sales. Each entry
@@ -420,3 +426,9 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — Variable-K RL: shared-weight per-product policy, deterministic arbiter owning capacity + cash, implicit assortment, no mid-episode churn. **Accepted — supersedes ADR 0004 Decision 2.**
 - [ADR 0022](docs/adr/0022-rl-policy-as-first-class-intermediate-policy-eval-via-runner.md) — `RLNodePolicy` as a first-class `IntermediatePolicy`; eval rebuilt on `Runner.run()`; Arbiter travels with the policy; eval-history discontinuity noted. **Accepted.**
 - [ADR 0023](docs/adr/0023-web-demo-cloud-run.md) — Streamlit CRN lab as a sibling `Runner` consumer; Cloud Run slim image (not Fargate, not full `uv sync`). **Accepted.**
+- [ADR 0024](docs/adr/0024-ordering-only-learned-policy.md) — Learned replenishment policy orders only; list price matches the textbook arm. Pricing policies are a later action space. **Accepted.**
+- [ADR 0025](docs/adr/0025-priority-ration.md) — Learned policy rations capacity and cash by priority. Engine Allocation is unchanged. A joint multi-SKU dynamics model is deferred. **Accepted.**
+- [ADR 0026](docs/adr/0026-replay-window-adaptation.md) — M5 replay stays an exam for the headline number. A separate row may fit a reward-free predictor on an earlier window and test it on a later one. **Accepted.** Widens ADR 0020.
+- [ADR 0027](docs/adr/0027-frozen-holding-rate-retarget.md) — Holding-rate retarget re-scores a frozen predictor; imagined cash uses the new rate and feeds the ration. **Accepted.**
+- [ADR 0028](docs/adr/0028-m5-slice.md) — M5 arm is `shop-CA_1`, one factory at lead time 3, five FOODS items chosen on 2015 only. Test window is 2016-01-01 through 2016-04-24. **Accepted.**
+- [ADR 0029](docs/adr/0029-probe-stop-gradient.md) — Probe losses update the probes only. The encoder is trained by the latent loss and the anti-collapse penalty. **Accepted.**

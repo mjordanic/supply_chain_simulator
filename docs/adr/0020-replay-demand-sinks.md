@@ -1,6 +1,6 @@
 # Replay demand sinks: subclass override, full multiplier chain, burned CRN draws
 
-Status: Accepted (implemented 2026-06 — `src/sim/replay_demand_sink.py`, `src/sim/flat_world.py`, `src/datasets/m5.py`)
+Status: Accepted (implemented 2026-06 — `src/sim/replay_demand_sink.py`, `src/sim/flat_world.py`, `src/datasets/m5.py`). The evaluation-only scope is widened for one study by ADR 0026: a reward-free predictor may be fit on an earlier replay window and scored on a later one. Replay is still not an RL training environment.
 
 The simulator gains an optional real-data demand mode: a sink replays an observed per-tick
 demand series (first dataset: M5 Walmart daily unit sales; declared semantics: observed
