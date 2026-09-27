@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Training notebook, results notebook, and README commands. 05 — M5 replay exam.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
@@ -25,10 +25,10 @@ Ticket 03's comparison entry point and pass rules. Ticket 04's README commands. 
 
 ## Acceptance criteria
 
-- [ ] The published log is 64 episodes of each behavior at seed offset `14_000_000`, on 365-tick, five-SKU, lead-time-3 episodes.
-- [ ] Both `OrderUpToPolicy` studies run at 150 trials, one at `holding_rate = 0.01` and one at `0.05`. The other three textbook policies stay at published defaults.
-- [ ] The synthetic eval uses 32 holdout seeds at offset `13_000_000` and a search budget of 64. Weights for the retarget are the `0.01` fit, not a refit.
-- [ ] `docs/jepa-replenishment.md` states the method, the censored-sales and `unit_cost` caveats, the success rules, and the future work (pricing policies, a joint multi-SKU model, policy control of engine Allocation, a harsher held-out disruption). The in-distribution claim is not "beats the tuned anchor."
-- [ ] Every number in the paper is copied from `runs/jepa-replenishment/`. The in-distribution and retarget pass booleans are the ones ticket 03 computes. A failing boolean is reported as a fail. Thresholds are not edited to produce a pass.
-- [ ] If `runs/jepa-replenishment/m5/` is absent, the M5 section contains the command and the ADR 0028 slice rule and no results. If it is present, the zero-shot row and the adaptation row are both copied, kept separate.
-- [ ] The RL package is unchanged.
+- [x] The published log is 64 episodes of each behavior at seed offset `14_000_000`, on 365-tick, five-SKU, lead-time-3 episodes.
+- [x] Both `OrderUpToPolicy` studies run at 150 trials, one at `holding_rate = 0.01` and one at `0.05`. The other three textbook policies stay at published defaults.
+- [x] The synthetic eval uses 32 holdout seeds at offset `13_000_000` and a search budget of 64. Weights for the retarget are the `0.01` fit, not a refit.
+- [x] `docs/jepa-replenishment.md` states the method, the censored-sales and `unit_cost` caveats, the success rules, and the future work (pricing policies, a joint multi-SKU model, policy control of engine Allocation, a harsher held-out disruption). The in-distribution claim is not "beats the tuned anchor."
+- [x] Every number in the paper is copied from `runs/jepa-replenishment/`. The in-distribution and retarget pass booleans are the ones ticket 03 computes. A failing boolean is reported as a fail. Thresholds are not edited to produce a pass.
+- [x] If `runs/jepa-replenishment/m5/` is absent, the M5 section contains the command and the ADR 0028 slice rule and no results. If it is present, the zero-shot row and the adaptation row are both copied, kept separate.
+- [x] The RL package is unchanged.
