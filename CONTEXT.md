@@ -157,6 +157,23 @@ default strategy is cheapest-first with both min-order layers honoured, pluggabl
 `routing_strategy` constructor kwarg. `OrderUpToPolicy` remains the canonical CRN comparison
 anchor for RL evaluation. See ADR 0006, ADR 0008.
 
+**Exploratory replenishment policy** (`ExploratoryPolicy(IntermediatePolicy)`, `src/jepa/policy.py`)
+Ordering-only buyer for the latent-replenishment study. Each tick draws a cover from `{0, 1, 2, 4}`
+lead times of the textbook censored-sales rate and a priority over SKUs, both from `policy_rng`.
+Before the ration the quantity is `max(0, round(cover × rate × delivery_lag) − position)`, with
+position equal to on-hand plus in-transit. A greedy fill grants units in that priority order until
+free capacity or cash is gone. `list_price` stays at `base_price`, promotions are empty, and the
+minimum-order floor is zero. `OrderUpToPolicy` keeps fair-share. See ADR 0024, ADR 0025.
+
+**Transition log** (`collect_transition_log`, `src/jepa/log.py`)
+Per-SKU rows on the tuner episode shape: 365 ticks, five active SKUs, lead time 3,
+`holding_rate` 0.01, the tuner order fee. Half the episodes run published-default
+`OrderUpToPolicy`; half run `ExploratoryPolicy`. Seeds start at `14_000_000`. A row holds
+on-hand, in-transit, a sales window of length `delivery_lag`, cash, capacity, the granted
+quantity, and the next on-hand, in-transit, and sales. Each row is labelled `order_up_to` or
+`exploratory`. Factories stay on `StaticFactoryPolicy`.
+The published file lives under `runs/jepa-replenishment/log/` and is not committed.
+
 **Market** (`Market`, `src/sim/market.py`)
 Regional economic environment shared across nodes. Holds per-region demand/supply state, seasonal
 cycle, and trend drift. Provides `demand_multiplier(pid, region, tick) -> float` — bundles

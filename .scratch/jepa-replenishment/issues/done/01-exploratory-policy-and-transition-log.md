@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
@@ -25,12 +25,12 @@ PRD stories 1–11, 30–33, 64, 67, 69, 70. Story 10's M5 graph is ticket 05. S
 
 ## Acceptance criteria
 
-- [ ] Attached with `policy_overrides` on the tuner graph, the exploratory Policy orders every tick from a cover in `{0, 1, 2, 4}` lead times of the textbook censored-sales rate, with position equal to on-hand plus in-transit.
-- [ ] Before the ration, the quantity is `max(0, round(cover × rate × delivery_lag) − position)`.
-- [ ] `list_price` equals `base_price` for every product. Promotions are empty. The minimum-order floor is zero.
-- [ ] Granted quantities fit in free capacity and cash. A two-SKU fixture with room for one cover can give the whole pool to the higher priority.
-- [ ] The same `policy_seed` and world seed place the same orders. Changing only the world seed does not change the proposal sequence.
-- [ ] A collected log is half published-default `OrderUpToPolicy` (fair-share unchanged) and half the exploratory Policy.
-- [ ] The published collector uses 365 ticks, five active SKUs, lead time 3, `holding_rate` 0.01, the tuner default order fee, 64 episodes of each behavior, and seed offset `14_000_000`. Smoke tests may pass a shorter episode and a smaller count, and they check the mix and the schema rather than the published count.
-- [ ] Each row carries the per-SKU window (on-hand, in-transit, a sales window of length `delivery_lag`, cash, capacity), the granted quantity, and the next on-hand, in-transit, and sales.
-- [ ] Factories on these episodes stay on `StaticFactoryPolicy`. The RL stack is not imported.
+- [x] Attached with `policy_overrides` on the tuner graph, the exploratory Policy orders every tick from a cover in `{0, 1, 2, 4}` lead times of the textbook censored-sales rate, with position equal to on-hand plus in-transit.
+- [x] Before the ration, the quantity is `max(0, round(cover × rate × delivery_lag) − position)`.
+- [x] `list_price` equals `base_price` for every product. Promotions are empty. The minimum-order floor is zero.
+- [x] Granted quantities fit in free capacity and cash. A two-SKU fixture with room for one cover can give the whole pool to the higher priority.
+- [x] The same `policy_seed` and world seed place the same orders. Changing only the world seed does not change the proposal sequence.
+- [x] A collected log is half published-default `OrderUpToPolicy` (fair-share unchanged) and half the exploratory Policy.
+- [x] The published collector uses 365 ticks, five active SKUs, lead time 3, `holding_rate` 0.01, the tuner default order fee, 64 episodes of each behavior, and seed offset `14_000_000`. Smoke tests may pass a shorter episode and a smaller count, and they check the mix and the schema rather than the published count.
+- [x] Each row carries the per-SKU window (on-hand, in-transit, a sales window of length `delivery_lag`, cash, capacity), the granted quantity, and the next on-hand, in-transit, and sales.
+- [x] Factories on these episodes stay on `StaticFactoryPolicy`. The RL stack is not imported.
