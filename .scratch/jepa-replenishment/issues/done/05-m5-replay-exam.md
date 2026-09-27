@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Fit the latent model and plan with it.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
@@ -27,9 +27,9 @@ PRD stories 10 and 11 for the M5 graph, 43–53, 56, 57, 65, 67, 68.
 
 ## Acceptance criteria
 
-- [ ] With the raw directory missing, the notebook skips, names the Kaggle download, and states the slice rule. A test covers that skip without `data/m5`.
-- [ ] Selection uses 2015-01-01 through 2015-12-31 only. Rank `FOODS_3` at `CA_1` by shortest `longest_zero_run`, then highest mean sales. Drop a zero run longer than 7 days. If fewer than five items survive, widen to all FOODS departments at `CA_1` under the same rule. The five ids are pinned in the notebook after the first quality report.
-- [ ] The graph is one `StaticFactoryPolicy` factory feeding `shop-CA_1` at lead time 3, plus one replay sink per pinned item. `unit_cost` is 40% of median price. `flat_world` is on. Both the learned Policy and `OrderUpToPolicy` are wrapped in the same `PriceReplayPolicy`.
-- [ ] The test window is 2016-01-01 through 2016-04-24. The zero-shot row uses the synthetic weights and does not fit on either M5 window. The adaptation row refits on reward-free transitions from the 2015 window only, collected with the same two behavior policies. The windows are not pooled.
-- [ ] The textbook anchor is an `OrderUpToPolicy` tuned on 2015 replay profit only. The 2016 window is not used to pick its hyperparameters.
-- [ ] Both rows are reported. Neither row is a pass/fail gate.
+- [x] With the raw directory missing, the notebook skips, names the Kaggle download, and states the slice rule. A test covers that skip without `data/m5`.
+- [x] Selection uses 2015-01-01 through 2015-12-31 only. Rank `FOODS_3` at `CA_1` by shortest `longest_zero_run`, then highest mean sales. Drop a zero run longer than 7 days. If fewer than five items survive, widen to all FOODS departments at `CA_1` under the same rule. The five ids are pinned in the notebook after the first quality report.
+- [x] The graph is one `StaticFactoryPolicy` factory feeding `shop-CA_1` at lead time 3, plus one replay sink per pinned item. `unit_cost` is 40% of median price. `flat_world` is on. Both the learned Policy and `OrderUpToPolicy` are wrapped in the same `PriceReplayPolicy`.
+- [x] The test window is 2016-01-01 through 2016-04-24. The zero-shot row uses the synthetic weights and does not fit on either M5 window. The adaptation row refits on reward-free transitions from the 2015 window only, collected with the same two behavior policies. The windows are not pooled.
+- [x] The textbook anchor is an `OrderUpToPolicy` tuned on 2015 replay profit only. The 2016 window is not used to pick its hyperparameters.
+- [x] Both rows are reported. Neither row is a pass/fail gate.

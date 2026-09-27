@@ -83,6 +83,26 @@ def _resolve_routing(strategy_name: str):
     return None
 
 
+def order_up_to_from_params(params: dict) -> "Policy":  # noqa: F821
+    """Rebuild the ``order_up_to_space`` policy for a finished trial."""
+    return order_up_to_space(optuna.trial.FixedTrial(dict(params)))
+
+
+def maximise_order_up_to(objective, *, n_trials: int, sampler_seed: int = 0) -> tuple[dict, float]:
+    """Maximise ``objective(order_up_to_space(trial))`` on one fixed scenario."""
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=sampler_seed),
+    )
+
+    def _objective(trial: optuna.Trial) -> float:
+        return float(objective(order_up_to_space(trial)))
+
+    study.optimize(_objective, n_trials=n_trials)
+    return dict(study.best_params), float(study.best_value)
+
+
 def order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     """(s,S) continuous-review policy factory.
 

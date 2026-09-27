@@ -207,6 +207,23 @@ when that frozen planner beats the `OrderUpToPolicy` from the 0.01 anchor, left 
 runs shorten the episode and the seed count. The published tables are written later, under
 `runs/jepa-replenishment/synthetic/`. See ADR 0009, ADR 0027.
 
+**M5 replay exam** (`replay_exam`, `src/jepa/m5.py`)
+`shop-CA_1`, one `StaticFactoryPolicy` factory per pinned item at lead time 3
+(a factory makes one product), and one replay sink per item. Five FOODS items
+are chosen on 2015-01-01 through 2015-12-31: `FOODS_3` at `CA_1` by shortest
+`longest_zero_run`, then highest mean sales, dropping a zero run longer than
+7 days, widening to all FOODS departments only when fewer than five survive.
+`unit_cost` is 40% of median price. `flat_world` is on. The learned policy and
+`OrderUpToPolicy` are both wrapped in `PriceReplayPolicy` on the observed
+prices. Zero-shot uses the synthetic weights and does not fit on either window.
+Adaptation refits on reward-free transitions from 2015 only, collected with
+`OrderUpToPolicy` and `ExploratoryPolicy`, and is scored on 2016-01-01 through
+2016-04-24. The windows are not pooled. The textbook anchor is tuned on 2015
+replay profit via `order_up_to_space`. Both rows are reported. Neither is a
+pass/fail gate. The notebook is `notebooks/11-jepa-m5.ipynb`. It skips, naming
+the Kaggle download and this slice rule, when `data/m5/` is absent. Item ids
+are pinned in that notebook only after a quality report runs. See ADR 0026, ADR 0028.
+
 **Market** (`Market`, `src/sim/market.py`)
 Regional economic environment shared across nodes. Holds per-region demand/supply state, seasonal
 cycle, and trend drift. Provides `demand_multiplier(pid, region, tick) -> float` — bundles
