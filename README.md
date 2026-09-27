@@ -17,7 +17,9 @@ top: an **LLM world generator** that drafts a realistic catalog and market from 
 a **hyperparameter tuner** built on Optuna, a **PPO reinforcement-learning stack** that trains a
 continuous-control policy against the textbook baseline using Common Random Numbers (a trained
 checkpoint attaches to any intermediate node via `RLNodePolicy`), and an **M5 demand-replay
-adapter** that turns Walmart sales into a loadable setup directory.
+adapter** that turns Walmart sales into a loadable setup directory. A latent
+replenishment planner lives in [`src/jepa/`](src/jepa/); the commands are in
+[Latent replenishment](#latent-replenishment).
 
 It is a demo project — the goal is to be readable and easy to extend, not production-grade.
 
@@ -342,20 +344,73 @@ repo.
 Full reference: [`src/datasets/README.md`](src/datasets/README.md). End-to-end walkthrough:
 [`notebooks/m5_replay_example.ipynb`](notebooks/m5_replay_example.ipynb).
 
+## Latent replenishment
+
+A reward-free planner fits a per-SKU predictor on a synthetic transition log,
+then places orders by shooting covers. The training walkthrough
+([`notebooks/09-jepa-train-and-plan.ipynb`](notebooks/09-jepa-train-and-plan.ipynb))
+runs on smoke settings and shows one `decide`. The results notebook
+([`notebooks/10-jepa-synthetic-eval.ipynb`](notebooks/10-jepa-synthetic-eval.ipynb))
+reads the published tables and, when they are missing, prints the eval command
+below instead of inventing numbers. Package notes:
+[`src/jepa/README.md`](src/jepa/README.md).
+
+Raw outputs stay under `runs/jepa-replenishment/` and are not committed.
+
+Published log — 64 episodes of each behavior (published-default `OrderUpToPolicy`
+and the exploratory cover policy), seed offset `14_000_000`, 365 ticks, five
+SKUs, lead time 3:
+
+```bash
+uv run python -m src.jepa collect --episodes-each 64 --output runs/jepa-replenishment/log/transitions.parquet
+```
+
+Fit both predictors (lead time 3, search budget 64) and save the checkpoints:
+
+```bash
+uv run python -m src.jepa fit --log runs/jepa-replenishment/log/transitions.parquet --output runs/jepa-replenishment/checkpoints
+```
+
+Two 150-trial `OrderUpToPolicy` studies, one at `holding_rate` 0.01 and one at
+0.05. Search and holdout seed counts stay at the tuner defaults (16 and 32).
+The other three textbook policies are not tuned.
+
+```bash
+uv run python -m src.jepa tune --holding-rate 0.01 --trials 150 --output-dir runs/jepa-replenishment/tuning
+uv run python -m src.jepa tune --holding-rate 0.05 --trials 150 --output-dir runs/jepa-replenishment/tuning
+```
+
+Synthetic eval on the tuner holdout (32 seeds from `13_000_000`). Studies land
+in `order_up_to_holding_0_01` and `order_up_to_holding_0_05` under the tuning
+directory above.
+
+```bash
+uv run python -m src.jepa eval --checkpoints runs/jepa-replenishment/checkpoints --anchor runs/jepa-replenishment/tuning/order_up_to_holding_0_01 --ceiling runs/jepa-replenishment/tuning/order_up_to_holding_0_05 --output runs/jepa-replenishment/synthetic
+```
+
+M5 walkthrough. When `data/m5/` is absent the notebook skips and prints the
+Kaggle download plus the slice rule. The executed notebook is written under
+`runs/jepa-replenishment/`, not into the tracked file:
+
+```bash
+uv run jupyter nbconvert --to notebook --execute --output-dir runs/jepa-replenishment notebooks/11-jepa-m5.ipynb
+```
+
 ## Repo layout
 
 ```
 src/
   sim/         core simulator + textbook policies
+  jepa/        latent replenishment planner (does not import the RL stack)
   web/         limited Streamlit visual demo (sibling consumer of sim)
   datasets/    M5 (Kaggle) → setup-directory adapter
   llm/         LLM catalog and market generator
   tuning/      Optuna-based hyperparameter search
   rl/          PPO training stack + RLNodePolicy
 setups/        example setup directories (runnable graphs + fashion catalog)
-notebooks/     guided tour (00–06a) + M5 replay example
+notebooks/     guided tour (00–06a), latent replenishment (09–11), M5 replay example
 data/          scenario outputs
-runs/          tuning + RL training artifacts
+runs/          tuning, RL, and latent-replenishment artifacts (not committed)
 docs/adr/      architecture decision records
 docs/images/   figures used in READMEs
 tests/         pytest suite

@@ -25,6 +25,9 @@ regardless of where the kernel launches. Generated artifacts land under
 | 05a | [`05a-analyze-a-study.ipynb`](05a-analyze-a-study.ipynb) | Load a **completed tuning study** from disk and analyze it in depth — trajectory, parameter importance, leaderboard, seed-robustness, and the holdout confirmation. Read-only; pairs with 05. |
 | 06 | [`06-rl-train-and-eval.ipynb`](06-rl-train-and-eval.ipynb) | Train a tiny **PPO** agent, read its TensorBoard learning curves, and evaluate it CRN-paired against the textbook baseline. |
 | 06a | [`06a-analyze-a-trained-agent.ipynb`](06a-analyze-a-trained-agent.ipynb) | Load a **long-trained PPO run** from disk and analyze it in depth — training trajectory, best-checkpoint selection, deep CRN comparison vs the default, regime analysis, and behavioral signature. Read-only; pairs with 06. |
+| 09 | [`09-jepa-train-and-plan.ipynb`](09-jepa-train-and-plan.ipynb) | Smoke **latent replenishment** walkthrough: a small transition log, a fit, and one `decide` (covers, priority ration, order). Published commands are in the root README. |
+| 10 | [`10-jepa-synthetic-eval.ipynb`](10-jepa-synthetic-eval.ipynb) | Load the synthetic in-distribution and retarget tables and state the success rules beside them. Prints the published eval command when `runs/jepa-replenishment/synthetic/` is absent. |
+| 11 | [`11-jepa-m5.ipynb`](11-jepa-m5.ipynb) | **M5 replay exam** for the latent planner: slice rule, zero-shot row, adaptation row. Skips with the Kaggle download and the slice rule when raw files are absent. |
 | M5 | [`m5_replay_example.ipynb`](m5_replay_example.ipynb) | End-to-end **M5 real-demand replay**: raw Kaggle files → quality report → invented upstream (factory + CA DC) → emitted CA shops → replay sinks → (s,S) policy run → exact-replay assertion → event-overlay plot → `PriceReplayPolicy` variant. Exits gracefully when raw files are absent. |
 
 Start at **00** for the core model, then branch wherever your interest is.

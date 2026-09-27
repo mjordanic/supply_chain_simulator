@@ -12,6 +12,9 @@ from __future__ import annotations
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
+
+import pandas as pd
 
 from src.jepa.plan import ReplenishmentPlanner
 from src.sim.policy import (
@@ -31,6 +34,18 @@ HOLDOUT_SEED_OFFSET = _TUNER.holdout_seed_offset
 IN_DISTRIBUTION_HOLDING_RATE = 0.01
 RETARGET_HOLDING_RATE = 0.05
 MEAN_RATIO = 0.95
+
+IN_DISTRIBUTION_RULE = (
+    "In-distribution rule (holding_rate 0.01, tuner holdout): pass if the "
+    "paired interval of latent minus the anchor covers zero, or the latent "
+    "mean is at least 95% of the anchor mean."
+)
+RETARGET_RULE = (
+    "Retarget rule (holding_rate 0.05, same weights, no new log): pass if "
+    "the frozen planner beats the frozen OrderUpToPolicy from the 0.01 study "
+    "on paired net_profit / initial_cash. The OrderUpToPolicy tuned at 0.05 "
+    "is a ceiling and is not a pass bar."
+)
 
 _IN_DISTRIBUTION_TEXTBOOK: dict[str, Callable[[], IntermediatePolicy]] = {
     "order_up_to": OrderUpToPolicy,
@@ -229,3 +244,28 @@ def compare_synthetic(
         retarget_passes=retarget_passes(retarget["latent"], retarget["anchor"]),
         in_distribution_paired_interval=(low, high),
     )
+
+
+def _comparison_frame(table: ComparisonTable) -> pd.DataFrame:
+    rows: list[dict[str, float | int]] = []
+    for index, seed in enumerate(table.seeds):
+        row: dict[str, float | int] = {"seed": int(seed)}
+        for arm, values in table.per_seed.items():
+            row[arm] = float(values[index])
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def write_synthetic_comparison(result: SyntheticComparison, directory: str | Path) -> Path:
+    """Write the in-distribution and retarget tables. Does not invent a cell."""
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    _comparison_frame(result.in_distribution).to_parquet(
+        destination / "in_distribution.parquet",
+        index=False,
+    )
+    _comparison_frame(result.retarget).to_parquet(
+        destination / "retarget.parquet",
+        index=False,
+    )
+    return destination

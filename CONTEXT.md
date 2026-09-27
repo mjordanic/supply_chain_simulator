@@ -172,7 +172,8 @@ Per-SKU rows on the tuner episode shape: 365 ticks, five active SKUs, lead time 
 on-hand, in-transit, a sales window of length `delivery_lag`, cash, capacity, the granted
 quantity, and the next on-hand, in-transit, and sales. Each row is labelled `order_up_to` or
 `exploratory`. Factories stay on `StaticFactoryPolicy`.
-The published file lives under `runs/jepa-replenishment/log/` and is not committed.
+The published file is `runs/jepa-replenishment/log/transitions.parquet`, written by
+`python -m src.jepa collect`, and is not committed.
 
 **Latent replenishment planner** (`ReplenishmentPlanner(IntermediatePolicy)`, `fit_latent`, `src/jepa/plan.py`)
 Per-SKU buyer fit on the transition log. The encoder sees on-hand, in-transit, a sales window of
@@ -204,8 +205,12 @@ passes when the paired interval against the anchor covers zero, or the latent me
 95% of the anchor mean. The retarget rescores the same weights at `holding_rate` 0.05 and passes
 when that frozen planner beats the `OrderUpToPolicy` from the 0.01 anchor, left frozen. An
 `OrderUpToPolicy` factory for `holding_rate` 0.05 is the ceiling and is not a pass bar. Smoke
-runs shorten the episode and the seed count. The published tables are written later, under
-`runs/jepa-replenishment/synthetic/`. See ADR 0009, ADR 0027.
+runs shorten the episode and the seed count. `python -m src.jepa eval` writes
+`in_distribution.parquet` and `retarget.parquet` under
+`runs/jepa-replenishment/synthetic/`. The log, the fit, the two 150-trial
+`OrderUpToPolicy` studies, and that eval are the commands in the root README.
+Walkthroughs: `notebooks/09-jepa-train-and-plan.ipynb` and
+`notebooks/10-jepa-synthetic-eval.ipynb`. See ADR 0009, ADR 0027.
 
 **M5 replay exam** (`replay_exam`, `src/jepa/m5.py`)
 `shop-CA_1`, one `StaticFactoryPolicy` factory per pinned item at lead time 3

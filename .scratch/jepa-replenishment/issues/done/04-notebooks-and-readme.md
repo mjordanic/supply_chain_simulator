@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Synthetic comparison tables.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
@@ -28,8 +28,8 @@ The tuning analysis notebook, which loads an on-disk study and tells the reader 
 
 ## Acceptance criteria
 
-- [ ] The training notebook, run top to bottom on the smoke settings, builds a small log, fits, and shows one decision's covers, ration, and order.
-- [ ] The results notebook states the in-distribution rule and the retarget rule next to the tables when `runs/jepa-replenishment/synthetic/` is present.
-- [ ] When that directory is absent, the results notebook prints the published command and does not fail.
-- [ ] The root README gives the exact commands for the published log (64 episodes of each behavior), the fit, the two 150-trial `OrderUpToPolicy` studies (`holding_rate` 0.01 and 0.05), and the synthetic eval on the tuner holdout.
-- [ ] The README states that raw outputs stay under `runs/jepa-replenishment/` and are not committed.
+- [x] The training notebook, run top to bottom on the smoke settings, builds a small log, fits, and shows one decision's covers, ration, and order.
+- [x] The results notebook states the in-distribution rule and the retarget rule next to the tables when `runs/jepa-replenishment/synthetic/` is present.
+- [x] When that directory is absent, the results notebook prints the published command and does not fail.
+- [x] The root README gives the exact commands for the published log (64 episodes of each behavior), the fit, the two 150-trial `OrderUpToPolicy` studies (`holding_rate` 0.01 and 0.05), and the synthetic eval on the tuner holdout.
+- [x] The README states that raw outputs stay under `runs/jepa-replenishment/` and are not committed.

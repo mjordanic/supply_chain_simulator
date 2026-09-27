@@ -11,9 +11,12 @@ ration sees.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
+import torch
 
 from src.jepa.dynamics import DirectDynamics, LatentDynamics, sku_features
 from src.jepa.policy import COVERS, _flatten_pending, _priority_ration, _suppliers_and_costs
@@ -28,7 +31,9 @@ class ReplenishmentPlanner(IntermediatePolicy):
     ``ration="priority"`` is the learned ration. ``ration="fair_share"``
     shoots covers from the same grid and splits them with the textbook
     fair-share allocator. ``retarget`` builds another planner on the
-    same weights at a new holding rate and does not fit.
+    same weights at a new holding rate and does not fit. Each recorded
+    proposal keeps every draw and ``chosen``, the covers and priority
+    that won.
     """
 
     def __init__(
@@ -119,9 +124,13 @@ class ReplenishmentPlanner(IntermediatePolicy):
             )
 
         granted = {pid: 0 for pid in pids}
+        chosen_covers: dict[str, int] = {}
+        chosen_priority: list[str] = []
         if scored:
             winner = max(range(len(scored)), key=lambda index: scored[index][0])
             granted = scored[winner][1]
+            chosen_covers = dict(draws[winner]["covers"])
+            chosen_priority = list(draws[winner]["priority"])
 
         order: dict[str, list[tuple[str, int]]] = {}
         for pid in pids:
@@ -139,6 +148,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
             {
                 "tick": int(obs_intermediate.get("tick", len(self.proposals))),
                 "draws": draws,
+                "chosen": {"covers": chosen_covers, "priority": chosen_priority},
                 "action": action,
             }
         )
@@ -272,3 +282,57 @@ def fit_direct(
     dynamics = DirectDynamics(delivery_lag=delivery_lag)
     dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr)
     return ReplenishmentPlanner(dynamics, delivery_lag=delivery_lag, **planner_kwargs)
+
+
+def save_planners(
+    latent: ReplenishmentPlanner,
+    direct: ReplenishmentPlanner,
+    directory: str | Path,
+) -> Path:
+    """Write both fitted predictors. The published directory is gitignored."""
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    torch.save(latent.dynamics.state_dict(), destination / "latent.pt")
+    torch.save(direct.dynamics.state_dict(), destination / "direct.pt")
+    meta = {
+        "delivery_lag": int(latent.delivery_lag),
+        "budget": int(latent.budget),
+        "holding_rate": float(latent.holding_rate),
+        "order_fee": float(latent.order_fee),
+        "latent_policy_seed": latent.policy_seed,
+        "direct_policy_seed": direct.policy_seed,
+    }
+    (destination / "planner.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return destination
+
+
+def load_planners(directory: str | Path) -> tuple[ReplenishmentPlanner, ReplenishmentPlanner]:
+    """Reload the planners ``save_planners`` wrote. Does not fit."""
+    destination = Path(directory)
+    meta = json.loads((destination / "planner.json").read_text(encoding="utf-8"))
+    lag = int(meta["delivery_lag"])
+    shared = {
+        "delivery_lag": lag,
+        "budget": int(meta["budget"]),
+        "holding_rate": float(meta["holding_rate"]),
+        "order_fee": float(meta["order_fee"]),
+    }
+    latent_dynamics = LatentDynamics(delivery_lag=lag)
+    latent_dynamics.load_state_dict(
+        torch.load(destination / "latent.pt", weights_only=True)
+    )
+    direct_dynamics = DirectDynamics(delivery_lag=lag)
+    direct_dynamics.load_state_dict(
+        torch.load(destination / "direct.pt", weights_only=True)
+    )
+    latent = ReplenishmentPlanner(
+        latent_dynamics,
+        policy_seed=meta["latent_policy_seed"],
+        **shared,
+    )
+    direct = ReplenishmentPlanner(
+        direct_dynamics,
+        policy_seed=meta["direct_policy_seed"],
+        **shared,
+    )
+    return latent, direct
