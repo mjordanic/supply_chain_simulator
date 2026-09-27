@@ -174,6 +174,27 @@ quantity, and the next on-hand, in-transit, and sales. Each row is labelled `ord
 `exploratory`. Factories stay on `StaticFactoryPolicy`.
 The published file lives under `runs/jepa-replenishment/log/` and is not committed.
 
+**Latent replenishment planner** (`ReplenishmentPlanner(IntermediatePolicy)`, `fit_latent`, `src/jepa/plan.py`)
+Per-SKU buyer fit on the transition log. The encoder sees on-hand, in-transit, a sales window of
+length `delivery_lag`, cash, and capacity — not the Market multiplier or the disruption type. An
+EMA target encoder supplies the stopped embedding. An action-conditioned predictor unrolls
+open-loop for `H = delivery_lag`. The latent loss matches that target at each step, plus an
+anti-collapse penalty. Probes decode next on-hand, next in-transit, and step sales from a stopped
+embedding and do not train the encoder. `decide` draws 64 cover-and-priority proposals from
+`policy_rng` (smoke runs use 4), rations each one, and places the grant with the highest imagined
+`net_profit` over the lead time. Imagined profit is revenue minus purchase cost minus
+`holding_rate × on-hand × unit_cost` (supplier price, the catalog unit cost on the tuner graph)
+minus the per-supplier order fee. There is no stockout penalty and no learned reward head.
+Each ration spends what is left after that step's holding charge, and the cash after imagined
+profit is what the next ration can spend, so a frozen planner can be retargeted from
+`holding_rate` 0.01 to 0.05 without a new fit. `ration="fair_share"` keeps the same covers and
+uses the textbook fair-share split. See ADR 0024, ADR 0025, ADR 0027, ADR 0029.
+
+**Direct replenishment predictor** (`fit_direct`, `src/jepa/plan.py`)
+The same planner and the same priority ration, trained to emit next on-hand, next in-transit, and
+step sales from the observation window and the granted quantity. No latent target and no EMA
+encoder. See ADR 0029.
+
 **Market** (`Market`, `src/sim/market.py`)
 Regional economic environment shared across nodes. Holds per-region demand/supply state, seasonal
 cycle, and trend drift. Provides `demand_multiplier(pid, region, tick) -> float` — bundles
