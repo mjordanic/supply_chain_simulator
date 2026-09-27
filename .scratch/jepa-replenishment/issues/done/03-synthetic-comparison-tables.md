@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Fit the latent model and plan with it.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
@@ -25,9 +25,9 @@ PRD stories 28, 29, 34–42, 64. The published 32-seed, 64-proposal, 150-trial e
 
 ## Acceptance criteria
 
-- [ ] A smoke run on a handful of seeds returns paired `net_profit / initial_cash` for the latent planner, the direct planner, latent covers with textbook fair-share, published-default `OrderUpToPolicy`, and the other three textbook policies at published defaults.
-- [ ] The in-distribution smoke uses `holding_rate = 0.01`. The retarget smoke uses the same weights at `holding_rate = 0.05` and includes the textbook policy that was scored at `0.01`, left frozen.
-- [ ] The entry point accepts an already-built `OrderUpToPolicy` factory for the `0.01` anchor and another for the `0.05` ceiling. When none is passed, the anchor is the published default. This ticket does not run a 150-trial study.
-- [ ] The published defaults of the entry point are the tuner holdout: 32 seeds, offset `13_000_000`. Smoke tests override the seed count.
-- [ ] The result includes the in-distribution rule (paired interval against the anchor covers zero, or the latent mean is at least 95% of the anchor mean) and the retarget rule (frozen latent planner beats the frozen textbook policy on paired profit). Smoke tests check that these booleans are computed. They do not require the smoke run to pass the published thresholds.
-- [ ] One held-out seed returns a finite paired profit for every arm. The RL stack is not imported.
+- [x] A smoke run on a handful of seeds returns paired `net_profit / initial_cash` for the latent planner, the direct planner, latent covers with textbook fair-share, published-default `OrderUpToPolicy`, and the other three textbook policies at published defaults.
+- [x] The in-distribution smoke uses `holding_rate = 0.01`. The retarget smoke uses the same weights at `holding_rate = 0.05` and includes the textbook policy that was scored at `0.01`, left frozen.
+- [x] The entry point accepts an already-built `OrderUpToPolicy` factory for the `0.01` anchor and another for the `0.05` ceiling. When none is passed, the anchor is the published default. This ticket does not run a 150-trial study.
+- [x] The published defaults of the entry point are the tuner holdout: 32 seeds, offset `13_000_000`. Smoke tests override the seed count.
+- [x] The result includes the in-distribution rule (paired interval against the anchor covers zero, or the latent mean is at least 95% of the anchor mean) and the retarget rule (frozen latent planner beats the frozen textbook policy on paired profit). Smoke tests check that these booleans are computed. They do not require the smoke run to pass the published thresholds.
+- [x] One held-out seed returns a finite paired profit for every arm. The RL stack is not imported.

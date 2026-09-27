@@ -229,8 +229,12 @@ def test_log_package_does_not_import_the_rl_stack():
         text = path.read_text()
         assert "src.rl" not in text
         assert "optuna" not in text
-        assert "Periodic" not in text
-        assert "ReorderPoint" not in text
+
+    # Collection stays on OrderUpTo and the exploratory policy. The comparison
+    # entry point is the module that scores the other textbook policies.
+    collected = (Path("src/jepa") / "log.py").read_text() + (Path("src/jepa") / "policy.py").read_text()
+    assert "Periodic" not in collected
+    assert "ReorderPoint" not in collected
 
     script = (
         "import src.jepa, sys\n"

@@ -195,6 +195,18 @@ The same planner and the same priority ration, trained to emit next on-hand, nex
 step sales from the observation window and the granted quantity. No latent target and no EMA
 encoder. See ADR 0029.
 
+**Synthetic comparison** (`compare_synthetic`, `src/jepa/eval.py`)
+Scores the latent planner, the direct planner, and the latent planner with textbook fair-share
+on the tuner holdout (32 seeds from `13_000_000`), beside published-default `OrderUpToPolicy`,
+an optional tuned `OrderUpToPolicy`, and the other three textbook policies at published defaults.
+The number is paired `net_profit / initial_cash`. In-distribution uses `holding_rate` 0.01 and
+passes when the paired interval against the anchor covers zero, or the latent mean is at least
+95% of the anchor mean. The retarget rescores the same weights at `holding_rate` 0.05 and passes
+when that frozen planner beats the `OrderUpToPolicy` from the 0.01 anchor, left frozen. An
+`OrderUpToPolicy` factory for `holding_rate` 0.05 is the ceiling and is not a pass bar. Smoke
+runs shorten the episode and the seed count. The published tables are written later, under
+`runs/jepa-replenishment/synthetic/`. See ADR 0009, ADR 0027.
+
 **Market** (`Market`, `src/sim/market.py`)
 Regional economic environment shared across nodes. Holds per-region demand/supply state, seasonal
 cycle, and trend drift. Provides `demand_multiplier(pid, region, tick) -> float` — bundles
