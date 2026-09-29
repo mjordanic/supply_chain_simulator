@@ -17,6 +17,7 @@ setup-directory helpers used when ``TuningConfig.setup_dir`` is set.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from random import Random
@@ -27,8 +28,10 @@ from src.sim.episode_sampler import (
     default_disruption_params,
     default_lifecycle_params,
     default_market_params,
+    sample_episode_lifecycle,
 )
 from src.sim.scenario import (
+    CANONICAL_STAGES,
     DisruptionParams,
     ItemLifecycleParams,
     MarketParams,
@@ -111,7 +114,7 @@ def _build_tuning_graph_scenario(
       F_<pid> → S (with default_lead_time = delivery_lag)
       S → D_<pid>  (with default_lead_time = 1 — intra-day)
     """
-    from src.sim.distributions import Constant, Uniform
+    from src.sim.distributions import Constant
     from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
     from src.sim.scenario import NodeInstance
     from src.sim.graph import EdgeSpec
@@ -170,7 +173,7 @@ def _build_tuning_graph_scenario(
             region="US",
             init_seed=init_seed + len(active_subset) + 1 + j,
             product_id=pid,
-            demand_dist=Uniform(2, 8),
+            demand_dist=_sink_demand_dist(pid_to_ware[pid]),
             income_rate=float(pid_to_ware[pid].base_price) * 10.0,  # ample income
             cash=balance,
             activation_tick={pid: 0},
@@ -207,6 +210,42 @@ def _build_tuning_graph_scenario(
     )
 
 
+def _sink_demand_dist(ware: Ware):
+    """Per-SKU demand. Missing scale fields keep the historical ``Uniform(2, 8)``."""
+    from src.sim.distributions import Uniform
+
+    mean = ware.demand_mean
+    cv = ware.demand_cv
+    if mean is None or cv is None:
+        return Uniform(2, 8)
+    half = float(mean) * float(cv) * math.sqrt(3.0)
+    low = float(mean) - half
+    high = float(mean) + half
+    if low < 1e-3:
+        low = 1e-3
+    if high <= low:
+        high = low + 1e-3
+    return Uniform(low, high)
+
+
+# Same multiply-add as the RL sampler's ``k`` stream.
+_K_PRIME = 0x27D4_EB2F
+_K_OFFSET = 0x0000_0009
+_MASK_32 = 0xFFFF_FFFF
+
+
+def _sample_k(config: "TuningConfig", episode_seed: int, n_catalog: int) -> int:
+    """Pinned ``K_active``, or a draw from ``[K_min, K_max_episode]``."""
+    if config.K_active is not None:
+        return int(config.K_active)
+    if n_catalog < 1:
+        raise ValueError("sample_episode: catalog is empty")
+    k_hi = min(int(config.K_max_episode), n_catalog)
+    k_lo = min(max(int(config.K_min), 1), k_hi)
+    seed = (episode_seed * _K_PRIME + _K_OFFSET) & _MASK_32
+    return Random(seed).randint(k_lo, k_hi)
+
+
 # ---------------------------------------------------------------------------
 # Public function: sample_episode
 # ---------------------------------------------------------------------------
@@ -227,17 +266,22 @@ def sample_episode(
     Parameters
     ----------
     catalog:
-        The full product universe (length >= ``config.K_active``).
+        The full product universe. Must be at least as long as the pinned
+        ``K_active``, or as ``K_min`` when K is sampled.
     config:
-        ``TuningConfig`` instance; ``K_active``, ``capacity_dist``,
-        ``balance_dist``, ``delivery_lag``, ``holding_rate``, ``order_fee``,
-        and ``episode_length`` are consumed here.
+        ``TuningConfig`` instance. ``K_active`` pins the assortment; when it
+        is ``None``, K is drawn from ``[K_min, K_max_episode]``. Also reads
+        ``capacity_dist``, ``balance_dist``, ``delivery_lag``,
+        ``holding_rate``, ``order_fee``, and ``episode_length``.
     episode_seed:
         Single integer seed. Any two calls with the same seed and the same
         ``(catalog, config)`` produce identical ``TuningEpisodeSpec``
         objects — the function is pure.
     market_params, disruption_params, lifecycle_params:
-        Optional overrides; fall back to sensible defaults when ``None``.
+        Optional overrides. Market and disruption fall back to the default
+        factories when ``None``. Lifecycle ``None`` samples per-SKU initial
+        stages and a stage-change table from the episode seed; pass
+        ``default_lifecycle_params()`` to keep the inert lifecycle.
     start_date:
         Episode start date; defaults to 2024-01-01.
 
@@ -267,13 +311,18 @@ def sample_episode(
     else:
         init_stock_pct = 0.0
 
+    # Lifecycle is part of the episode draw unless the caller pinned params.
+    # The input catalog is left as authored.
+    if lifecycle_params is None:
+        lifecycle_params, catalog = sample_episode_lifecycle(catalog, episode_seed)
+
     # --- sample active subset (without replacement) ---
     assortment_rng = Random(assortment_seed)
     all_pids = [w.product_id for w in catalog]
-    K = config.K_active
+    K = _sample_k(config, episode_seed, len(all_pids))
     if K > len(all_pids):
         raise ValueError(
-            f"sample_episode: K_active={K} exceeds catalog size {len(all_pids)}"
+            f"sample_episode: K={K} exceeds catalog size {len(all_pids)}"
         )
     active_pids = assortment_rng.sample(all_pids, K)
     # Sort to canonical catalog order so the tuple is stable.
@@ -367,23 +416,49 @@ def load_catalog_and_market_from_setup(
     return catalog, market
 
 
-def make_synthetic_catalog(n: int = 100) -> "list[Ware]":
-    """Build a synthetic n-product catalog for CI / smoke runs (no LLM).
+def make_synthetic_catalog(n: int | None = None) -> "list[Ware]":
+    """Build a synthetic catalog for CI / smoke runs (no LLM).
 
-    Products have stable P{i:04d} ids, consistent pricing, and
-    ``all_season`` seasonality.
+    The default size is ``SYNTHETIC_CATALOG_SIZE`` (inside 500–1000).
+    SKUs differ in demand scale, margin, demand volatility, and lifecycle
+    transition rate. Ids stay ``P{i:04d}``. Seasonality stays
+    ``all_season`` so the demand spread is the SKU's own distribution.
     """
-    items = [
-        {
-            "name": f"Product {i}",
-            "category": "General",
-            "related_products": [],
-            "base_price": float(10 + (i % 30)),
-            "unit_cost": float(4 + (i % 10)),
-            "seasonality": "all_season",
-        }
-        for i in range(n)
-    ]
+    from src.tuning.config import SYNTHETIC_CATALOG_SIZE
+
+    if n is None:
+        n = SYNTHETIC_CATALOG_SIZE
+    span = max(1, n - 1)
+    stages = CANONICAL_STAGES
+    base_rates = {
+        "introduction": 0.012,
+        "growth": 0.012,
+        "maturity": 0.01,
+        "decline": 0.015,
+        "dead": 0.003,
+    }
+    items = []
+    for i in range(n):
+        demand_mean = 0.5 * (80 ** (i / span))
+        demand_cv = 0.05 + 0.45 * (((i * 17) % n) / span)
+        margin = 0.08 + 0.67 * (((i * 13) % n) / span)
+        tempo = 0.25 + 3.75 * (((i * 19) % n) / span)
+        unit_cost = 4.0 + (i % 11)
+        items.append(
+            {
+                "name": f"Product {i}",
+                "category": "General",
+                "related_products": [],
+                "base_price": float(unit_cost / (1.0 - margin)),
+                "unit_cost": float(unit_cost),
+                "seasonality": "all_season",
+                "stage_change_probs": {
+                    stage: base_rates[stage] * tempo for stage in stages
+                },
+                "demand_mean": float(demand_mean),
+                "demand_cv": float(demand_cv),
+            }
+        )
     return load_catalog(items)
 
 

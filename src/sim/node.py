@@ -220,6 +220,7 @@ class DemandSinkNode(Node):
         market: "Market",
         catalog: "list[Ware]",
         world_rng: Random,
+        stage_factor: dict[str, float] | None = None,
     ) -> int:
         """Compute the demand target for this tick.
 
@@ -248,6 +249,11 @@ class DemandSinkNode(Node):
 
             demand_target = demand_dist.sample(world_rng)
                             * market.demand_multiplier(pid, region)
+                            * stage_factor[pid]
+
+        ``stage_factor`` is the lifecycle stage multiplier. ``None`` is 1
+        for every product, which is what an inert maturity lifecycle does
+        when ``stage_multipliers["maturity"]`` is 1.
 
         Only the value for ``self.product_id`` is returned as the integer
         demand target; the draws for all other pids advance ``world_rng`` to
@@ -295,7 +301,8 @@ class DemandSinkNode(Node):
             else:
                 base = 0.0
 
-            raw = base * market_mult
+            lifecycle = 1.0 if stage_factor is None else float(stage_factor.get(pid, 1.0))
+            raw = base * market_mult * lifecycle
             
             # Select only the demand for the product that the sink is bound to.
             if pid == self.product_id:

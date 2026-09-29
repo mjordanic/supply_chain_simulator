@@ -126,6 +126,8 @@ def test_load_catalog_returns_ware_namedtuples() -> None:
         "freshness_alpha",
         "freshness_decay",
         "init_stock_share",
+        "demand_mean",
+        "demand_cv",
     )
     # New per-Ware override fields default to ``None`` when unset.
     assert cat[0].init_stage is None
@@ -133,6 +135,8 @@ def test_load_catalog_returns_ware_namedtuples() -> None:
     assert cat[0].freshness_alpha is None
     assert cat[0].freshness_decay is None
     assert cat[0].init_stock_share is None
+    assert cat[0].demand_mean is None
+    assert cat[0].demand_cv is None
 
 
 def test_load_catalog_normalises_related_products_to_tuples() -> None:

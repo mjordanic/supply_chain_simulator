@@ -196,7 +196,7 @@ def _tune(args: argparse.Namespace) -> None:
             ("episode_length", "k_active", "n_search_seeds", "n_holdout_seeds"),
         ),
     )
-    catalog = make_synthetic_catalog(max(config.K_catalog, config.K_active))
+    catalog = make_synthetic_catalog(config.active_catalog_size())
     name = f"order_up_to_holding_{config.holding_rate:.2f}".replace(".", "_")
     output_dir = str(args.output_dir)
     study = run_study(

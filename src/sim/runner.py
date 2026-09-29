@@ -133,6 +133,9 @@ class Simulation:
         self._tick_decision_state: dict[str, dict[str, dict]] = {}
         # Stashed central table from ``tick_world()`` for use by ``tick_decide_and_settle()``.
         self._current_table: Any = None
+        from src.sim.lifecycle_clock import LifecycleState
+
+        self.lifecycle = LifecycleState(scenario)
 
     # ------------------------------------------------------------------
     # Public API
@@ -143,7 +146,7 @@ class Simulation:
 
         Steps
         -----
-        1. ``tick_world``        — advance market, events.
+        1. ``tick_world``        — advance market, events, and item lifecycle.
         2. ``publish_offers``    — all sellers publish live offers.
         3. Demand-pull walk      — reverse-topological order; sinks first,
                                    factories last; each ready-set shuffled
@@ -161,6 +164,7 @@ class Simulation:
         # -------------------------------------------------------------------
         self.market.tick()
         self.event_engine.tick(self.market)
+        self.lifecycle.tick()
         current_tick = self.market.current_step()
 
         # -------------------------------------------------------------------
@@ -202,7 +206,7 @@ class Simulation:
     # ------------------------------------------------------------------
 
     def tick_world(self) -> Any:
-        """Phase 1: advance world state (market, events).
+        """Phase 1: advance world state (market, events, item lifecycle).
 
         Also publishes offers to a fresh ``CentralTable`` and stores
         it on ``self._current_table`` for ``tick_decide_and_settle()``
@@ -215,6 +219,7 @@ class Simulation:
 
         self.market.tick()
         self.event_engine.tick(self.market)
+        self.lifecycle.tick()
         current_tick = self.market.current_step()
 
         table, decision_state = _publish_offers(self.nodes, CentralTable, Offer, FactoryNode, IntermediateNode)
@@ -333,6 +338,7 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
         build_sink_obs,
     )
 
+    stage_factor = sim.lifecycle.demand_factors(sim.market.stage_multipliers)
     for ready_set in sim.schedule:
         # Shuffle the ready-set deterministically (ADR 0016).
         buyers = [sim.nodes[nid] for nid in ready_set if nid in sim.nodes]
@@ -345,12 +351,14 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
 
             if isinstance(buyer, DemandSinkNode):
                 # Samples world_rng for every catalog pid — CRN invariant (ADR 0003).
+                # Lifecycle multipliers are looked up, not drawn, from world_rng.
                 demand_target = float(
                     buyer.demand_target(
                         tick=current_tick,
                         market=sim.market,
                         catalog=sim.scenario.catalog,
                         world_rng=sim.world_rng,
+                        stage_factor=stage_factor,
                     )
                 )
                 # Persist the exogenous demand target for the flow log (ADR 0019).
@@ -792,9 +800,16 @@ class Runner:
                 Shared world-state time series:
                 ``"time"`` (``simulation_step``, ``simulation_date``),
                 ``"market_supply"`` and ``"market_demand"`` per region
-                (length ``n_steps + 1``), and ``"events"``.
+                (length ``n_steps + 1``), ``"lifecycle"``
+                (``{product_id: [stage, ...]}``, length ``n_steps + 1``,
+                stage before the first transition then after each tick),
+                and ``"events"``.
         """
-        # Capture step-0 snapshot before any tick.
+        # Capture step-0 snapshot before any tick. Lifecycle series includes
+        # the stage before the first transition, then the stage after each tick.
+        lifecycle_series: dict[str, list[str]] = {
+            pid: [stage] for pid, stage in self._sim.lifecycle.stages.items()
+        }
         step_series: list[int] = [0]
         date_series: list[Any] = [self._sim.market.current_date()]
         market_supply_series: dict[str, list[float]] = {
@@ -821,6 +836,8 @@ class Runner:
                 market_demand_series[r].append(
                     float(self._sim.market.market_state[r]["market_demand"])
                 )
+            for pid, stage in self._sim.lifecycle.stages.items():
+                lifecycle_series[pid].append(stage)
 
         return {
             "n_steps": self.scenario.n_steps,
@@ -832,6 +849,7 @@ class Runner:
                 },
                 "market_supply": market_supply_series,
                 "market_demand": market_demand_series,
+                "lifecycle": lifecycle_series,
                 "events": {"occurrences": [None] * self.scenario.n_steps},
             },
         }

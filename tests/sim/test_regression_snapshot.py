@@ -50,7 +50,9 @@ from src.sim.scenario import (
 # (cycle_amp=0.0015, 30 ticks) the US demand level moved by mean |Δ| 0.0072
 # (max 0.0208); supply was unchanged; shop-store1/2 final cash moved by
 # -0.48 and -0.24. Restoring the additive cycle reproduces the previous digest.
-EXPECTED_HASH = "452af00424353958b87e6d1969baf588171047102aebe7501d1b8e187338c7d1"
+# Re-baselined again when lifecycle stages advance on their own stream and
+# scale demand, and the run log records the stage series.
+EXPECTED_HASH = "a4dadb70d3f9e68fcdf8e834c562a56c8febf5fa5f8ac9bbbed01e7e1e2dec8d"
 
 
 N_STEPS = 30

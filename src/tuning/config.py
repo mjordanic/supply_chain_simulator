@@ -20,6 +20,9 @@ from typing import Optional
 
 from src.sim.distributions import Distribution
 
+# Default synthetic catalog. Inside the 500–1000 band the study asked for.
+SYNTHETIC_CATALOG_SIZE = 750
+
 
 def _default_capacity_dist() -> Distribution:
     """``LogUniform(100, 10_000)`` — per-episode capacity distribution.
@@ -55,11 +58,22 @@ class TuningConfig:
     episode_length: int = 365
     """Number of ticks per episode (one calendar year at daily resolution)."""
 
-    K_active: int = 5
-    """Number of active SKUs per episode (sampled from the catalog)."""
+    K_active: int | None = None
+    """Pinned assortment size. ``None`` draws K from ``[K_min, K_max_episode]``."""
 
-    K_catalog: int = 100
+    K_min: int = 1
+    """Inclusive lower bound when ``K_active`` is not pinned."""
+
+    K_max_episode: int = 30
+    """Inclusive upper bound when ``K_active`` is not pinned."""
+
+    K_catalog: int = SYNTHETIC_CATALOG_SIZE
     """Catalog size used by the synthetic fallback when no world cache is found."""
+
+    def active_catalog_size(self) -> int:
+        """Synthetic catalog length that covers the largest assortment this config draws."""
+        k = self.K_max_episode if self.K_active is None else self.K_active
+        return max(self.K_catalog, k)
 
     # ------------------------------------------------------------------
     # Episode randomisation
@@ -108,4 +122,4 @@ class TuningConfig:
     When unset, a synthetic catalog is used (no LLM calls required)."""
 
 
-__all__ = ["TuningConfig"]
+__all__ = ["SYNTHETIC_CATALOG_SIZE", "TuningConfig"]

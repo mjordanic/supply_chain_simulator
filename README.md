@@ -360,8 +360,8 @@ below instead of inventing numbers. Package notes:
 Raw outputs stay under `runs/jepa-replenishment/` and are not committed.
 
 Published log — 64 episodes of each behavior (published-default `OrderUpToPolicy`
-and the exploratory cover policy), seed offset `14_000_000`, 365 ticks, five
-SKUs, lead time 3:
+and the exploratory cover policy), seed offset `14_000_000`, 365 ticks, `K`
+sampled from 1 to 30 out of a synthetic catalog of about 750 SKUs, lead time 3:
 
 ```bash
 uv run python -m src.jepa collect --episodes-each 64 --output runs/jepa-replenishment/log/transitions.parquet

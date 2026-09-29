@@ -174,8 +174,10 @@ free capacity or cash is gone. `list_price` stays at `base_price`, promotions ar
 minimum-order floor is zero. `OrderUpToPolicy` keeps fair-share. See ADR 0024, ADR 0025.
 
 **Transition log** (`collect_transition_log`, `src/jepa/log.py`)
-Per-SKU rows on the tuner episode shape: 365 ticks, five active SKUs, lead time 3,
-`holding_rate` 0.01, the tuner order fee. Half the episodes run published-default
+Per-SKU rows on the tuner episode shape: 365 ticks, `K` sampled per episode from
+1 to 30, lead time 3, `holding_rate` 0.01, the tuner order fee. The synthetic
+catalog is about 750 SKUs, heterogeneous in demand scale, margin, volatility, and
+lifecycle rate. Half the episodes run published-default
 `OrderUpToPolicy`; half run `ExploratoryPolicy`. Seeds start at `14_000_000`. A row holds
 on-hand, an in-transit arrival-age profile, a sales window of length `delivery_lag`, cash,
 capacity, the quantity the buyer requested (`requested_qty`), the quantity Allocation filled
@@ -186,7 +188,8 @@ age in ticks — units filled that many ticks ago and still in transit — and i
 Factories stay on `StaticFactoryPolicy`.
 The published parquet is `runs/jepa-replenishment/log/transitions.parquet`, written by
 `python -m src.jepa collect`, with a `transitions.manifest.json` sidecar: episode count and
-seed range, episode length, `K_active`, delivery lag, holding rate, order fee, catalog
+seed range, episode length, `K_active` (null when K is sampled, plus `K_min` and
+`K_max_episode`), delivery lag, holding rate, order fee, catalog
 identity, behaviour-mixture composition, the realised fraction of rows with a non-zero
 filled quantity, and the git SHA. Neither file is committed.
 
@@ -264,8 +267,13 @@ run. See ADR 0015, ADR 0030.
 **Item** / **Ware** / **SKU**
 A product in the catalog. `Ware` is the static record (`product_id P####`, `name`, `category`,
 `base_price`, `unit_cost`, `seasonality`, `related_products`) plus optional per-product lifecycle
-and freshness authoring fields. The simulator samples demand per catalog product every tick for
-CRN cleanliness (ADR 0003).
+and freshness authoring fields, and optional `demand_mean` / `demand_cv` (the sink's demand
+scale and coefficient of variation; absent means `Uniform(2, 8)`). The simulator samples demand
+per catalog product every tick for CRN cleanliness (ADR 0003). Sampled tuner episodes draw a
+per-SKU initial stage when the ware does not set one. Wares with no stage-change table share
+one episode-sampled table; wares that author a table keep that identity, scaled by one
+episode-level draw. Each SKU then transitions on its own stream. The stage multiplier scales
+that SKU's demand.
 
 **EventEngine**
 Generates stochastic disruption events (natural_disaster, economic_crisis, political_unrest,
@@ -325,7 +333,8 @@ _Avoid_: delisting, deactivation (the engine has no such mechanism). See ADR 002
 **Run Log**
 Dict produced by `Runner.run()`. Top-level keys: `n_steps` (int), `ticks` (list of per-tick node
 snapshots with `node_cash`, `node_inventory`, `node_pending`, `node_orders`, and the always-on
-`rejections` stream — see **Rejection log**), `global` (market/event/lifecycle time-series).
+`rejections` stream — see **Rejection log**), `global` (market/event time-series and
+`lifecycle`, a `{product_id: [stage, ...]}` series of length `n_steps + 1`).
 Consumed by `DataExporter`.
 
 **CRN-paired eval**
@@ -438,11 +447,16 @@ node/product tables, JSON config snapshot and run log, and a regional supply/dem
 (node table), `data/timeseries.parquet`, `reports/overview.png`. Public methods:
 `export_all(output_folder)` plus per-artifact saves.
 
-**Episode sampler** (`src/sim/episode_sampler.py`)
-Canonical home for `EpisodeSpec`, `sample_episode(...)`, and default-params factories. Sub-seed
-derivation: `sub = (episode_seed * PRIME + OFFSET) & 0xFFFF_FFFF`, one `(PRIME, OFFSET)` pair per
-purpose. Five sub-seeds for the graph-engine era: `assortment`, `capacity`, `balance`, `world`,
-and `allocation` (ADR 0016). RL adds a 6th `slot` stream in `src.rl.episode_sampler`.
+**Episode sampler** (`src/sim/episode_sampler.py`, `src/tuning/episode.py`)
+Sub-seed derivation: `sub = (episode_seed * PRIME + OFFSET) & 0xFFFF_FFFF`, one `(PRIME, OFFSET)`
+pair per purpose. Sim purposes: `assortment`, `capacity`, `balance`, `world`, `init_stock`,
+`allocation` (ADR 0016), and `lifecycle`. The tuning sampler draws `K` per episode from
+`[K_min, K_max_episode]` (default 1 through 30) unless `K_active` is pinned. Lifecycle parameter
+draws use the `lifecycle` sub-seed of the episode seed: a shared stage-change table, one scale
+on authored tables, and a per-SKU initial stage. Transition draws during the run use a per-SKU
+stream of that same purpose off `world_seed`, not `world_rng`.
+`make_synthetic_catalog` defaults to about 750 SKUs. RL still samples K from `[1, 20]` in
+`src/rl/episode_sampler.py`.
 
 **Metrics** (`src/sim/metrics.py`)
 Canonical home for `RunSlice`, `aggregate_episode(run_slice) -> dict[str, float]`, and five KPI

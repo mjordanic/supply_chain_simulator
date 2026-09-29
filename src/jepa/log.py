@@ -55,23 +55,25 @@ COLUMNS = (
 def collection_config(
     *,
     episode_length: int = 365,
-    k_active: int = 5,
+    k_active: int | None = None,
     delivery_lag: int = 3,
     holding_rate: float = 0.01,
     order_fee: float | None = None,
 ) -> TuningConfig:
     """Tuner episode shape used for the log.
 
-    Unspecified knobs (capacity, opening cash, initial stock) stay at the
-    ``TuningConfig`` defaults. ``order_fee`` stays at that default unless
+    Unspecified knobs (capacity, opening cash, initial stock, assortment
+    size) stay at the ``TuningConfig`` defaults, so K is sampled unless
+    ``k_active`` is passed. ``order_fee`` stays at that default unless
     the caller passes one.
     """
     kwargs: dict[str, Any] = {
         "episode_length": episode_length,
-        "K_active": k_active,
         "delivery_lag": delivery_lag,
         "holding_rate": holding_rate,
     }
+    if k_active is not None:
+        kwargs["K_active"] = k_active
     if order_fee is not None:
         kwargs["order_fee"] = order_fee
     return TuningConfig(**kwargs)
@@ -80,7 +82,7 @@ def collection_config(
 def build_log_scenario(config: TuningConfig, episode_seed: int, catalog: list | None = None):
     """One tuner-graph episode at ``episode_seed``."""
     if catalog is None:
-        catalog = make_synthetic_catalog(max(config.K_catalog, config.K_active))
+        catalog = make_synthetic_catalog(config.active_catalog_size())
     return sample_episode(catalog, config, episode_seed)
 
 
@@ -153,9 +155,10 @@ def collect_transition_log(
     """Collect the per-SKU transition log.
 
     Defaults are the published shape from ``collection_config``: 365 ticks,
-    five SKUs, lead time 3, ``holding_rate`` 0.01, the tuner order fee, and
-    64 episodes of each behavior from ``LOG_SEED_OFFSET``. Pass a shorter
-    episode or a smaller count for a smoke run.
+    K sampled from the tuner range, lead time 3, ``holding_rate`` 0.01, the
+    tuner order fee, and 64 episodes of each behavior from
+    ``LOG_SEED_OFFSET``. Pass a shorter episode or a smaller count for a
+    smoke run.
 
     Order-up-to episodes use seeds ``seed_offset .. seed_offset + n - 1``.
     Exploratory episodes use the next ``n`` seeds. The last tick of each
@@ -172,7 +175,7 @@ def collect_transition_log(
     if delivery_lag is not None:
         shape["delivery_lag"] = delivery_lag
     config = collection_config(**shape)
-    catalog = make_synthetic_catalog(max(config.K_catalog, config.K_active))
+    catalog = make_synthetic_catalog(config.active_catalog_size())
 
     rows: list[dict[str, Any]] = []
     for behavior, start in (
@@ -243,7 +246,9 @@ def _write_manifest(
         "seed_min": int(seed_offset),
         "seed_max": int(seed_offset) + 2 * n - 1,
         "episode_length": int(config.episode_length),
-        "K_active": int(config.K_active),
+        "K_active": None if config.K_active is None else int(config.K_active),
+        "K_min": int(config.K_min),
+        "K_max_episode": int(config.K_max_episode),
         "delivery_lag": int(config.delivery_lag),
         "holding_rate": float(config.holding_rate),
         "order_fee": float(config.order_fee),

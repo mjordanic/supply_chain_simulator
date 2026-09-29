@@ -12,8 +12,8 @@ Seams, from the issue acceptance criteria:
    parameters, catalog identity, behaviour mixture, realised non-zero-order
    fraction, and git SHA.
 4. Mix and shape. Half the episodes are published-default ``OrderUpToPolicy``
-   and half are ``ExploratoryPolicy``. Defaults are 365 ticks, five SKUs,
-   lead time 3, ``holding_rate`` 0.01, the tuner order fee, 64 episodes of
+   and half are ``ExploratoryPolicy``. Defaults are 365 ticks, K sampled
+   from 1 to 30, lead time 3, ``holding_rate`` 0.01, the tuner order fee, 64 episodes of
    each behavior, seed offset ``14_000_000``. Factories stay on
    ``StaticFactoryPolicy``. The package does not import the RL stack.
 """
@@ -334,7 +334,9 @@ def test_published_collector_matches_the_tuner_episode_shape():
     cfg = collection_config()
     plain = TuningConfig()
     assert cfg.episode_length == 365 == plain.episode_length
-    assert cfg.K_active == 5 == plain.K_active
+    assert cfg.K_active is None and plain.K_active is None
+    assert cfg.K_min == 1 == plain.K_min
+    assert cfg.K_max_episode == 30 == plain.K_max_episode
     assert cfg.delivery_lag == 3 == plain.delivery_lag
     assert cfg.holding_rate == 0.01 == plain.holding_rate
     assert cfg.order_fee == plain.order_fee
@@ -344,12 +346,19 @@ def test_published_collector_matches_the_tuner_episode_shape():
     assert LOG_SEED_OFFSET >= plain.seed_offset + plain.n_search_seeds
     assert LOG_SEED_OFFSET >= plain.holdout_seed_offset + plain.n_holdout_seeds
 
+    sizes = {
+        len(build_log_scenario(cfg, LOG_SEED_OFFSET + i).active_subset)
+        for i in range(24)
+    }
+    assert min(sizes) >= cfg.K_min
+    assert max(sizes) <= cfg.K_max_episode
+    assert min(sizes) < max(sizes)
     spec = build_log_scenario(cfg, LOG_SEED_OFFSET)
     shop = next(instance.node for instance in spec.scenario.nodes if instance.node.id == "S")
     assert shop.holding_rate == 0.01
     assert shop.order_fee == plain.order_fee
     assert spec.scenario.n_steps == 365
-    assert len(spec.active_subset) == 5
+    assert cfg.K_min <= len(spec.active_subset) <= cfg.K_max_episode
     lags = [edge.default_lead_time for edge in spec.scenario.edges if edge.buyer_id == "S"]
     assert lags and set(lags) == {3}
     assert spec.scenario.world_seed != LOG_SEED_OFFSET
@@ -468,7 +477,7 @@ def test_collector_writes_a_manifest_beside_the_log(tmp_path):
     sidecar = path.with_suffix(".manifest.json")
     manifest = json.loads(sidecar.read_text(encoding="utf-8"))
     config = collection_config(episode_length=2, k_active=2, delivery_lag=3)
-    catalog = make_synthetic_catalog(max(config.K_catalog, config.K_active))
+    catalog = make_synthetic_catalog(config.active_catalog_size())
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     nonzero = float((frame["filled_qty"] > 0).mean()) if len(frame) else 0.0
 

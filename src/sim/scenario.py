@@ -68,8 +68,12 @@ Ware = namedtuple(
         # allocation of the ``capacity * init_stock_pct`` budget across
         # initially active SKUs in ``init_store_state``.
         "init_stock_share",
+        # Optional per-SKU demand scale and coefficient of variation.
+        # ``None`` keeps the historical ``Uniform(2, 8)`` sink demand.
+        "demand_mean",
+        "demand_cv",
     ],
-    defaults=(None, None, None, None, None),
+    defaults=(None, None, None, None, None, None, None),
 )
 
 
@@ -160,6 +164,8 @@ def _ware_from_dict(d: Mapping[str, Any]) -> Ware:
         freshness_alpha=_deserialize(d.get("freshness_alpha")),
         freshness_decay=_deserialize(d.get("freshness_decay")),
         init_stock_share=_deserialize(d.get("init_stock_share")),
+        demand_mean=_deserialize(d.get("demand_mean")),
+        demand_cv=_deserialize(d.get("demand_cv")),
     )
 
 
@@ -545,6 +551,8 @@ class Scenario:
                 "init_stage": w.init_stage,
                 "stage_change_probs": w.stage_change_probs,
                 "init_stock_share": w.init_stock_share,
+                "demand_mean": w.demand_mean,
+                "demand_cv": w.demand_cv,
                 "related_products": list(w.related_products),
             }
             for w in self.catalog
