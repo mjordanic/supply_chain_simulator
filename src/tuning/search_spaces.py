@@ -32,23 +32,19 @@ Tunable ranges:
     stockout_safety_bonus_pct_of_lag  float       [0.0, 2.0]
     Q                                 int         [1, 30]  — ReorderPoint fixed qty
     review_interval                   int         [1, 14]  — periodic cadence in ticks
-    per_supplier_min_order_floor      int         [0, 10]  — buyer-side min order per line
-    routing_strategy                  Categorical ["cheapest_first",
-                                                   "fill_rate_weighted"]
 
-Pinned (not tuned):
+Pinned (not tuned), shared with the replenishment planner:
 
-    opening_budget_pct           float 0.8  — stores already start with stock
+    opening_budget_pct           float  OPENING_BUDGET_PCT
+    per_supplier_min_order_floor int    MIN_ORDER_FLOOR
+    routing_strategy             cheapest-first (``routing_strategy=None``)
 """
 
 from __future__ import annotations
 
 import optuna
 
-_OPENING_BUDGET_PCT_PINNED = 0.8
-
-# Routing strategy choices (Categorical).
-_ROUTING_CHOICES = ["cheapest_first", "fill_rate_weighted"]
+from src.sim.policy import MIN_ORDER_FLOOR, OPENING_BUDGET_PCT
 
 
 def _sample_shared(trial: optuna.Trial) -> dict:
@@ -59,28 +55,7 @@ def _sample_shared(trial: optuna.Trial) -> dict:
         "stockout_safety_bonus_pct_of_lag": trial.suggest_float(
             "stockout_safety_bonus_pct_of_lag", 0.0, 2.0
         ),
-        "per_supplier_min_order_floor": trial.suggest_int(
-            "per_supplier_min_order_floor", 0, 10
-        ),
-        "routing_strategy": trial.suggest_categorical(
-            "routing_strategy", _ROUTING_CHOICES
-        ),
     }
-
-
-def _resolve_routing(strategy_name: str):
-    """Return the routing callable for ``strategy_name``, or ``None`` for default.
-
-    ``"cheapest_first"`` maps to the ``MultiSupplierTextbookPolicy`` built-in
-    (pass ``routing_strategy=None`` to use it).  ``"fill_rate_weighted"`` uses
-    the fill-rate EMA from the ``CentralTable`` to weight allocations.
-    """
-    if strategy_name == "cheapest_first":
-        return None  # default behaviour
-    if strategy_name == "fill_rate_weighted":
-        from src.sim.policy import MultiSupplierTextbookPolicy
-        return MultiSupplierTextbookPolicy._routing_fill_rate_weighted
-    return None
 
 
 def order_up_to_from_params(params: dict) -> "Policy":  # noqa: F821
@@ -114,9 +89,6 @@ def order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
         cover_horizon_ticks               int   [1, 30]
         safety_lead_pct_of_lag            float [0.0, 3.0]
         stockout_safety_bonus_pct_of_lag  float [0.0, 2.0]
-        per_supplier_min_order_floor      int   [0, 10]
-        routing_strategy                  Categorical ["cheapest_first",
-                                                       "fill_rate_weighted"]
     """
     from src.sim.policy import OrderUpToPolicy
 
@@ -124,10 +96,10 @@ def order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     return OrderUpToPolicy(
         cover_horizon_ticks=shared["cover_horizon_ticks"],
         safety_lead_pct_of_lag=shared["safety_lead_pct_of_lag"],
-        opening_budget_pct=_OPENING_BUDGET_PCT_PINNED,
+        opening_budget_pct=OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag=shared["stockout_safety_bonus_pct_of_lag"],
-        per_supplier_min_order_floor=shared["per_supplier_min_order_floor"],
-        routing_strategy=_resolve_routing(shared["routing_strategy"]),
+        per_supplier_min_order_floor=MIN_ORDER_FLOOR,
+        routing_strategy=None,
     )
 
 
@@ -143,9 +115,6 @@ def reorder_point_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
         safety_lead_pct_of_lag            float [0.0, 3.0]
         stockout_safety_bonus_pct_of_lag  float [0.0, 2.0]
         Q                                 int   [1, 30]
-        per_supplier_min_order_floor      int   [0, 10]
-        routing_strategy                  Categorical ["cheapest_first",
-                                                       "fill_rate_weighted"]
     """
     from src.sim.policy import ReorderPointPolicy
 
@@ -153,11 +122,11 @@ def reorder_point_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     return ReorderPointPolicy(
         cover_horizon_ticks=shared["cover_horizon_ticks"],
         safety_lead_pct_of_lag=shared["safety_lead_pct_of_lag"],
-        opening_budget_pct=_OPENING_BUDGET_PCT_PINNED,
+        opening_budget_pct=OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag=shared["stockout_safety_bonus_pct_of_lag"],
         Q=trial.suggest_int("Q", 1, 30),
-        per_supplier_min_order_floor=shared["per_supplier_min_order_floor"],
-        routing_strategy=_resolve_routing(shared["routing_strategy"]),
+        per_supplier_min_order_floor=MIN_ORDER_FLOOR,
+        routing_strategy=None,
     )
 
 
@@ -173,9 +142,6 @@ def periodic_order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
         safety_lead_pct_of_lag            float [0.0, 3.0]
         stockout_safety_bonus_pct_of_lag  float [0.0, 2.0]
         review_interval                   int   [1, 14]
-        per_supplier_min_order_floor      int   [0, 10]
-        routing_strategy                  Categorical ["cheapest_first",
-                                                       "fill_rate_weighted"]
     """
     from src.sim.policy import PeriodicOrderUpToPolicy
 
@@ -183,11 +149,11 @@ def periodic_order_up_to_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     return PeriodicOrderUpToPolicy(
         cover_horizon_ticks=shared["cover_horizon_ticks"],
         safety_lead_pct_of_lag=shared["safety_lead_pct_of_lag"],
-        opening_budget_pct=_OPENING_BUDGET_PCT_PINNED,
+        opening_budget_pct=OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag=shared["stockout_safety_bonus_pct_of_lag"],
         review_interval=trial.suggest_int("review_interval", 1, 14),
-        per_supplier_min_order_floor=shared["per_supplier_min_order_floor"],
-        routing_strategy=_resolve_routing(shared["routing_strategy"]),
+        per_supplier_min_order_floor=MIN_ORDER_FLOOR,
+        routing_strategy=None,
     )
 
 
@@ -204,9 +170,6 @@ def periodic_reorder_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
         safety_lead_pct_of_lag            float [0.0, 3.0]
         stockout_safety_bonus_pct_of_lag  float [0.0, 2.0]
         review_interval                   int   [1, 14]
-        per_supplier_min_order_floor      int   [0, 10]
-        routing_strategy                  Categorical ["cheapest_first",
-                                                       "fill_rate_weighted"]
     """
     from src.sim.policy import PeriodicReorderPolicy
 
@@ -214,9 +177,9 @@ def periodic_reorder_space(trial: optuna.Trial) -> "Policy":  # noqa: F821
     return PeriodicReorderPolicy(
         cover_horizon_ticks=shared["cover_horizon_ticks"],
         safety_lead_pct_of_lag=shared["safety_lead_pct_of_lag"],
-        opening_budget_pct=_OPENING_BUDGET_PCT_PINNED,
+        opening_budget_pct=OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag=shared["stockout_safety_bonus_pct_of_lag"],
         review_interval=trial.suggest_int("review_interval", 1, 14),
-        per_supplier_min_order_floor=shared["per_supplier_min_order_floor"],
-        routing_strategy=_resolve_routing(shared["routing_strategy"]),
+        per_supplier_min_order_floor=MIN_ORDER_FLOOR,
+        routing_strategy=None,
     )

@@ -321,7 +321,7 @@ Each policy owns a private `policy_rng` seeded from its `policy_seed` kwarg, dis
 
 ### `TextbookReorderPolicy` family (`MultiSupplierTextbookPolicy`)
 
-Four textbook inventory rules sharing one base class: a censored-sales rate estimator over a `delivery_lag`-length rolling window, a two-pass fair-share allocator across the capacity and cash pools, a cash-budget "pilot order" cold-start, and opt-in adaptive safety stock. All four emit pure inventory decisions (`price[pid] = base_price`, no activations/promotions). Multi-supplier routing via `_split_across_suppliers` honours both min-order layers; the default strategy is cheapest-first, pluggable via the `routing_strategy` kwarg (`"cheapest_first"` / `"fill_rate_weighted"`).
+Four textbook inventory rules sharing one base class: a censored-sales rate estimator over a `delivery_lag`-length rolling window, a two-pass fair-share allocator across the capacity and cash pools, a cash-budget "pilot order" cold-start, and opt-in adaptive safety stock. All four emit pure inventory decisions (`price[pid] = base_price`, no activations/promotions). On the graph engine the cash check and the pilot use the cheapest direct supplier's `list_price`; `unit_cost` is only the fallback when no offer is published. Multi-supplier routing via `_split_across_suppliers` honours both min-order layers. The comparison with the replenishment planner pins cheapest-first, a zero `per_supplier_min_order_floor`, and a cold-start fraction of 0.50. `routing_strategy` can still be passed explicitly (`None` is cheapest-first; `fill_rate_weighted` remains available) but the tuner does not sample it.
 
 Shared `MultiSupplierTextbookPolicy` kwargs:
 
@@ -331,7 +331,7 @@ Shared `MultiSupplierTextbookPolicy` kwargs:
 | `cover_horizon_ticks` | 14 | cycle length driving `S − s` for order-up-to (EOQ result, independent of lead time) |
 | `safety_lead_pct_of_lag` | 1/3 | fraction of per-edge lead time used as the safety horizon: `s = (lag + pct × lag) × rate` |
 | `delivery_lag` | 2 | fallback lead time the inner policy assumes for pilot sizing |
-| `unit_cost` | 1.0 | upstream unit cost (pilot-order budgeting) |
+| `unit_cost` | 1.0 | fallback unit cost when no supplier offer is published; a live offer's `list_price` is what the cash check uses |
 | `list_price_out` | 0.0 | the node's own downstream selling price |
 | `per_supplier_min_order_floor` | 0 | buyer-side min order per line (the second min-order layer) |
 | `routing_strategy` | `None` | `None`/`"cheapest_first"` or `"fill_rate_weighted"` |

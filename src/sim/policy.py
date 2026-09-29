@@ -71,6 +71,11 @@ from typing import Any, Mapping
 
 from src.sim.distributions import Distribution
 
+# Shared by the textbook anchor and the replenishment planner. Neither arm
+# tunes these. Cold-start fraction is half of cash; see CONTEXT.md.
+OPENING_BUDGET_PCT = 0.50
+MIN_ORDER_FLOOR = 0
+
 
 class Policy(ABC):
     """Base class for policies. Owns a per-instance ``policy_rng``."""
@@ -1199,7 +1204,7 @@ class TextbookReorderPolicy(Policy):
         policy_seed: int | None = None,
         cover_horizon_ticks: int = 14,
         safety_lead_pct_of_lag: float = 1 / 3,
-        opening_budget_pct: float = 0.50,
+        opening_budget_pct: float = OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag: float = 0.0,
         min_qty: int = 0,
     ) -> None:
@@ -1391,13 +1396,13 @@ class TextbookReorderPolicy(Policy):
                 ):
                     # Per-pid pilot budget: a fraction of balance,
                     # divided across the active catalog, converted to qty.
-                    pilot_qty = int(
-                        self.opening_budget_pct * balance / K_active / cost
+                    pilot_qty = cold_start_pilot_qty(
+                        balance,
+                        K_active,
+                        cost,
+                        free_space,
+                        self.opening_budget_pct,
                     )
-                    # Cap at free space (shared pool — the allocator
-                    # later distributes it more carefully when multiple
-                    # pilots compete).
-                    pilot_qty = min(pilot_qty, free_space)
                     if pilot_qty > 0:
                         desired[pid] = pilot_qty
                         pilot_pids.add(pid)
@@ -2086,6 +2091,15 @@ class _SingleSupplierAdapter(IntermediatePolicy):
         # passed in obs, otherwise we use a large sentinel so the capacity
         # clamp never binds.
         node_capacity = int(obs_intermediate.get("capacity", 0)) or 10_000
+        unit_costs: dict[str, float] = {}
+        for pid in inventory:
+            price = self.unit_cost
+            if central_table is not None:
+                for supplier_id, offer in central_table.snapshot_for_buyer(pid):
+                    if supplier_id == self.supplier_id:
+                        price = float(offer.list_price)
+                        break
+            unit_costs[pid] = price
 
         textbook_obs: dict[str, Any] = {
             "current_sim_step": tick,
@@ -2095,7 +2109,7 @@ class _SingleSupplierAdapter(IntermediatePolicy):
             "outstanding_orders": pending_flat,
             "max_capacity": node_capacity,
             "balance": float(obs_intermediate.get("cash", 10_000.0)),
-            "unit_costs": {pid: self.unit_cost for pid in inventory},
+            "unit_costs": unit_costs,
             "base_prices": dict(list_prices),
             "delivery_lags": {
                 pid: float(self.delivery_lag) for pid in inventory
@@ -2284,6 +2298,60 @@ def _fill_rate_weighted_strategy(
     return [(sid, qty) for sid, qty in allocations.items() if qty > 0]
 
 
+def cold_start_pilot_qty(
+    cash: float,
+    n_active: int,
+    unit_cost: float,
+    free_space: int,
+    opening_budget_pct: float,
+) -> int:
+    """``opening_budget_pct × cash / n_active / unit_cost``, capped by free space.
+
+    Callers decide when a SKU is cold. The textbook anchor calls this on a
+    first sighting with zero position. The planner also requires a zero
+    censored-sales rate.
+    """
+    if opening_budget_pct <= 0 or unit_cost <= 0 or n_active <= 0:
+        return 0
+    qty = int(opening_budget_pct * float(cash) / int(n_active) / float(unit_cost))
+    return max(0, min(qty, int(free_space)))
+
+
+def direct_offers(
+    pid: str,
+    direct_supplier_ids: Any,
+    central_table: Any,
+) -> list[tuple[str, Any]]:
+    """Offers for ``pid`` from suppliers the buyer is allowed to order from."""
+    if central_table is None:
+        return []
+    found: list[tuple[str, Any]] = []
+    for supplier_id, offer in central_table.snapshot_for_buyer(pid):
+        if direct_supplier_ids is not None and supplier_id not in direct_supplier_ids:
+            continue
+        found.append((str(supplier_id), offer))
+    return found
+
+
+def cheapest_direct_supplier(
+    pid: str,
+    direct_supplier_ids: Any,
+    central_table: Any,
+    *,
+    fallback_cost: float,
+) -> tuple[str | None, float]:
+    """Cheapest direct supplier for ``pid``, and the price cash is spent at.
+
+    ``direct_supplier_ids`` restricts the offer book the way an observation's
+    ``direct_supplier_ids`` does. Missing offers return ``(None, fallback_cost)``.
+    """
+    offers = direct_offers(pid, direct_supplier_ids, central_table)
+    if not offers:
+        return None, float(fallback_cost)
+    supplier_id, offer = min(offers, key=lambda item: (float(item[1].list_price), item[0]))
+    return supplier_id, float(offer.list_price)
+
+
 # ---------------------------------------------------------------------------
 # MultiSupplierTextbookPolicy — multi-supplier base class
 # ---------------------------------------------------------------------------
@@ -2309,7 +2377,8 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
         Fixed delivery lag (ticks) used to build the Store-style observation
         for the inner policy.  Default 2.
     unit_cost:
-        Per-unit cost for inner-policy cash accounting.  Default 1.0.
+        Fallback per-unit cost when no direct supplier has published an offer.
+        A live offer's ``list_price`` is the price the cash check uses.  Default 1.0.
     list_price_out:
         Selling price advertised downstream.  Default 0.0 (keep existing).
     per_supplier_min_order_floor:
@@ -2471,6 +2540,18 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
         }
 
         node_capacity = int(obs_intermediate.get("capacity", 0)) or 10_000
+        # Cash leaves at the supplier's list price. ``self.unit_cost`` is only
+        # the fallback when that supplier has not published an offer; the
+        # constructor default of 1.0 is not the price.
+        unit_costs = {
+            pid: cheapest_direct_supplier(
+                pid,
+                direct_supplier_ids,
+                central_table,
+                fallback_cost=self.unit_cost,
+            )[1]
+            for pid in inventory
+        }
 
         textbook_obs: dict[str, Any] = {
             "current_sim_step": tick,
@@ -2480,7 +2561,7 @@ class MultiSupplierTextbookPolicy(IntermediatePolicy):
             "outstanding_orders": pending_flat,
             "max_capacity": node_capacity,
             "balance": float(obs_intermediate.get("cash", 10_000.0)),
-            "unit_costs": {pid: self.unit_cost for pid in inventory},
+            "unit_costs": unit_costs,
             "base_prices": dict(list_prices),
             "delivery_lags": {pid: float(self.delivery_lag) for pid in inventory},
         }
@@ -2586,7 +2667,7 @@ class OrderUpToPolicy(MultiSupplierTextbookPolicy):
         policy_seed: int | None = None,
         cover_horizon_ticks: int = 14,
         safety_lead_pct_of_lag: float = 1 / 3,
-        opening_budget_pct: float = 0.50,
+        opening_budget_pct: float = OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag: float = 0.0,
         min_qty: int = 0,
         delivery_lag: int = 2,
@@ -2620,7 +2701,7 @@ class OrderUpToPolicy(MultiSupplierTextbookPolicy):
             policy_seed=policy_seed,
             cover_horizon_ticks=cover_horizon_ticks,
             safety_lead_pct_of_lag=safety_lead_pct_of_lag,
-            opening_budget_pct=getattr(self, "_obu_opening_budget_pct", 0.50),
+            opening_budget_pct=getattr(self, "_obu_opening_budget_pct", OPENING_BUDGET_PCT),
             stockout_safety_bonus_pct_of_lag=getattr(
                 self, "_obu_stockout_safety_bonus", 0.0
             ),
@@ -2676,7 +2757,7 @@ class ReorderPointPolicy(MultiSupplierTextbookPolicy):
         policy_seed: int | None = None,
         cover_horizon_ticks: int = 14,
         safety_lead_pct_of_lag: float = 1 / 3,
-        opening_budget_pct: float = 0.50,
+        opening_budget_pct: float = OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag: float = 0.0,
         min_qty: int = 0,
         delivery_lag: int = 2,
@@ -2712,7 +2793,7 @@ class ReorderPointPolicy(MultiSupplierTextbookPolicy):
             policy_seed=policy_seed,
             cover_horizon_ticks=cover_horizon_ticks,
             safety_lead_pct_of_lag=safety_lead_pct_of_lag,
-            opening_budget_pct=getattr(self, "_rpp_opening_budget_pct", 0.50),
+            opening_budget_pct=getattr(self, "_rpp_opening_budget_pct", OPENING_BUDGET_PCT),
             stockout_safety_bonus_pct_of_lag=getattr(
                 self, "_rpp_stockout_safety_bonus", 0.0
             ),
@@ -2761,7 +2842,7 @@ class PeriodicOrderUpToPolicy(MultiSupplierTextbookPolicy):
         policy_seed: int | None = None,
         cover_horizon_ticks: int = 14,
         safety_lead_pct_of_lag: float = 1 / 3,
-        opening_budget_pct: float = 0.50,
+        opening_budget_pct: float = OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag: float = 0.0,
         min_qty: int = 0,
         delivery_lag: int = 2,
@@ -2797,7 +2878,7 @@ class PeriodicOrderUpToPolicy(MultiSupplierTextbookPolicy):
             policy_seed=policy_seed,
             cover_horizon_ticks=cover_horizon_ticks,
             safety_lead_pct_of_lag=safety_lead_pct_of_lag,
-            opening_budget_pct=getattr(self, "_poutp_opening_budget_pct", 0.50),
+            opening_budget_pct=getattr(self, "_poutp_opening_budget_pct", OPENING_BUDGET_PCT),
             stockout_safety_bonus_pct_of_lag=getattr(
                 self, "_poutp_stockout_safety_bonus", 0.0
             ),
@@ -2846,7 +2927,7 @@ class PeriodicReorderPolicy(MultiSupplierTextbookPolicy):
         policy_seed: int | None = None,
         cover_horizon_ticks: int = 14,
         safety_lead_pct_of_lag: float = 1 / 3,
-        opening_budget_pct: float = 0.50,
+        opening_budget_pct: float = OPENING_BUDGET_PCT,
         stockout_safety_bonus_pct_of_lag: float = 0.0,
         min_qty: int = 0,
         delivery_lag: int = 2,
@@ -2882,7 +2963,7 @@ class PeriodicReorderPolicy(MultiSupplierTextbookPolicy):
             policy_seed=policy_seed,
             cover_horizon_ticks=cover_horizon_ticks,
             safety_lead_pct_of_lag=safety_lead_pct_of_lag,
-            opening_budget_pct=getattr(self, "_prp_opening_budget_pct", 0.50),
+            opening_budget_pct=getattr(self, "_prp_opening_budget_pct", OPENING_BUDGET_PCT),
             stockout_safety_bonus_pct_of_lag=getattr(
                 self, "_prp_stockout_safety_bonus", 0.0
             ),

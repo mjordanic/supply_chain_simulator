@@ -23,7 +23,16 @@ import torch
 
 from src.jepa.dynamics import DirectDynamics, LatentDynamics, sku_features
 from src.jepa.policy import COVERS, _flatten_pending, _priority_ration, _suppliers_and_costs
-from src.sim.policy import IntermediatePolicy, _allocate_two_pass_fair_share, _estimate_rate
+from src.sim.policy import (
+    MIN_ORDER_FLOOR,
+    OPENING_BUDGET_PCT,
+    IntermediatePolicy,
+    MultiSupplierTextbookPolicy,
+    _allocate_two_pass_fair_share,
+    _estimate_rate,
+    cold_start_pilot_qty,
+    direct_offers,
+)
 
 DEFAULT_BUDGET = 64
 DEFAULT_HORIZON_MULTIPLE = 4
@@ -37,7 +46,13 @@ class ReplenishmentPlanner(IntermediatePolicy):
     fair-share allocator. ``retarget`` builds another planner on the
     same weights at a new holding rate and does not fit. Each recorded
     proposal keeps every draw and ``chosen``, the covers and priority
-    that won.
+    that won. Cold start matches the textbook anchor: a SKU with no
+    history, zero position, and a zero censored-sales rate is ordered
+    ``cold_start_pilot_qty`` at ``OPENING_BUDGET_PCT``. The supplier
+    split is cheapest-first with ``MIN_ORDER_FLOOR``. The opening
+    order's fee and purchase use those routed lines. Later imagined
+    steps still price the cheapest offer, because the offer book is
+    not rolled forward.
     """
 
     def __init__(
@@ -65,6 +80,9 @@ class ReplenishmentPlanner(IntermediatePolicy):
         self.ration = ration
         self.horizon_multiple = int(horizon_multiple)
         self.min_order = 0
+        self.per_supplier_min_order_floor = MIN_ORDER_FLOOR
+        self.routing_strategy = None
+        self.opening_budget_pct = OPENING_BUDGET_PCT
         self.sales_log: dict[str, list[int]] = {}
         self.proposals: list[dict[str, Any]] = []
 
@@ -99,8 +117,21 @@ class ReplenishmentPlanner(IntermediatePolicy):
         pids = sorted(inventory)
         pending = _flatten_pending(obs_intermediate.get("pending") or {})
         observed = dict(obs_intermediate.get("observed_sales") or {})
+        known = set(self.sales_log)
         for pid in pids:
             self.sales_log.setdefault(pid, []).append(int(observed.get(pid, 0)))
+        rates_now = _estimate_rate(
+            {pid: self.sales_log[pid] for pid in pids},
+            max(1, self.delivery_lag),
+            {pid: [] for pid in pids},
+        )
+        cold = {
+            pid
+            for pid in pids
+            if pid not in known
+            and inventory[pid] + pending.get(pid, 0) == 0
+            and float(rates_now.get(pid, 0.0)) == 0.0
+        }
 
         cash = float(obs_intermediate.get("cash") or 0.0)
         capacity = int(obs_intermediate.get("capacity") or 0)
@@ -109,7 +140,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
         prices = {pid: float(base.get(pid, 0.0)) for pid in pids}
 
         draws: list[dict[str, Any]] = []
-        scored: list[tuple[float, dict[str, int]]] = []
+        scored: list[tuple[float, dict[str, int], dict[str, list[tuple[str, int]]]]] = []
         for _ in range(self.budget):
             covers = {pid: int(self.policy_rng.choice(COVERS)) for pid in pids}
             if self.ration == "priority" and pids:
@@ -129,24 +160,22 @@ class ReplenishmentPlanner(IntermediatePolicy):
                     suppliers,
                     unit_costs,
                     prices,
+                    cold,
+                    obs_intermediate.get("direct_supplier_ids"),
+                    central_table,
                 )
             )
 
-        granted = {pid: 0 for pid in pids}
         chosen_covers: dict[str, int] = {}
         chosen_priority: list[str] = []
+        opening_order: dict[str, list[tuple[str, int]]] = {}
         if scored:
             winner = max(range(len(scored)), key=lambda index: scored[index][0])
-            granted = scored[winner][1]
+            opening_order = scored[winner][2]
             chosen_covers = dict(draws[winner]["covers"])
             chosen_priority = list(draws[winner]["priority"])
 
-        order: dict[str, list[tuple[str, int]]] = {}
-        for pid in pids:
-            qty = int(granted.get(pid, 0))
-            supplier_id = suppliers.get(pid)
-            if qty > 0 and supplier_id is not None:
-                order[pid] = [(supplier_id, qty)]
+        order = {pid: lines for pid, lines in opening_order.items() if lines}
         action = {
             "order": order,
             "list_price": prices,
@@ -175,13 +204,17 @@ class ReplenishmentPlanner(IntermediatePolicy):
         suppliers: Mapping[str, str | None],
         unit_costs: Mapping[str, float],
         prices: Mapping[str, float],
-    ) -> tuple[float, dict[str, int]]:
+        cold: set[str],
+        direct: Any,
+        central_table: Any,
+    ) -> tuple[float, dict[str, int], dict[str, list[tuple[str, int]]]]:
         on_hand = {pid: int(inventory.get(pid, 0)) for pid in pids}
         in_transit = {pid: int(pending.get(pid, 0)) for pid in pids}
         sales_hist = {pid: list(self.sales_log.get(pid, [])) for pid in pids}
         cash_now = float(cash)
         total = 0.0
         opening_grant: dict[str, int] | None = None
+        opening_order: dict[str, list[tuple[str, int]]] = {}
         # One encode of the decision-time window. Later steps advance the
         # predicted embedding (or, for the direct arm, the predicted
         # inventory) and do not re-read cash, so the holding rate changes
@@ -208,30 +241,55 @@ class ReplenishmentPlanner(IntermediatePolicy):
                 max(1, self.delivery_lag),
                 {pid: [] for pid in pids},
             )
+            free_space = max(0, int(capacity) - sum(on_hand.values()) - sum(in_transit.values()))
             desired: dict[str, int] = {}
             for pid in pids:
                 if suppliers.get(pid) is None:
                     desired[pid] = 0
                     continue
                 position = on_hand[pid] + in_transit[pid]
+                if _step == 0 and pid in cold:
+                    desired[pid] = cold_start_pilot_qty(
+                        cash,
+                        len(pids),
+                        float(unit_costs.get(pid, 0.0)),
+                        free_space,
+                        self.opening_budget_pct,
+                    )
+                    continue
                 target = round(
                     int(covers.get(pid, 0)) * float(rates.get(pid, 0.0)) * self.delivery_lag
                 )
                 desired[pid] = max(0, int(target) - position)
-            free_space = max(0, int(capacity) - sum(on_hand.values()) - sum(in_transit.values()))
             spendable = max(0.0, cash_now - holding)
             granted = self._ration(desired, priority, free_space, spendable, unit_costs)
-            predicted = rollout.step([float(granted.get(pid, 0)) for pid in pids])
-            revenue = 0.0
+            shipped = {pid: int(granted.get(pid, 0)) for pid in pids}
             purchase = 0.0
             used: set[str] = set()
+            if _step == 0:
+                routed = {
+                    pid: self._place(pid, shipped[pid], direct, central_table) for pid in pids
+                }
+                opening_order = {
+                    pid: [(sid, qty) for sid, qty, _price in lines]
+                    for pid, lines in routed.items()
+                    if lines
+                }
+                for pid, lines in routed.items():
+                    shipped[pid] = sum(qty for _sid, qty, _price in lines)
+                    purchase += sum(qty * price for _sid, qty, price in lines)
+                    used.update(sid for sid, _qty, _price in lines)
+            else:
+                for pid in pids:
+                    qty = shipped[pid]
+                    purchase += qty * float(unit_costs.get(pid, 0.0))
+                    supplier_id = suppliers.get(pid)
+                    if qty > 0 and supplier_id is not None:
+                        used.add(supplier_id)
+            predicted = rollout.step([float(shipped[pid]) for pid in pids])
+            revenue = 0.0
             for pid, (next_on_hand, next_in_transit, next_sales) in zip(pids, predicted, strict=True):
                 revenue += max(0.0, float(next_sales)) * float(prices.get(pid, 0.0))
-                qty = int(granted.get(pid, 0))
-                purchase += qty * float(unit_costs.get(pid, 0.0))
-                supplier_id = suppliers.get(pid)
-                if qty > 0 and supplier_id is not None:
-                    used.add(supplier_id)
                 on_hand[pid] = max(0, int(round(next_on_hand)))
                 in_transit[pid] = max(0, int(round(next_in_transit)))
                 sales_hist[pid].append(max(0, int(round(next_sales))))
@@ -239,7 +297,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
             profit = revenue - purchase - holding - fee
             total += profit
             if opening_grant is None:
-                opening_grant = {pid: int(granted.get(pid, 0)) for pid in pids}
+                opening_grant = dict(shipped)
             cash_now = cash_now + profit
         # Purchase cost is charged when the order is imagined. Crediting
         # unit cost on ending on-hand and in-transit puts that cash back,
@@ -249,7 +307,29 @@ class ReplenishmentPlanner(IntermediatePolicy):
             (on_hand[pid] + in_transit[pid]) * float(unit_costs.get(pid, 0.0))
             for pid in pids
         )
-        return total, opening_grant or {pid: 0 for pid in pids}
+        return total, opening_grant or {pid: 0 for pid in pids}, opening_order
+
+    def _place(
+        self,
+        pid: str,
+        qty: int,
+        direct: Any,
+        central_table: Any,
+    ) -> list[tuple[str, int, float]]:
+        """Route ``qty`` the way the textbook anchor does, with each line's price."""
+        offers = direct_offers(pid, direct, central_table)
+        if qty <= 0 or not offers:
+            return []
+        splits = MultiSupplierTextbookPolicy._split_across_suppliers(
+            pid,
+            qty,
+            [supplier_id for supplier_id, _offer in offers],
+            central_table,
+            buyer_min_order_floor=self.per_supplier_min_order_floor,
+            routing_strategy=self.routing_strategy,
+        )
+        price_of = {supplier_id: float(offer.list_price) for supplier_id, offer in offers}
+        return [(supplier_id, line_qty, price_of[supplier_id]) for supplier_id, line_qty in splits]
 
     def _ration(
         self,

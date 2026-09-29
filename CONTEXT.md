@@ -152,9 +152,17 @@ graph engine. The shared machinery: censored-sales rate estimator over a `delive
 rolling window, two-pass fair-share allocator across capacity and cash pools, cash-budget
 pilot-order cold-start, opt-in adaptive safety stock. Concrete variants: `OrderUpToPolicy` (s,S),
 `ReorderPointPolicy` (s,Q), `PeriodicOrderUpToPolicy` (R,S), `PeriodicReorderPolicy` (R,s,S).
-Multi-supplier routing via `_split_across_suppliers(pid, qty_total, suppliers, central_table)`:
-default strategy is cheapest-first with both min-order layers honoured, pluggable via
-`routing_strategy` constructor kwarg. `OrderUpToPolicy` remains the canonical CRN comparison
+On the graph engine the internal cash check and the pilot are priced at the cheapest direct
+supplier's `list_price`. The constructor `unit_cost` (default 1.0) is only the fallback when
+that supplier has not published an offer. Cold start, shared with the replenishment planner:
+the first decision for a SKU with zero inventory position and a zero censored-sales rate orders
+`int(0.50 × cash / K_active / supplier_price)`, then the ration. `0.50` is `OPENING_BUDGET_PCT`.
+A first sighting that already has sales still pilots on the textbook arm, because that arm does
+not trust a one-tick rate; the planner uses the rate in that case. On the tuner graph the shelf
+starts empty and tick-0 sales are zero, so both place this same pilot. Multi-supplier routing via
+`_split_across_suppliers(pid, qty_total, suppliers, central_table)`: the comparison route is
+cheapest-first with `per_supplier_min_order_floor` 0. Those two settings are shared with the
+planner and are not tuning knobs. `OrderUpToPolicy` remains the canonical CRN comparison
 anchor for RL evaluation. See ADR 0006, ADR 0008.
 
 **Exploratory replenishment policy** (`ExploratoryPolicy(IntermediatePolicy)`, `src/jepa/policy.py`)
@@ -193,7 +201,10 @@ embedding and do not train the encoder. `decide` draws 64 cover-and-priority pro
 `policy_rng` (smoke runs use 4), rations each one, and places the grant with the highest imagined
 score over `horizon_multiple * delivery_lag` steps (`horizon_multiple` defaults to 4). Each
 step's imagined profit is revenue minus purchase cost minus `holding_rate × on-hand × unit_cost`
-(supplier price, the catalog unit cost on the tuner graph) minus the per-supplier order fee.
+(the cheapest direct supplier's `list_price`) minus the per-supplier order fee. The opening
+order uses the same cold-start pilot, cheapest-first split, and zero minimum-order floor as
+the textbook anchor. A SKU whose first observation already contains sales is scored with the
+cover rule and is not piloted.
 Ending inventory position (on-hand plus in-transit) is credited at unit cost, so unsold stock
 is not confiscated at the window boundary. That credit is not cash the next ration can spend.
 There is no stockout penalty and no learned reward head.
@@ -326,8 +337,10 @@ computed paired per seed and averaged across held-out seeds. `OrderUpToPolicy` a
 unchanged since K is frozen within episodes. See ADR 0003, ADR 0006, ADR 0016, ADR 0021.
 
 **Policy tuning study** (`src/tuning/`)
-Optuna-based hyperparameter tuner for `MultiSupplierTextbookPolicy` and subclasses. New tunables:
-`per_supplier_min_order_floor` (int[0,10]) and `routing_strategy` (Categorical). Per-trial CRN
+Optuna-based hyperparameter tuner for `MultiSupplierTextbookPolicy` and subclasses. Routing
+strategy and `per_supplier_min_order_floor` are not sampled: every trial is pinned to
+cheapest-first and a zero floor, the same settings as the replenishment planner.
+`opening_budget_pct` is pinned at 0.50, the shared cold-start fraction. Per-trial CRN
 tuple expanded to include the `allocation` sub-seed for bit-identical paired comparisons on the
 graph engine. The objective remains mean `net_profit / initial_cash`. Artifacts land at
 `runs/tuning/<study_name>/` as `trials.parquet` + `per_seed.parquet` + `study.json`. See ADR 0009.

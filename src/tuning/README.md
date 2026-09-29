@@ -38,10 +38,10 @@ it to `run_study`; the four bundled factories cover the textbook variants.
 The tuner runs on the **multi-echelon graph engine**: each trial builds a degenerate
 `factory → IntermediateNode("S") → sink-per-product` graph from the catalog and attaches the
 candidate `MultiSupplierTextbookPolicy` to node `S`. The four bundled search spaces tune the
-shared textbook knobs plus two routing tunables — `per_supplier_min_order_floor` (int `[0, 10]`,
-the buyer-side min order per line) and `routing_strategy` (categorical: `cheapest_first` /
-`fill_rate_weighted`) — alongside each variant's own parameters (`Q`, `review_interval`, …). They
-surface as extra columns in `trials.parquet`.
+shared textbook knobs (`cover_horizon_ticks`, the two safety fractions) alongside each variant's
+own parameters (`Q`, `review_interval`). `per_supplier_min_order_floor` and `routing_strategy`
+are not columns: every trial is cheapest-first with a zero floor, matching the replenishment
+planner. `opening_budget_pct` is pinned at 0.50.
 
 ## Quickstart
 
@@ -147,8 +147,9 @@ Tuning optimises a single `IntermediateNode` in the degenerate 3-node
 scenario**. But the result is just an `OrderUpToPolicy` (an ordinary `IntermediatePolicy`), so
 deploying it into a real multi-echelon graph is a one-liner: **attach it to whichever node you
 want via `Runner`'s `policy_overrides`; every other node keeps its own policy.** Rebuild the
-tuned policy from the study's `best_params` with the same search-space factory (this maps the
-categorical `routing_strategy` string back to its callable, exactly as `confirm_top_k` does):
+tuned policy from the study's `best_params` with the same search-space factory (the same
+rebuild `confirm_top_k` does). Routing and the minimum-order floor stay the pinned
+cheapest-first, zero-floor settings even if an older `best_params` dict still names them:
 
 ```python
 import optuna

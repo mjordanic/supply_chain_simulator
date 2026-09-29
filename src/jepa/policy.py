@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from src.sim.policy import IntermediatePolicy, _estimate_rate
+from src.sim.policy import IntermediatePolicy, _estimate_rate, cheapest_direct_supplier
 
 COVERS: tuple[int, ...] = (0, 1, 2, 4)
 
@@ -153,20 +153,12 @@ def _suppliers_and_costs(
     suppliers: dict[str, str | None] = {}
     unit_costs: dict[str, float] = {}
     for pid in pids:
-        offers = []
-        if central_table is not None:
-            offers = list(central_table.snapshot_for_buyer(pid))
-        candidates = []
-        for supplier_id, offer in offers:
-            if direct is not None and supplier_id not in direct:
-                continue
-            candidates.append((float(offer.list_price), str(supplier_id)))
-        if not candidates:
-            suppliers[pid] = None
-            unit_costs[pid] = 0.0
-            continue
-        candidates.sort()
-        price, supplier_id = candidates[0]
+        supplier_id, price = cheapest_direct_supplier(
+            pid,
+            direct,
+            central_table,
+            fallback_cost=0.0,
+        )
         suppliers[pid] = supplier_id
         unit_costs[pid] = price
     return suppliers, unit_costs
