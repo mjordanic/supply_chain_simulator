@@ -2,9 +2,10 @@
 
 An Optuna-based hyperparameter tuner for any `Policy` subclass. It frames tuning as a measurement
 instrument — *how much profit headroom exists above the published textbook defaults?* — rather than
-per-world baseline construction. Trials run the policy on a fixed CRN seed set with log-uniform
-domain randomisation across capacity and balance; the objective is mean `net_profit / initial_cash`
-(dimensionless, scale-comparable across two orders of magnitude of node size).
+per-world baseline construction. Trials run the policy on a fixed CRN seed set. Each episode
+samples a tightness factor for the shop's capacity and another for opening cash, both from that episode's
+demand (ADR 0032). The objective is mean `net_profit / initial_cash`
+(dimensionless, comparable across tightness).
 
 ## Contents
 
@@ -91,7 +92,8 @@ runs/tuning/<study-name>/
 `mean_stockout_rate`, `mean_inventory_turnover`, `mean_revenue`, `mean_mean_price_pct_of_msrp`,
 plus one column per sampled hyperparameter.
 
-`per_seed.parquet` columns: `trial_id`, `seed`, `capacity`, `initial_cash`, `net_profit`,
+`per_seed.parquet` columns: `trial_id`, `seed`, `capacity`, `initial_cash`, `tightness`,
+`cash_tightness`, `net_profit`,
 `normalised_return`, `service_level`, `stockout_rate`, `inventory_turnover`, `revenue`,
 `mean_price_pct_of_msrp`.
 
@@ -166,7 +168,7 @@ runner = Runner(scenario, policy_overrides={"shop-1": tuned})  # shop-2 keeps it
 run_log = runner.run()
 ```
 
-The tuned policy was searched across log-uniform capacity/balance randomisation and a randomised
+The tuned policy was searched across demand-relative tightness and a randomised
 SKU assortment (ADR 0009), so it is node-agnostic — the same kwargs drop onto a small shop or a
 flagship warehouse. It still decides only from *local* observation (its own inventory / cash /
 sales plus the central-table offers from its direct suppliers); there is no joint cross-node

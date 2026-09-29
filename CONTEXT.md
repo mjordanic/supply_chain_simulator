@@ -417,8 +417,9 @@ to inspect a graph scenario.
 **Distribution** (`src/sim/distributions.py`)
 Abstract base class with one method, `sample(rng) -> Any`, and five concrete implementations:
 `Constant(value)`, `Uniform(lo, hi)`, `Normal(mean, std)`, `Choice(options)`,
-`LogUniform(lo, hi)`. Used for domain-randomisation parameters (per-episode capacity, opening
-balance) and node construction fields. Typed, comparable, JSON-serialisable.
+`LogUniform(lo, hi)`. Used for domain-randomisation parameters (the RL episode's capacity
+and opening balance) and node construction fields. A tuning episode sizes those two pools
+from tightness factors instead (ADR 0032). Typed, comparable, JSON-serialisable.
 
 **Simulation** (`src/sim/runner.py`)
 Mutable bundle returned by `build_world(scenario, *, policy_overrides=None)`. Holds `(scenario,
@@ -454,7 +455,15 @@ node/product tables, JSON config snapshot and run log, and a regional supply/dem
 **Episode sampler** (`src/sim/episode_sampler.py`, `src/tuning/episode.py`)
 Sub-seed derivation: `sub = (episode_seed * PRIME + OFFSET) & 0xFFFF_FFFF`, one `(PRIME, OFFSET)`
 pair per purpose. Sim purposes: `assortment`, `capacity`, `balance`, `world`, `init_stock`,
-`allocation` (ADR 0016), `lifecycle`, `delivery_lag`, and `supply`. The tuning sampler draws `K`
+`allocation` (ADR 0016), `lifecycle`, `delivery_lag`, `supply`, and `tightness`. The tuning
+sampler draws a capacity tightness from `LogUniform(0.5, 6)` and a cash tightness from
+`LogUniform(0.02, 0.8)` unless both `capacity_dist` and `balance_dist` are set. Capacity
+is its factor times aggregate episode demand times a 14-tick cover (the cover is
+`14 / episode_length` of the episode total). Opening cash is its factor times aggregate
+episode demand valued at unit cost. The factors are separate draws: one shared factor
+would leave cash able to buy about twenty times the shelf on a year-long episode, so
+cash would never set the fill. They are stored on `TuningEpisodeSpec` and written as
+per-seed columns. An explicit distribution still overrides that pool. The tuning sampler draws `K`
 per episode from `[K_min, K_max_episode]` (default 1 through 30) unless `K_active` is pinned.
 It draws a nominal delivery lag from 2 through 6 unless `delivery_lag` is pinned. Each active
 SKU is supplied by three `FactoryNode`s (`F_<pid>_0` is fastest). Production per tick and
@@ -536,7 +545,7 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0006](docs/adr/0006-textbook-reorder-policy-family.md) — Textbook reorder-policy family replaces the heuristic baseline as the RL comparison anchor.
 - [ADR 0007](docs/adr/0007-rl-scale-invariance-package.md) — RL scale-invariance package: order-up-to action decoder, demand-units inventory feature, log-uniform domain randomisation.
 - [ADR 0008](docs/adr/0008-safety-horizons-as-fraction-of-delivery-lag.md) — Reparameterise textbook safety horizons as fractions of delivery lag (fix per-SKU mis-scaling).
-- [ADR 0009](docs/adr/0009-policy-hyperparameter-tuning-tool.md) — Policy hyperparameter tuning tool (Optuna-based).
+- [ADR 0009](docs/adr/0009-policy-hyperparameter-tuning-tool.md) — Policy hyperparameter tuning tool (Optuna-based). Decision (d)'s log-uniform capacity and balance for tuning episodes is replaced by ADR 0032.
 - [ADR 0010](docs/adr/0010-sim-as-base-for-ml-layers.md) — `src/sim/` is the canonical home for rollout primitives; `src/tuning/` and `src/rl/` are sibling consumers.
 - [ADR 0011](docs/adr/0011-multi-echelon-graph.md) — Multi-echelon DAG of typed nodes replaces the single-`Store` flat model. **Accepted.**
 - [ADR 0012](docs/adr/0012-central-table-fcfs-allocation.md) — Central table + sequential FCFS allocation with live offer-book mutation. **Accepted.**
@@ -558,3 +567,4 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0029](docs/adr/0029-probe-stop-gradient.md) — Probe losses update the probes only. The encoder is trained by the latent loss and the anti-collapse penalty. **Accepted.**
 - [ADR 0030](docs/adr/0030-market-seasonal-cycle-read-time.md) — Seasonal cycle is a read-time multiplier on the demand level; `abs(cycle_amp) < 1`. Supersedes CRN baselines that depended on the integrated cycle. **Accepted.**
 - [ADR 0031](docs/adr/0031-supply-side-scarcity.md) — Replenishment episodes have several factories per SKU, a sampled markup, demand-relative supply, and differing lead times. Realised supplier fill rate is on the run log. Routing stays outside the learned action. **Accepted.** Amends ADR 0013 rule 3 for those episodes.
+- [ADR 0032](docs/adr/0032-binding-tightness.md) — Tuning episodes size shop capacity and opening cash from separate tightness factors times episode demand. Both factors are per-seed columns. **Accepted.** Replaces ADR 0009 decision (d) for those episodes. RL keeps log-uniform scale draws.

@@ -75,6 +75,8 @@ _PER_SEED_REQUIRED_COLUMNS = {
     "seed",
     "capacity",
     "initial_cash",
+    "tightness",
+    "cash_tightness",
     "net_profit",
     "normalised_return",
     "service_level",
@@ -268,7 +270,8 @@ class TestRunStudyCRNAtTrialLevel:
         trial_1 = per_seed_df[per_seed_df["trial_id"] == 1].sort_values("seed").reset_index(drop=True)
 
         numeric_cols = [
-            "capacity", "initial_cash", "net_profit", "normalised_return",
+            "capacity", "initial_cash", "tightness", "cash_tightness",
+            "net_profit", "normalised_return",
             "service_level", "stockout_rate", "inventory_turnover", "revenue",
             "mean_price_pct_of_msrp",
         ]

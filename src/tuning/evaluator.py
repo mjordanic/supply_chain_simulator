@@ -27,8 +27,8 @@ Design notes
   (seeded independently). Two trials sampling identical params on
   identical seeds produce bit-identical trajectories.
 - Normalised return is ``net_profit / initial_cash``. This cancels per-
-  episode scale (capacity × unit cost), making the objective comparable
-  across the log-uniform capacity distribution.
+  episode scale, making the objective comparable across the tightness
+  distribution that sizes capacity and opening cash.
 """
 
 from __future__ import annotations
@@ -66,6 +66,8 @@ def evaluate_policy_normalised(
     per_seed_net_profit: list[float] = []
     per_seed_initial_cash: list[float] = []
     per_seed_capacity: list[float] = []
+    per_seed_tightness: list[float | None] = []
+    per_seed_cash_tightness: list[float | None] = []
     per_seed_service_level: list[float] = []
     per_seed_stockout_rate: list[float] = []
     per_seed_inventory_turnover: list[float] = []
@@ -82,6 +84,12 @@ def evaluate_policy_normalised(
         per_seed_net_profit.append(metrics["net_profit"])
         per_seed_initial_cash.append(initial_cash)
         per_seed_capacity.append(capacity)
+        per_seed_tightness.append(
+            None if spec.tightness is None else float(spec.tightness)
+        )
+        per_seed_cash_tightness.append(
+            None if spec.cash_tightness is None else float(spec.cash_tightness)
+        )
         per_seed_service_level.append(metrics["service_level"])
         per_seed_stockout_rate.append(metrics["stockout_rate"])
         per_seed_inventory_turnover.append(metrics["inventory_turnover"])
@@ -102,6 +110,8 @@ def evaluate_policy_normalised(
         "per_seed_net_profit": per_seed_net_profit,
         "per_seed_initial_cash": per_seed_initial_cash,
         "per_seed_capacity": per_seed_capacity,
+        "per_seed_tightness": per_seed_tightness,
+        "per_seed_cash_tightness": per_seed_cash_tightness,
         "per_seed_service_level": per_seed_service_level,
         "per_seed_stockout_rate": per_seed_stockout_rate,
         "per_seed_inventory_turnover": per_seed_inventory_turnover,

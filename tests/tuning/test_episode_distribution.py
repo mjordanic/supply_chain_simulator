@@ -1,13 +1,18 @@
-"""Demand-side episode distribution.
+"""Episode-distribution invariants.
 
 Public seam: ``src.tuning.episode.sample_episode`` and the run log it
-produces. Lifecycle draws, assortment size, and catalog spread are
-properties of that seam and stay deterministic in ``episode_seed``.
+produces. Draws stay deterministic in ``episode_seed``.
+
+The suite is: demand does not collapse; tightness binds on capacity, on
+cash, and on neither; lifecycle stages move independently; delivery lag
+and ``K_active`` vary; suppliers stock out and fill rate varies.
 """
 
 from __future__ import annotations
 
 from random import Random
+
+import pytest
 
 from src.sim.distributions import Constant
 from src.sim.node import DemandSinkNode
@@ -425,4 +430,234 @@ def test_upstream_stockouts_happen_and_fill_rate_varies():
     assert fraction >= 0.20, (fraction, rates)
     assert max(rates) - min(rates) >= 0.10, rates
     assert paid_above_cost
+
+
+def _rate_per_tick(ware) -> float:
+    if ware.demand_mean is None:
+        return 5.0
+    return max(float(ware.demand_mean), 1e-6)
+
+
+def _one_sku(mean: float, unit_cost: float = 5.0):
+    return load_catalog(
+        [
+            {
+                "name": "Widget",
+                "category": "General",
+                "related_products": [],
+                "base_price": unit_cost * 2.0,
+                "unit_cost": unit_cost,
+                "seasonality": "all_season",
+                "demand_mean": mean,
+                "demand_cv": 0.1,
+            }
+        ]
+    )
+
+
+def test_capacity_and_cash_scale_with_tightness_and_demand():
+    """Each pool is a tightness factor times this episode's demand.
+
+    Capacity is its factor times aggregate episode demand times one
+    cover horizon, the same horizon on every seed. Opening cash is its
+    own factor times aggregate episode demand valued at unit cost. The
+    same seed repeats both factors. A four-times demand scale sizes both
+    pools four times larger and does not change the factors. The two
+    factors are not the same draw. An explicit capacity and balance
+    distribution still wins, and then the spec records no tightness.
+    """
+    config = TuningConfig(
+        K_active=1,
+        episode_length=40,
+        init_stock_pct_dist=Constant(0.0),
+    )
+    horizons = []
+    saw_distinct_factors = False
+    for seed in range(8):
+        spec = sample_episode(_one_sku(80.0), config, episode_seed=seed)
+        again = sample_episode(_one_sku(80.0), config, episode_seed=seed)
+        assert spec.tightness == again.tightness
+        assert spec.cash_tightness == again.cash_tightness
+        assert spec.tightness is not None and spec.tightness > 0
+        assert spec.cash_tightness is not None and spec.cash_tightness > 0
+        if spec.tightness != spec.cash_tightness:
+            saw_distinct_factors = True
+        daily = _rate_per_tick(spec.scenario.catalog[0])
+        assert daily == 80.0
+        horizon = spec.capacity / (spec.tightness * daily)
+        horizons.append(horizon)
+        episode_cost = daily * config.episode_length * 5.0
+        assert spec.balance == pytest.approx(spec.cash_tightness * episode_cost, rel=1e-9)
+        assert spec.capacity >= 1
+
+    assert saw_distinct_factors
+    assert max(horizons) - min(horizons) < 1.0
+    assert all(horizon == pytest.approx(14.0, abs=0.5) for horizon in horizons)
+
+    low = sample_episode(_one_sku(100.0), config, episode_seed=3)
+    high = sample_episode(_one_sku(400.0), config, episode_seed=3)
+    assert high.tightness == low.tightness
+    assert high.cash_tightness == low.cash_tightness
+    assert high.capacity / low.capacity == pytest.approx(4.0, rel=0.02)
+    assert high.balance / low.balance == pytest.approx(4.0, rel=1e-9)
+
+    pinned = TuningConfig(
+        K_active=1,
+        episode_length=40,
+        capacity_dist=Constant(1_234),
+        balance_dist=Constant(5_678.0),
+    )
+    pinned_spec = sample_episode(_one_sku(80.0), pinned, episode_seed=3)
+    assert pinned_spec.capacity == 1_234
+    assert pinned_spec.balance == 5_678.0
+    assert pinned_spec.tightness is None
+    assert pinned_spec.cash_tightness is None
+
+
+def test_tightness_binds_capacity_cash_or_neither():
+    """A controlled share of year-long episodes binds on each constraint.
+
+    The buyer asks for two cover horizons of catalog demand and does not
+    trim the request. Factories are stocked so the clamp is the shop's
+    own pool. Opening stock is empty. The episode is the study length,
+    365 ticks; only the first tick is run. Every seed is one of three
+    outcomes: the shelf sets the fill, cash sets the fill, or the order
+    clears both pools. When both pools are short, the tighter one is the
+    bind. The rejection reason is not enough, because cash is logged
+    whenever it trims the request even if the shelf sets the fill.
+    """
+    from src.sim.node import FactoryNode
+    from src.sim.policy import IntermediatePolicy
+
+    class _TwoHorizons(IntermediatePolicy):
+        def __init__(self, qty: int, supplier_id: str):
+            super().__init__(policy_seed=0)
+            self._qty = qty
+            self._supplier_id = supplier_id
+
+        def decide(self, obs, table):
+            inventory = obs.get("inventory") or {}
+            order = {
+                pid: [(self._supplier_id, self._qty)]
+                for pid in inventory
+            }
+            prices = obs.get("list_prices") or {}
+            return {
+                "order": order,
+                "list_price": {pid: float(prices.get(pid, 0.0)) for pid in inventory},
+                "min_order_imposed": {pid: 0 for pid in inventory},
+            }
+
+    config = TuningConfig(
+        K_active=1,
+        episode_length=365,
+        init_stock_pct_dist=Constant(0.0),
+        delivery_lag=3,
+    )
+    catalog = _one_sku(5.0)
+    n = 80
+    cash_n = 0
+    capacity_n = 0
+    neither_n = 0
+
+    for seed in range(n):
+        spec = sample_episode(
+            catalog,
+            config,
+            episode_seed=seed,
+            lifecycle_params=default_lifecycle_params(),
+        )
+        assert spec.tightness is not None and spec.cash_tightness is not None
+        daily = _rate_per_tick(spec.scenario.catalog[0])
+        qty = int(round(2 * 14 * daily))
+        factories = [
+            instance.node
+            for instance in spec.scenario.nodes
+            if isinstance(instance.node, FactoryNode)
+        ]
+        supplier = min(factories, key=lambda node: node.list_price)
+        for node in factories:
+            node.inventory = qty + 10_000
+        spec.scenario.n_steps = 1
+        log = Runner(
+            spec.scenario,
+            policy_overrides={"S": _TwoHorizons(qty, supplier.id)},
+        ).run()
+        filled = 0
+        requested = 0
+        for tick in log["ticks"]:
+            for row in tick["rejections"]:
+                if row["buyer_id"] == "S":
+                    assert row["reason"] != "insufficient_stock", row
+                    filled += int(row["qty_filled"])
+                    requested += int(row["qty_requested"])
+            if requested == 0:
+                for purchase in tick["purchases"]:
+                    if purchase["buyer_id"] == "S":
+                        filled += int(purchase["qty_filled"])
+                        requested += qty
+        assert requested == qty, (requested, qty, seed)
+        affordable = int(spec.balance / supplier.list_price)
+        shelf = spec.capacity
+        if filled >= qty:
+            assert shelf >= qty and affordable >= qty
+            neither_n += 1
+        elif shelf <= affordable:
+            assert shelf < qty and filled == shelf
+            capacity_n += 1
+        else:
+            assert affordable < qty and filled == affordable
+            cash_n += 1
+
+    assert cash_n + capacity_n + neither_n == n
+    cash_frac = cash_n / n
+    capacity_frac = capacity_n / n
+    neither_frac = neither_n / n
+    # Seeds 0..79 on this probe: capacity 0.51, cash 0.30, neither 0.19.
+    assert 0.20 <= cash_frac <= 0.40, (cash_frac, capacity_frac, neither_frac)
+    assert 0.40 <= capacity_frac <= 0.62, (cash_frac, capacity_frac, neither_frac)
+    assert 0.10 <= neither_frac <= 0.30, (cash_frac, capacity_frac, neither_frac)
+
+
+def _sink_demand_series(spec) -> list[int]:
+    log = Runner(spec.scenario).run()
+    series = []
+    for tick in log["ticks"]:
+        total = 0
+        for flow in tick["node_flows"]:
+            if str(flow["node_id"]).startswith("D_"):
+                total += int(flow["demand"])
+        series.append(total)
+    return series
+
+
+def test_aggregate_demand_does_not_collapse_to_a_floor():
+    """Sink demand stays off the floor through the back of the episode.
+
+    The old market cycle integrated into the demand level and pinned every
+    episode to ``demand_factor_min`` after roughly tick 207. Lifecycle is
+    held inert here so a drop is that defect, not a SKU dying. The last
+    fifth of a run that passes that tick stays in the same band as the first.
+    """
+    catalog = _plain_catalog()
+    config = TuningConfig(
+        K_active=2,
+        episode_length=240,
+        init_stock_pct_dist=Constant(0.0),
+        delivery_lag=3,
+    )
+    for seed in range(4):
+        spec = sample_episode(
+            catalog,
+            config,
+            episode_seed=seed,
+            lifecycle_params=default_lifecycle_params(),
+        )
+        series = _sink_demand_series(spec)
+        assert len(series) == 240
+        width = len(series) // 5
+        early = sum(series[:width]) / width
+        late = sum(series[-width:]) / width
+        assert early > 0
+        assert late > 0.35 * early, (seed, early, late, series[-width:])
 

@@ -91,6 +91,9 @@ _SUB_SEED_PARAMS: dict[str, tuple[int, int]] = {
     # RL does not read these purposes.
     "delivery_lag": (0xC2B2_AE3D, 0x0000_000D),
     "supply":       (0x27BB_2EE6, 0x0000_000F),
+    # Capacity tightness, then cash tightness, on one stream.
+    # RL does not read this purpose.
+    "tightness":    (0x85EB_CA77, 0x0000_0013),
 }
 _MASK_32 = 0xFFFF_FFFF
 

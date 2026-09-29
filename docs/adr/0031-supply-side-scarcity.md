@@ -18,7 +18,7 @@ The learned buyer stays ordering-only (ADR 0024). It emits a quantity per SKU. T
 
 ADR 0013 rule 3 still describes an authored factory whose `list_price` equals `unit_cost`: production debits `unit_cost`, and the sale credits the same amount. A sampled factory may list above `unit_cost`. Production still debits `unit_cost`. The markup stays in the factory's cash. `StaticFactoryPolicy` and the no-policy produce step keep the node's current `list_price` instead of writing `unit_cost` over it.
 
-The RL episode sampler is unchanged: one zero-margin factory per SKU, production and opening stock still multiples of node capacity. Tightness of the shop's capacity pool and opening cash is a separate decision.
+The RL episode sampler is unchanged: one zero-margin factory per SKU, production and opening stock still multiples of node capacity. Tightness of the shop's capacity pool and opening cash is ADR 0032.
 
 ## Consequences
 

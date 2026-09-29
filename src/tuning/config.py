@@ -24,28 +24,11 @@ from src.sim.distributions import Distribution
 SYNTHETIC_CATALOG_SIZE = 750
 
 
-def _default_capacity_dist() -> Distribution:
-    """``LogUniform(100, 10_000)`` — per-episode capacity distribution.
-
-    Log-uniform over two orders of magnitude so a single study spans
-    small-store and flagship deployments.
-    """
-    from src.sim.distributions import LogUniform
-
-    return LogUniform(100, 10_000)
-
 def _default_init_stock_pct_dist() -> Distribution:
     """``Uniform(0.2, 1.0)`` — per-episode starting inventory fraction of capacity."""
     from src.sim.distributions import Uniform
 
     return Uniform(0.2, 1.0)
-
-
-def _default_balance_dist() -> Distribution:
-    """``LogUniform(10_000, 1_000_000)`` — per-episode opening balance distribution."""
-    from src.sim.distributions import LogUniform
-
-    return LogUniform(10_000, 1_000_000)
 
 
 @dataclass(frozen=True)
@@ -78,8 +61,12 @@ class TuningConfig:
     # ------------------------------------------------------------------
     # Episode randomisation
     # ------------------------------------------------------------------
-    capacity_dist: Distribution = field(default_factory=_default_capacity_dist)
-    balance_dist: Distribution = field(default_factory=_default_balance_dist)
+    capacity_dist: Distribution | None = None
+    """Absolute capacity draw. ``None`` sizes the pool from episode tightness."""
+
+    balance_dist: Distribution | None = None
+    """Absolute opening-cash draw. ``None`` sizes cash from episode tightness."""
+
     init_stock_pct_dist: Distribution = field(default_factory=_default_init_stock_pct_dist)
 
     # ------------------------------------------------------------------

@@ -11,8 +11,8 @@ The intermediate node "S" is the node under policy optimisation.
 
 ``TuningEpisodeSpec`` is the canonical tuning episode descriptor. It carries
 the graph-mode ``Scenario`` plus the per-episode ``capacity``, ``balance``,
-and nominal ``delivery_lag`` so callers can read the supply contract
-without walking the edges.
+``tightness``, ``cash_tightness``, and nominal ``delivery_lag`` so callers can read the
+supply contract without walking the edges.
 
 ``load_catalog_and_market_from_setup`` and ``make_synthetic_catalog`` are the
 setup-directory helpers used when ``TuningConfig.setup_dir`` is set.
@@ -69,6 +69,13 @@ class TuningEpisodeSpec:
         The IntermediateNode opening cash for this episode (float).
     delivery_lag
         Nominal lead time for this episode. Supplier edges differ around it.
+    tightness
+        Factor that sized capacity from this episode's demand.
+        ``None`` when both pools were pinned by ``capacity_dist`` and
+        ``balance_dist``.
+    cash_tightness
+        Factor that sized opening cash from this episode's demand
+        valued at unit cost. ``None`` in the same pinned case.
     """
 
     scenario: Scenario
@@ -76,6 +83,8 @@ class TuningEpisodeSpec:
     capacity: int
     balance: float
     delivery_lag: int
+    tightness: float | None = None
+    cash_tightness: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +116,17 @@ _MARKUP_LOW = 0.05
 _MARKUP_HIGH = 0.25
 _PREMIUM_LOW = 0.10
 _PREMIUM_HIGH = 0.35
+# At tightness 1 the shelf holds this many ticks of expected demand.
+# Opening cash has no extra horizon: it is cash tightness times the
+# episode's demand valued at unit cost. The two factors are separate
+# draws. One shared factor cannot do this: on a 365-tick episode the
+# cash pool would always buy about twenty times what the shelf holds,
+# so cash would never be what stops the order.
+_COVER_HORIZON_TICKS = 14
+_CAPACITY_TIGHTNESS_LOW = 0.5
+_CAPACITY_TIGHTNESS_HIGH = 6.0
+_CASH_TIGHTNESS_LOW = 0.02
+_CASH_TIGHTNESS_HIGH = 0.8
 
 
 def _expected_demand_per_tick(ware: Ware) -> float:
@@ -114,6 +134,32 @@ def _expected_demand_per_tick(ware: Ware) -> float:
     if ware.demand_mean is None:
         return 5.0
     return max(float(ware.demand_mean), 1e-6)
+
+
+def _pools_from_tightness(
+    tightness: float,
+    cash_tightness: float,
+    wares: list[Ware],
+    episode_length: int,
+) -> tuple[int, float]:
+    """Capacity and opening cash from the two tightness factors.
+
+    Capacity is ``tightness × aggregate episode demand × cover fraction``,
+    and the cover fraction is ``_COVER_HORIZON_TICKS / episode_length``,
+    so the shelf holds ``tightness`` cover horizons of per-tick demand.
+    Opening cash is ``cash_tightness × aggregate episode demand × unit cost``.
+    """
+    length = float(episode_length)
+    daily = 0.0
+    episode_cost = 0.0
+    for ware in wares:
+        rate = _expected_demand_per_tick(ware)
+        daily += rate
+        episode_cost += rate * length * float(ware.unit_cost)
+    cover_fraction = _COVER_HORIZON_TICKS / length
+    aggregate_units = daily * length
+    capacity = max(1, int(round(tightness * aggregate_units * cover_fraction)))
+    return capacity, float(cash_tightness * episode_cost)
 
 
 def _mix_seed(seed: int, text: str) -> int:
@@ -357,7 +403,8 @@ def sample_episode(
     config:
         ``TuningConfig`` instance. ``K_active`` pins the assortment; when it
         is ``None``, K is drawn from ``[K_min, K_max_episode]``. Also reads
-        ``capacity_dist``, ``balance_dist``, ``delivery_lag`` (``None``
+        ``capacity_dist`` and ``balance_dist`` (``None`` sizes that pool
+        from its tightness factor), ``delivery_lag`` (``None``
         samples the nominal lag), ``holding_rate``, ``order_fee``, and
         ``episode_length``.
     episode_seed:
@@ -382,13 +429,6 @@ def sample_episode(
     capacity_seed = _sim_derive_seed(episode_seed, "capacity")
     balance_seed = _sim_derive_seed(episode_seed, "balance")
     world_seed = _sim_derive_seed(episode_seed, "world")
-
-    # --- sample capacity and balance ---
-    capacity_rng = Random(capacity_seed)
-    capacity = int(config.capacity_dist.sample(capacity_rng))
-
-    balance_rng = Random(balance_seed)
-    balance = float(config.balance_dist.sample(balance_rng))
 
     # --- sample init_stock_pct if distribution provided ---
     init_stock_pct_dist = getattr(config, "init_stock_pct_dist", None)
@@ -420,6 +460,44 @@ def sample_episode(
 
     delivery_lag = _nominal_delivery_lag(config, episode_seed)
 
+    # Pools are sized after the assortment exists, because aggregate demand
+    # is the active SKUs' demand. An explicit distribution still overrides
+    # that side. Tightness is recorded only when it sized at least one pool.
+    capacity_dist = config.capacity_dist
+    balance_dist = config.balance_dist
+    if capacity_dist is not None and balance_dist is not None:
+        tightness = None
+        cash_tightness = None
+        capacity = int(capacity_dist.sample(Random(capacity_seed)))
+        balance = float(balance_dist.sample(Random(balance_seed)))
+    else:
+        from src.sim.distributions import LogUniform
+
+        tightness_rng = Random(_sim_derive_seed(episode_seed, "tightness"))
+        tightness = float(
+            LogUniform(_CAPACITY_TIGHTNESS_LOW, _CAPACITY_TIGHTNESS_HIGH).sample(
+                tightness_rng
+            )
+        )
+        cash_tightness = float(
+            LogUniform(_CASH_TIGHTNESS_LOW, _CASH_TIGHTNESS_HIGH).sample(tightness_rng)
+        )
+        by_id = {ware.product_id: ware for ware in catalog}
+        sized_capacity, sized_balance = _pools_from_tightness(
+            tightness,
+            cash_tightness,
+            [by_id[pid] for pid in active_subset],
+            config.episode_length,
+        )
+        if capacity_dist is None:
+            capacity = sized_capacity
+        else:
+            capacity = int(capacity_dist.sample(Random(capacity_seed)))
+        if balance_dist is None:
+            balance = sized_balance
+        else:
+            balance = float(balance_dist.sample(Random(balance_seed)))
+
     # --- build the graph-mode Scenario ---
     scenario = _build_tuning_graph_scenario(
         catalog=catalog,
@@ -446,6 +524,8 @@ def sample_episode(
         capacity=capacity,
         balance=balance,
         delivery_lag=delivery_lag,
+        tightness=tightness,
+        cash_tightness=cash_tightness,
     )
 
 

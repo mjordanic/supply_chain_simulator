@@ -165,6 +165,8 @@ _PER_SEED_PARQUET_COLUMNS = [
     "seed",
     "capacity",
     "initial_cash",
+    "tightness",
+    "cash_tightness",
     "net_profit",
     "normalised_return",
     "service_level",
@@ -302,6 +304,8 @@ def run_study(
         ps_net_profit = kpis.get("per_seed_net_profit", [None] * n_seeds)
         ps_initial_cash = kpis.get("per_seed_initial_cash", [None] * n_seeds)
         ps_capacity = kpis.get("per_seed_capacity", [None] * n_seeds)
+        ps_tightness = kpis.get("per_seed_tightness", [None] * n_seeds)
+        ps_cash_tightness = kpis.get("per_seed_cash_tightness", [None] * n_seeds)
         ps_service_level = kpis.get("per_seed_service_level", [None] * n_seeds)
         ps_stockout_rate = kpis.get("per_seed_stockout_rate", [None] * n_seeds)
         ps_inv_turnover = kpis.get("per_seed_inventory_turnover", [None] * n_seeds)
@@ -322,6 +326,10 @@ def run_study(
                 "seed": seed,
                 "capacity": ps_capacity[i] if i < len(ps_capacity) else None,
                 "initial_cash": initial_cash_i,
+                "tightness": ps_tightness[i] if i < len(ps_tightness) else None,
+                "cash_tightness": (
+                    ps_cash_tightness[i] if i < len(ps_cash_tightness) else None
+                ),
                 "net_profit": net_profit_i,
                 "normalised_return": normalised_return_i,
                 "service_level": ps_service_level[i] if i < len(ps_service_level) else None,
@@ -386,6 +394,8 @@ _HOLDOUT_PARQUET_COLUMNS = [
     "seed",
     "capacity",
     "initial_cash",
+    "tightness",
+    "cash_tightness",
     "net_profit",
     "normalised_return",
     "service_level",
@@ -500,6 +510,8 @@ def confirm_top_k(
                 "trial_id": trial_id if trial_id is not None else -1,
                 "seed": seed,
                 "capacity": kpis["per_seed_capacity"][i],
+                "tightness": kpis["per_seed_tightness"][i],
+                "cash_tightness": kpis["per_seed_cash_tightness"][i],
                 "initial_cash": initial_cash_i,
                 "net_profit": net_profit_i,
                 "normalised_return": normalised_return_i,
