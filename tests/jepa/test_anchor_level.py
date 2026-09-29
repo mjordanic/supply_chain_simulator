@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import optuna
 
+from src.jepa.dynamics import ARRIVAL_AGE_SLOTS
 from src.jepa.plan import ReplenishmentPlanner
 from src.sim.central_table import CentralTable, Offer
 from src.sim.policy import MIN_ORDER_FLOOR, OPENING_BUDGET_PCT, OrderUpToPolicy
@@ -37,7 +38,7 @@ class _OracleRollout:
         pipeline = list(dynamics.pipeline)
         for feat in features:
             on_hand = float(feat[0])
-            in_transit = float(feat[1])
+            in_transit = float(sum(feat[1 : 1 + ARRIVAL_AGE_SLOTS]))
             profile = list(pipeline)
             if int(round(sum(profile))) != int(round(in_transit)):
                 profile = [0.0] * (len(profile) - 1) + [in_transit]

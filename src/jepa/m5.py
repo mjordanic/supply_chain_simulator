@@ -401,10 +401,10 @@ def collect_adaptation_log(
     rows: list[dict[str, Any]] = []
     for episode_seed, (name, policy) in enumerate(behaviors):
         wrapped = wrap_price_replay(policy, prices, scenario.n_steps)
-        recorder = _TransitionRecorder(wrapped, delivery_lag)
+        recorder = _TransitionRecorder(wrapped)
         run_log = _run_scenario(scenario, recorder, prices)
         _annotate_steps(recorder.steps, run_log, scenario, SHOP_ID, delivery_lag)
-        rows.extend(_transitions(recorder.steps, episode_seed, name))
+        rows.extend(_transitions(recorder.steps, episode_seed, name, delivery_lag))
     return pd.DataFrame(rows, columns=list(COLUMNS))
 
 

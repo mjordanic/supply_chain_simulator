@@ -19,25 +19,25 @@ self-knowledge, not latent world state.
 
 **Blocked by:** 02, 06.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** existing dynamics tests; the `Latent replenishment planner`,
 `Observation` and `Market` entries in `CONTEXT.md`; ADR 0024 (ordering-only
 learned policy) for the hidden-state premise, ADR 0029 (probe stop-gradient) for
 what the probes may update.
 
-- [ ] The encoder's sales window length is its own knob, set well above the
+- [x] The encoder's sales window length is its own knob, set well above the
       delivery lead time.
-- [ ] Feature dimension is fixed and independent of the sampled delivery lag, so
+- [x] Feature dimension is fixed and independent of the sampled delivery lag, so
       one fitted model serves every episode.
-- [ ] The delivery lead time is an encoder feature.
-- [ ] In-transit units enter as an arrival-age profile rather than a summed
+- [x] The delivery lead time is an encoder feature.
+- [x] In-transit units enter as an arrival-age profile rather than a summed
       scalar, and a test shows this lifts held-out `next_in_transit` accuracy
       above the 0.75 ceiling that the summed scalar imposes.
-- [ ] The Market multiplier, the disruption identity and the calendar are absent
+- [x] The Market multiplier, the disruption identity and the calendar are absent
       from the encoder's inputs, asserted by a test.
-- [ ] ADR 0024's hidden-state premise is restated to name exactly what the
+- [x] ADR 0024's hidden-state premise is restated to name exactly what the
       encoder may and may not see, and to record that routing stays outside the
       learned action.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the new
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the new
       observation is updated in this ticket.

@@ -22,7 +22,7 @@ The RL episode sampler is unchanged: one zero-margin factory per SKU, production
 
 ## Consequences
 
-A fixed `episode_seed` still rebuilds the same graph. `world_seed` derivation is unchanged, and these draws do not consume `world_rng`. Episodes that pin `delivery_lag` keep that nominal lag and still differ across suppliers. The transition-log manifest stores `delivery_lag: null` when the lag was sampled. Each log row's sales window and arrival-age profile use that episode's nominal lag. Fitting one predictor on a log whose lags differ is a later change; this ADR does not alter the encoder.
+A fixed `episode_seed` still rebuilds the same graph. `world_seed` derivation is unchanged, and these draws do not consume `world_rng`. Episodes that pin `delivery_lag` keep that nominal lag and still differ across suppliers. The transition-log manifest stores `delivery_lag: null` when the lag was sampled. Each log row carries that episode's nominal lag as its own column. The encoder's sales window and arrival-age profile are fixed widths, not that nominal lag, so one fitted model reads a log whose lags differ (ADR 0024).
 
 ## Cross-references
 

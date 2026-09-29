@@ -6,8 +6,9 @@ Seams, from the issue acceptance criteria:
    The request is its own column. Offer availability, buyer cash, and buyer
    capacity each make the two columns differ.
 2. Arrival-age profile. In-transit units are a vector indexed by age in
-   ticks, length ``delivery_lag``, not a summed scalar. Age 0 is empty at
-   decision time.
+   ticks, width ``ARRIVAL_AGE_SLOTS``, not a summed scalar and not the
+   episode's nominal lag. Age 0 is empty at decision time. The sales
+   window length is ``SALES_WINDOW``, the encoder's knob.
 3. Manifest. Writing the parquet also writes a sidecar with the episode
    parameters, catalog identity, behaviour mixture, realised non-zero-order
    fraction, and git SHA.
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.jepa.dynamics import ARRIVAL_AGE_SLOTS, SALES_WINDOW, arrival_age_profile
 from src.jepa.log import (
     EPISODES_EACH,
     LOG_SEED_OFFSET,
@@ -251,16 +253,89 @@ def test_in_transit_is_an_arrival_age_profile():
     nxt = {
         int(row.tick): _as_profile(row.next_in_transit) for row in frame.itertuples(index=False)
     }
+    def _aged(prefix: list[int]) -> list[int]:
+        return prefix + [0] * (ARRIVAL_AGE_SLOTS - len(prefix))
+
     assert profiles == {
-        1: [0, 0, 0],
-        2: [0, request, 0],
-        3: [0, request, request],
-        4: [0, request, request],
+        1: _aged([0, 0, 0]),
+        2: _aged([0, request, 0]),
+        3: _aged([0, request, request]),
+        4: _aged([0, request, request]),
     }
     assert nxt[1] == profiles[2]
-    assert nxt[3] == [0, request, request]
+    assert nxt[3] == _aged([0, request, request])
     assert sum(profiles[2]) == request
     assert profiles[2] != [request]
+
+
+def test_arrival_profile_is_not_clipped_to_the_nominal_lag():
+    """A slower edge stays visible after the nominal lag has passed.
+
+    The log used to size the profile to the episode's nominal lag, so a
+    unit still in transit on a longer edge disappeared from the vector.
+    """
+    request = 4
+    nominal = 2
+    lead = 6
+    scenario = _clamp_scenario(
+        factory_on_hand=1_000,
+        factory_price=1.0,
+        shop_cash=1_000_000.0,
+        shop_capacity=10_000,
+        shop_on_hand=0,
+        n_steps=6,
+        lead_time=lead,
+    )
+    frame = collect_episode_transitions(
+        scenario,
+        _FixedRequest(request),
+        behavior="over_order",
+        episode_seed=1,
+        delivery_lag=nominal,
+    )
+    profiles = {
+        int(row.tick): _as_profile(row.in_transit) for row in frame.itertuples(index=False)
+    }
+    # The tick-1 fill is age 3 at tick 4, past the nominal lag and still short of the edge.
+    assert profiles[4][3] == request
+    assert len(profiles[4]) == ARRIVAL_AGE_SLOTS
+    assert all(len(_as_window(value)) == SALES_WINDOW for value in frame["sales_window"])
+
+
+def test_decision_time_lots_match_the_logged_arrival_profile():
+    """The profile on the observation is the profile written to the log."""
+    request = 7
+    lag = 3
+    recorded: list[tuple[int, dict]] = []
+
+    class _Recording(_FixedRequest):
+        def decide(self, obs_intermediate, central_table):
+            recorded.append(
+                (int(obs_intermediate["tick"]), dict(obs_intermediate.get("in_transit_lots") or {}))
+            )
+            return super().decide(obs_intermediate, central_table)
+
+    scenario = _clamp_scenario(
+        factory_on_hand=1_000,
+        factory_price=1.0,
+        shop_cash=1_000_000.0,
+        shop_capacity=10_000,
+        shop_on_hand=0,
+        n_steps=5,
+        lead_time=lag,
+    )
+    frame = collect_episode_transitions(
+        scenario,
+        _Recording(request),
+        behavior="over_order",
+        episode_seed=1,
+        delivery_lag=lag,
+    )
+    by_tick = {tick: lots for tick, lots in recorded}
+    for row in frame.itertuples(index=False):
+        pid = str(row.product_id)
+        lots = by_tick[int(row.tick)].get(pid, [])
+        assert _as_profile(row.in_transit) == arrival_age_profile(lots, int(row.tick))
 
 
 def test_smoke_log_is_half_order_up_to_and_half_exploratory():
@@ -292,6 +367,7 @@ def test_smoke_log_is_half_order_up_to_and_half_exploratory():
         "capacity",
         "requested_qty",
         "filled_qty",
+        "delivery_lag",
         "next_on_hand",
         "next_in_transit",
         "next_sales",
@@ -308,17 +384,18 @@ def test_smoke_log_is_half_order_up_to_and_half_exploratory():
     for (_, _), group in df.groupby(["episode_seed", "product_id"]):
         group = group.sort_values("tick")
         windows = [_as_window(value) for value in group["sales_window"]]
-        assert all(len(window) == lag for window in windows)
+        assert all(len(window) == SALES_WINDOW for window in windows)
+        assert set(int(value) for value in group["delivery_lag"]) == {lag}
         on_hand = [int(v) for v in group["on_hand"]]
         nxt_on_hand = [int(v) for v in group["next_on_hand"]]
         profiles = [_as_profile(value) for value in group["in_transit"]]
         nxt_transit = [_as_profile(value) for value in group["next_in_transit"]]
         nxt_sales = [int(v) for v in group["next_sales"]]
-        assert all(len(profile) == lag for profile in profiles)
+        assert all(len(profile) == ARRIVAL_AGE_SLOTS for profile in profiles)
         assert nxt_on_hand[:-1] == on_hand[1:]
         assert nxt_transit[:-1] == profiles[1:]
         for index in range(len(group) - 1):
-            assert windows[index + 1] == (windows[index] + [nxt_sales[index]])[-lag:]
+            assert windows[index + 1] == (windows[index] + [nxt_sales[index]])[-SALES_WINDOW:]
 
     for (_, _), group in df.groupby(["episode_seed", "tick"]):
         assert group["cash"].nunique() == 1
@@ -496,7 +573,8 @@ def test_collector_writes_parquet(tmp_path):
     loaded = pd.read_parquet(path)
     assert len(loaded) == len(frame)
     assert set(loaded["behavior"]) == {"order_up_to", "exploratory"}
-    assert len(_as_profile(loaded["in_transit"].iloc[0])) == 3
+    assert len(_as_profile(loaded["in_transit"].iloc[0])) == ARRIVAL_AGE_SLOTS
+    assert int(loaded["delivery_lag"].iloc[0]) == 3
     assert "filled_qty" in loaded.columns
     assert "requested_qty" in loaded.columns
 

@@ -15,6 +15,12 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from src.jepa.dynamics import (
+    ARRIVAL_AGE_SLOTS,
+    SALES_WINDOW,
+    arrival_age_profile,
+    padded_sales_window,
+)
 from src.jepa.policy import ExploratoryPolicy
 from src.sim.distributions import Constant
 from src.sim.node import FactoryNode
@@ -46,6 +52,7 @@ COLUMNS = (
     "capacity",
     "requested_qty",
     "filled_qty",
+    "delivery_lag",
     "next_on_hand",
     "next_in_transit",
     "next_sales",
@@ -269,16 +276,15 @@ def _write_manifest(
 class _TransitionRecorder(IntermediatePolicy):
     """Record the observation window and the requested quantity at each decide."""
 
-    def __init__(self, inner: IntermediatePolicy, delivery_lag: int) -> None:
+    def __init__(self, inner: IntermediatePolicy) -> None:
         super().__init__(policy_seed=getattr(inner, "policy_seed", None))
         self._inner = inner
-        self._delivery_lag = int(delivery_lag)
         self._sales: dict[str, list[int]] = {}
         self.steps: list[dict[str, dict[str, Any]]] = []
 
     def decide(self, obs_intermediate: Mapping[str, Any], central_table: Any) -> dict[str, Any]:
         action = self._inner.decide(obs_intermediate, central_table)
-        self.steps.append(_snapshot(obs_intermediate, action, self._sales, self._delivery_lag))
+        self.steps.append(_snapshot(obs_intermediate, action, self._sales))
         return action
 
 
@@ -310,11 +316,11 @@ def _record_episode(
     policy_overrides: Mapping[str, Any] | None = None,
 ) -> list[dict]:
     overrides = dict(policy_overrides or {})
-    recorder = _TransitionRecorder(buyer_policy, delivery_lag)
+    recorder = _TransitionRecorder(buyer_policy)
     overrides["S"] = recorder
     run_log = Runner(scenario, policy_overrides=overrides).run()
     _annotate_steps(recorder.steps, run_log, scenario, "S", delivery_lag)
-    return _transitions(recorder.steps, episode_seed, behavior)
+    return _transitions(recorder.steps, episode_seed, behavior, delivery_lag)
 
 
 def _annotate_steps(
@@ -330,7 +336,6 @@ def _annotate_steps(
     ``age`` is units filled ``age`` ticks ago that have not arrived. Age 0
     stays 0 because ``decide`` runs before this tick's fill.
     """
-    length = max(0, int(delivery_lag))
     fills_by_tick: dict[int, list[tuple[str, str, int]]] = {}
     for tick_log in run_log["ticks"]:
         rows: list[tuple[str, str, int]] = []
@@ -351,17 +356,16 @@ def _annotate_steps(
         for pid, _supplier, qty in fills_by_tick.get(tick, []):
             filled[pid] = filled.get(pid, 0) + qty
         for pid, snapshot in step.items():
-            profile = [0] * length
-            for order_tick, qty, lead in history.get(pid, []):
-                age = tick - order_tick
-                if 0 < age < lead and age < length:
-                    profile[age] += qty
             snapshot["filled_qty"] = int(filled.get(pid, 0))
-            snapshot["in_transit"] = profile
+            snapshot["in_transit"] = arrival_age_profile(
+                history.get(pid, []),
+                tick,
+                ARRIVAL_AGE_SLOTS,
+            )
         for pid, supplier_id, qty in fills_by_tick.get(tick, []):
             if qty <= 0:
                 continue
-            lead = _edge_lead(scenario, supplier_id, buyer_id, pid, length)
+            lead = _edge_lead(scenario, supplier_id, buyer_id, pid, int(delivery_lag))
             history.setdefault(pid, []).append((tick, qty, lead))
 
 
@@ -376,7 +380,6 @@ def _snapshot(
     obs: Mapping[str, Any],
     action: Mapping[str, Any],
     sales_hist: dict[str, list[int]],
-    delivery_lag: int,
 ) -> dict[str, dict[str, Any]]:
     observed = dict(obs.get("observed_sales") or {})
     inventory = {pid: int(qty) for pid, qty in dict(obs.get("inventory") or {}).items()}
@@ -389,14 +392,12 @@ def _snapshot(
         sold = int(observed.get(pid, 0))
         history = sales_hist.setdefault(pid, [])
         history.append(sold)
-        window = history[-delivery_lag:] if delivery_lag > 0 else []
-        if delivery_lag > 0 and len(window) < delivery_lag:
-            window = [0] * (delivery_lag - len(window)) + window
+        window = [int(value) for value in padded_sales_window(history, SALES_WINDOW)]
         requested = sum(int(qty) for _supplier, qty in orders.get(pid, []))
         step[pid] = {
             "tick": tick,
             "on_hand": on_hand,
-            "in_transit": [0] * max(0, int(delivery_lag)),
+            "in_transit": [0] * ARRIVAL_AGE_SLOTS,
             "sales_window": window,
             "cash": cash,
             "capacity": capacity,
@@ -411,6 +412,7 @@ def _transitions(
     steps: list[dict[str, dict[str, Any]]],
     episode_seed: int,
     behavior: str,
+    delivery_lag: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index in range(len(steps) - 1):
@@ -432,6 +434,7 @@ def _transitions(
                     "capacity": cur["capacity"],
                     "requested_qty": cur["requested_qty"],
                     "filled_qty": cur["filled_qty"],
+                    "delivery_lag": int(delivery_lag),
                     "next_on_hand": nxt[pid]["on_hand"],
                     "next_in_transit": list(nxt[pid]["in_transit"]),
                     "next_sales": nxt[pid]["sales"],

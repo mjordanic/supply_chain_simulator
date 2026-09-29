@@ -21,7 +21,13 @@ from typing import Any, Mapping
 import pandas as pd
 import torch
 
-from src.jepa.dynamics import DirectDynamics, LatentDynamics, sku_features
+from src.jepa.dynamics import (
+    ARRIVAL_AGE_SLOTS,
+    DirectDynamics,
+    LatentDynamics,
+    arrival_age_profile,
+    sku_features,
+)
 from src.jepa.policy import COVERS, _flatten_pending, _priority_ration, _suppliers_and_costs
 from src.sim.policy import (
     MIN_ORDER_FLOOR,
@@ -36,6 +42,18 @@ from src.sim.policy import (
 
 DEFAULT_BUDGET = 64
 DEFAULT_HORIZON_MULTIPLE = 4
+
+
+def _decision_profile(obs: Mapping[str, Any], pid: str, pending_units: int) -> list[int] | int:
+    """Arrival-age profile at ``decide`` time, or the pending total if ages are unknown.
+
+    ``in_transit_lots`` is the buyer's own pipeline, ``(order_tick, qty, lead)``.
+    A bare total is placed by ``sku_features`` (age 0 empty, total at age 1).
+    """
+    lots = (obs.get("in_transit_lots") or {}).get(pid)
+    if lots:
+        return arrival_age_profile(lots, int(obs.get("tick") or 0), ARRIVAL_AGE_SLOTS)
+    return int(pending_units)
 
 
 class ReplenishmentPlanner(IntermediatePolicy):
@@ -135,6 +153,9 @@ class ReplenishmentPlanner(IntermediatePolicy):
 
         cash = float(obs_intermediate.get("cash") or 0.0)
         capacity = int(obs_intermediate.get("capacity") or 0)
+        profiles = {
+            pid: _decision_profile(obs_intermediate, pid, pending.get(pid, 0)) for pid in pids
+        }
         suppliers, unit_costs = _suppliers_and_costs(pids, obs_intermediate, central_table)
         base = obs_intermediate.get("base_prices") or obs_intermediate.get("list_prices") or {}
         prices = {pid: float(base.get(pid, 0.0)) for pid in pids}
@@ -163,6 +184,8 @@ class ReplenishmentPlanner(IntermediatePolicy):
                     cold,
                     obs_intermediate.get("direct_supplier_ids"),
                     central_table,
+                    profiles,
+                    obs_intermediate.get("delivery_lags") or {},
                 )
             )
 
@@ -207,6 +230,8 @@ class ReplenishmentPlanner(IntermediatePolicy):
         cold: set[str],
         direct: Any,
         central_table: Any,
+        profiles: Mapping[str, list[int] | int],
+        delivery_lags: Mapping[str, float],
     ) -> tuple[float, dict[str, int], dict[str, list[tuple[str, int]]]]:
         on_hand = {pid: int(inventory.get(pid, 0)) for pid in pids}
         in_transit = {pid: int(pending.get(pid, 0)) for pid in pids}
@@ -223,11 +248,11 @@ class ReplenishmentPlanner(IntermediatePolicy):
             [
                 sku_features(
                     on_hand=on_hand[pid],
-                    in_transit=in_transit[pid],
+                    in_transit=profiles.get(pid, 0),
                     sales_window=sales_hist[pid],
                     cash=cash_now,
                     capacity=capacity,
-                    delivery_lag=self.delivery_lag,
+                    delivery_lag=float(delivery_lags.get(pid, self.delivery_lag)),
                 )
                 for pid in pids
             ]

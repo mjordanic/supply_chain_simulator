@@ -1,18 +1,22 @@
 """Per-SKU latent dynamics and the direct quantity predictor.
 
-The encoder reads on-hand, in-transit, a sales window of length
-``delivery_lag``, cash, and capacity. The Market multiplier and the
-disruption type are not features. An action-conditioned predictor
-unrolls open-loop for ``H = delivery_lag`` steps. The latent loss
-matches a stopped target embedding at each step, plus an anti-collapse
-penalty. Probes read a stopped embedding and regress next on-hand,
-next in-transit, and sales over the step. Probe losses do not update
-the encoder.
+The encoder reads on-hand, an in-transit arrival-age profile, a sales
+window of length ``SALES_WINDOW``, cash, capacity, and the nominal
+delivery lead time. That window is the encoder's own knob: it does not
+follow the sampled lead time, and neither does the feature dimension.
+The Market multiplier, the disruption identity, and the calendar are
+not features. An action-conditioned predictor unrolls open-loop for
+``H = delivery_lag`` steps. The latent loss matches a stopped target
+embedding at each step, plus an anti-collapse penalty. Probes read a
+stopped embedding and regress next on-hand, next in-transit, and sales
+over the step. Probe losses do not update the encoder.
 """
 
 from __future__ import annotations
 
 import copy
+import math
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pandas as pd
@@ -22,32 +26,138 @@ from torch import nn
 _EMBED_DIM = 32
 _EMA_TAU = 0.99
 
+# Four weeks of daily sales. The longest sampled edge is a nominal lag
+# of 6 plus the slow supplier's offset of 4, so this sits well above
+# the delivery lead time and does not move when that lag is sampled.
+SALES_WINDOW = 28
+
+# Age 0 .. lead-1. The longest study edge is 10, so a unit stays in
+# the profile until it arrives. Index is age in ticks, not a slot
+# counted back from today.
+ARRIVAL_AGE_SLOTS = 10
+
+
+def feature_dim(sales_window_length: int = SALES_WINDOW) -> int:
+    """Width of one encoder vector. Independent of the sampled lead time."""
+    return 1 + ARRIVAL_AGE_SLOTS + max(0, int(sales_window_length)) + 3
+
+
+def arrival_age_profile(
+    lots: Sequence[tuple[int, int, int]],
+    tick: int,
+    length: int = ARRIVAL_AGE_SLOTS,
+) -> list[int]:
+    """Units still on the way, indexed by age.
+
+    ``lots`` are ``(order_tick, qty, lead)`` filled on earlier ticks.
+    Age 0 is empty at decision time, because ``decide`` runs before
+    this tick's fill. A unit of age ``a`` is in transit while ``a < lead``.
+    """
+    profile = [0] * max(0, int(length))
+    for order_tick, qty, lead in lots:
+        age = int(tick) - int(order_tick)
+        if 0 < age < int(lead) and age < len(profile):
+            profile[age] += int(qty)
+    return profile
+
+
+def padded_sales_window(values: Sequence[Any], length: int = SALES_WINDOW) -> list[float]:
+    """Oldest-first sales window. Missing older ticks are zeros on the left."""
+    length = max(0, int(length))
+    window = [float(value) for value in list(values)[-length:]]
+    if len(window) < length:
+        window = [0.0] * (length - len(window)) + window
+    return window
+
+
+def _profile_slots(values: Sequence[Any], length: int) -> list[float]:
+    """Age-indexed profile. Missing older ages are zeros on the right."""
+    length = max(0, int(length))
+    profile = [float(value) for value in list(values)[:length]]
+    if len(profile) < length:
+        profile.extend([0.0] * (length - len(profile)))
+    return profile
+
+
+def _as_profile(value: Any, length: int) -> list[float]:
+    """A sequence is an arrival-age profile. A scalar is the pipeline total.
+
+    Ages of a bare total are unknown. Age 0 stays empty, matching a
+    decision-time profile, and the total sits at age 1.
+    """
+    length = max(0, int(length))
+    try:
+        items = list(value)
+    except TypeError:
+        items = None
+    if items is None:
+        profile = [0.0] * length
+        if profile:
+            profile[1 if length > 1 else 0] = float(value)
+        return profile
+    return _profile_slots(items, length)
+
 
 def sku_features(
     *,
     on_hand: float,
-    in_transit: float,
-    sales_window: list[float] | list[int],
+    in_transit: Any,
+    sales_window: Sequence[float] | Sequence[int],
     cash: float,
     capacity: float,
-    delivery_lag: int,
+    delivery_lag: float,
+    sales_window_length: int = SALES_WINDOW,
 ) -> list[float]:
     """Observation vector the encoder is allowed to see.
 
-    Layout: on-hand, in-transit, the sales window padded or trimmed to
-    ``delivery_lag`` (oldest first), then cash and capacity. Nothing
-    else — in particular not a Market multiplier or a disruption label.
+    Layout: on-hand, the arrival-age profile (age 0 first, width
+    ``ARRIVAL_AGE_SLOTS``), the sales window padded or trimmed to
+    ``sales_window_length`` (oldest first), then cash, capacity, and
+    the nominal delivery lead time. Nothing else — not a Market
+    multiplier, a disruption label, or a calendar tick.
     """
-    lag = max(0, int(delivery_lag))
-    window = [float(value) for value in list(sales_window)]
-    window = window[-lag:] if lag else []
-    if len(window) < lag:
-        window = [0.0] * (lag - len(window)) + window
-    return [float(on_hand), float(in_transit), *window, float(cash), float(capacity)]
+    profile = _as_profile(in_transit, ARRIVAL_AGE_SLOTS)
+    window = padded_sales_window(sales_window, sales_window_length)
+    return [
+        float(on_hand),
+        *profile,
+        *window,
+        float(cash),
+        float(capacity),
+        float(delivery_lag),
+    ]
 
 
-def _feature_dim(delivery_lag: int) -> int:
-    return 2 + max(0, int(delivery_lag)) + 2
+def log_row_features(
+    row: Mapping[str, Any],
+    *,
+    delivery_lag: int,
+    sales_window_length: int = SALES_WINDOW,
+) -> list[float]:
+    """Encoder vector for one transition-log row.
+
+    Extra columns — Market multiplier, disruption identity, tick, date —
+    are ignored. A missing lead time falls back to ``delivery_lag``.
+    """
+    return sku_features(
+        on_hand=float(row["on_hand"]),
+        in_transit=row["in_transit"],
+        sales_window=list(row["sales_window"]),
+        cash=float(row["cash"]),
+        capacity=float(row["capacity"]),
+        delivery_lag=_row_lead(row, delivery_lag),
+        sales_window_length=sales_window_length,
+    )
+
+
+def _row_lead(row: Mapping[str, Any], fallback: int) -> float:
+    raw = row.get("delivery_lag", fallback)
+    if raw is None:
+        return float(fallback)
+    value = float(raw)
+    if math.isnan(value):
+        return float(fallback)
+    return value
 
 
 def _groups(frame: pd.DataFrame):
@@ -59,19 +169,8 @@ def _groups(frame: pd.DataFrame):
 
 
 def _units(value: Any) -> float:
-    """Sum an arrival-age profile. The encoder still reads that total."""
+    """Sum an arrival-age profile. Probes still regress that total."""
     return float(sum(float(part) for part in value))
-
-
-def _row_features(row: dict, delivery_lag: int) -> list[float]:
-    return sku_features(
-        on_hand=float(row["on_hand"]),
-        in_transit=_units(row["in_transit"]),
-        sales_window=list(row["sales_window"]),
-        cash=float(row["cash"]),
-        capacity=float(row["capacity"]),
-        delivery_lag=delivery_lag,
-    )
 
 
 def _targets(row: dict) -> list[float]:
@@ -154,7 +253,7 @@ class _ScaledDynamics(nn.Module):
     def __init__(self, delivery_lag: int) -> None:
         super().__init__()
         self.delivery_lag = int(delivery_lag)
-        dim = _feature_dim(self.delivery_lag)
+        dim = feature_dim()
         self.register_buffer("x_mean", torch.zeros(dim))
         self.register_buffer("x_std", torch.ones(dim))
         self.register_buffer("y_mean", torch.zeros(3))
@@ -201,13 +300,16 @@ class _ScaledDynamics(nn.Module):
         """
         raise NotImplementedError
 
+    def _features(self, row: dict) -> list[float]:
+        return log_row_features(row, delivery_lag=self.delivery_lag)
+
 
 class LatentDynamics(_ScaledDynamics):
     """Encoder, EMA target, open-loop predictor, and stopped probes."""
 
     def __init__(self, delivery_lag: int) -> None:
         super().__init__(delivery_lag)
-        dim = _feature_dim(self.delivery_lag)
+        dim = feature_dim()
         self.encoder = _Encoder(dim, _EMBED_DIM)
         self.predictor = _Predictor(_EMBED_DIM)
         self.probes = _Probe(_EMBED_DIM)
@@ -320,11 +422,11 @@ class LatentDynamics(_ScaledDynamics):
         sequences: list[list[list[float]]] = []
         actions: list[list[float]] = []
         if horizon < 1:
-            empty_x = torch.zeros(0, 1, _feature_dim(self.delivery_lag))
+            empty_x = torch.zeros(0, 1, feature_dim())
             return empty_x, torch.zeros(0, 1)
         for group in _groups(frame):
             rows = list(group.to_dict("records"))
-            features = [_row_features(row, horizon) for row in rows]
+            features = [self._features(row) for row in rows]
             if len(rows) < horizon + 1:
                 continue
             for start in range(len(rows) - horizon):
@@ -334,7 +436,7 @@ class LatentDynamics(_ScaledDynamics):
                 )
         if not sequences:
             return (
-                torch.zeros(0, horizon + 1, _feature_dim(horizon)),
+                torch.zeros(0, horizon + 1, feature_dim()),
                 torch.zeros(0, horizon),
             )
         return (
@@ -348,20 +450,20 @@ class LatentDynamics(_ScaledDynamics):
         for group in _groups(frame):
             rows = list(group.to_dict("records"))
             for index in range(len(rows) - 1):
-                features.append(_row_features(rows[index + 1], self.delivery_lag))
+                features.append(self._features(rows[index + 1]))
                 targets.append(_targets(rows[index]))
         if not features:
-            return torch.zeros(0, _feature_dim(self.delivery_lag)), torch.zeros(0, 3)
+            return torch.zeros(0, feature_dim()), torch.zeros(0, 3)
         return torch.tensor(features, dtype=torch.float32), torch.tensor(targets, dtype=torch.float32)
 
     def _all_features(self, frame: pd.DataFrame) -> torch.Tensor:
         rows = [
-            _row_features(row, self.delivery_lag)
+            self._features(row)
             for group in _groups(frame)
             for row in group.to_dict("records")
         ]
         if not rows:
-            return torch.zeros(0, _feature_dim(self.delivery_lag))
+            return torch.zeros(0, feature_dim())
         return torch.tensor(rows, dtype=torch.float32)
 
     def _norm_y(self, targets: torch.Tensor) -> torch.Tensor:
@@ -377,7 +479,7 @@ class DirectDynamics(_ScaledDynamics):
 
     def __init__(self, delivery_lag: int) -> None:
         super().__init__(delivery_lag)
-        self.net = _DirectNet(_feature_dim(self.delivery_lag))
+        self.net = _DirectNet(feature_dim())
 
     def fit(self, frame: pd.DataFrame, *, epochs: int, seed: int, lr: float = 1e-3) -> None:
         torch.manual_seed(seed)
@@ -424,10 +526,10 @@ class DirectDynamics(_ScaledDynamics):
             rows = list(group.to_dict("records"))
             for index in range(len(rows) - 1):
                 current = rows[index]
-                features.append(_row_features(current, self.delivery_lag))
+                features.append(self._features(current))
                 actions.append(float(current["filled_qty"]))
                 targets.append(_targets(current))
-        dim = _feature_dim(self.delivery_lag)
+        dim = feature_dim()
         if not features:
             return torch.zeros(0, dim), torch.zeros(0, 1), torch.zeros(0, 3)
         return (
@@ -458,16 +560,19 @@ class _LatentRollout:
 
 
 class _DirectRollout:
-    """Feed predicted on-hand, in-transit, and sales forward.
+    """Feed predicted on-hand and sales forward, and age the pipeline.
 
-    Cash and capacity stay at the decision-time observation, so a later
-    holding charge cannot change the next decoded quantities.
+    Cash, capacity, and the delivery lead time stay at the decision-time
+    observation, so a later holding charge cannot change the next decoded
+    quantities. The probe still emits in-transit as a sum. The next
+    observation keeps ages: this step's grant becomes age 1, older cohorts
+    move up one tick, and a cohort whose next age is not below the nominal
+    lead drops out.
     """
 
     def __init__(self, dynamics: DirectDynamics, features: list[list[float]]) -> None:
         self._dynamics = dynamics
         self._raw = torch.tensor(features, dtype=torch.float32)
-        self._lag = dynamics.delivery_lag
 
     @torch.no_grad()
     def step(self, granted: list[float]) -> list[tuple[float, float, float]]:
@@ -475,13 +580,27 @@ class _DirectRollout:
         if self._raw.numel() == 0 or not quantities:
             return quantities
         self._raw[:, 0] = torch.tensor([row[0] for row in quantities])
-        self._raw[:, 1] = torch.tensor([row[1] for row in quantities])
-        lag = self._lag
-        if lag > 0:
-            start = 2
-            end = 2 + lag
+        self._age_pipeline(granted)
+        length = SALES_WINDOW
+        profile_end = 1 + ARRIVAL_AGE_SLOTS
+        if length > 0:
+            start = profile_end
+            end = profile_end + length
             window = self._raw[:, start:end].clone()
-            if lag > 1:
+            if length > 1:
                 self._raw[:, start : end - 1] = window[:, 1:]
             self._raw[:, end - 1] = torch.tensor([row[2] for row in quantities])
         return quantities
+
+    def _age_pipeline(self, granted: list[float]) -> None:
+        profile_end = 1 + ARRIVAL_AGE_SLOTS
+        profile = self._raw[:, 1:profile_end]
+        shifted = torch.zeros_like(profile)
+        if ARRIVAL_AGE_SLOTS > 1:
+            shifted[:, 1] = torch.tensor(granted, dtype=torch.float32)
+        lead = self._raw[:, -1]
+        for age in range(1, ARRIVAL_AGE_SLOTS - 1):
+            dest = age + 1
+            keep = lead > float(dest)
+            shifted[keep, dest] = profile[keep, age]
+        self._raw[:, 1:profile_end] = shifted

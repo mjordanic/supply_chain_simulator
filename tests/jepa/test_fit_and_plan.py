@@ -6,10 +6,11 @@ Seams, from the issue acceptance criteria:
    ``policy_overrides``, the Policy returns ``list_price`` from ``base_price``,
    an empty promotion map, a zero minimum-order floor, and quantities that
    fit in free capacity and cash.
-2. Features. The encoder sees on-hand, in-transit, a sales window of length
-   ``delivery_lag``, and broadcast cash and capacity. A market-multiplier
-   column and a disruption column are not features: two fits that differ
-   only in those columns place the same orders.
+2. Features. The encoder sees on-hand, an arrival-age profile, a sales
+   window whose length is its own knob, cash, capacity, and the delivery
+   lead time. A market-multiplier column, a disruption column, and a
+   calendar column are not features: two fits that differ only in those
+   columns place the same orders.
 3. Horizon. The predictor unrolls open-loop for ``H = delivery_lag`` with a
    stopped target embedding and an anti-collapse penalty. Loss values,
    latent width, and EMA decay are not asserted (PRD testing decision).
@@ -176,28 +177,12 @@ def _granted(action: dict, pid: str) -> int:
 
 def test_encoder_features_are_the_observation_window_without_market_or_disruption():
     lag = 2
-    vector = sku_features(
-        on_hand=4,
-        in_transit=1,
-        sales_window=[0, 5, 9],
-        cash=80.0,
-        capacity=30,
-        delivery_lag=lag,
-    )
-    assert vector == [4.0, 1.0, 5.0, 9.0, 80.0, 30.0]
-    assert sku_features(
-        on_hand=4,
-        in_transit=1,
-        sales_window=[9],
-        cash=80.0,
-        capacity=30,
-        delivery_lag=lag,
-    ) == [4.0, 1.0, 0.0, 9.0, 80.0, 30.0]
-
     frame = _tiny_log(lag)
     other = frame.copy()
     other["market_multiplier"] = 3.5
     other["disruption"] = "port_closure"
+    other["tick"] = 987654
+    other["simulation_date"] = "2026-09-30"
     kwargs = dict(delivery_lag=lag, epochs=2, seed=0, policy_seed=1, budget=4)
     plain = fit_latent(frame, **kwargs)
     marked = fit_latent(other, **kwargs)
@@ -208,7 +193,16 @@ def test_encoder_features_are_the_observation_window_without_market_or_disruptio
         list_prices={"A": 1.0, "B": 1.0},
     )
     table = _table({"A": ("F_A", 4.0), "B": ("F_B", 3.0)})
-    sample = [sku_features(on_hand=1, in_transit=2, sales_window=[1, 2], cash=10, capacity=20, delivery_lag=lag)]
+    sample = [
+        sku_features(
+            on_hand=1,
+            in_transit=[0, 2],
+            sales_window=[1, 2],
+            cash=10,
+            capacity=20,
+            delivery_lag=lag,
+        )
+    ]
     assert plain.dynamics.predict_next(sample, [3.0]) == marked.dynamics.predict_next(sample, [3.0])
     assert plain.decide(obs, table) == marked.decide(obs, table)
 

@@ -179,11 +179,13 @@ Per-SKU rows on the tuner episode shape: 365 ticks, `K` sampled per episode from
 catalog is about 750 SKUs, heterogeneous in demand scale, margin, volatility, and
 lifecycle rate. Half the episodes run published-default
 `OrderUpToPolicy`; half run `ExploratoryPolicy`. Seeds start at `14_000_000`. A row holds
-on-hand, an in-transit arrival-age profile, a sales window of length `delivery_lag`, cash,
-capacity, the quantity the buyer requested (`requested_qty`), the quantity Allocation filled
-(`filled_qty`), and the next on-hand, arrival-age profile, and sales. The profile index is
-age in ticks — units filled that many ticks ago and still in transit — and its length is
-`delivery_lag`. Age 0 is empty at decision time, because `decide` runs before Allocation.
+on-hand, an in-transit arrival-age profile, a sales window whose length is the encoder's
+sales-window knob (28 ticks, not the delivery lag), cash, capacity, the episode's nominal
+delivery lag, the quantity the buyer requested (`requested_qty`), the quantity Allocation
+filled (`filled_qty`), and the next on-hand, arrival-age profile, and sales. The profile
+index is age in ticks — units filled that many ticks ago and still in transit — and its
+length is the longest study edge (10), not the episode's nominal lag. Age 0 is empty at
+decision time, because `decide` runs before Allocation.
 `filled_qty` is the recorded action. Each row is labelled `order_up_to` or `exploratory`.
 Factories stay on `StaticFactoryPolicy`.
 The published parquet is `runs/jepa-replenishment/log/transitions.parquet`, written by
@@ -197,9 +199,11 @@ filled divided by factory units requested, or null when nothing was requested.
 Neither the parquet nor the manifest is committed.
 
 **Latent replenishment planner** (`ReplenishmentPlanner(IntermediatePolicy)`, `fit_latent`, `src/jepa/plan.py`)
-Per-SKU buyer fit on the transition log. The encoder sees on-hand, the sum of the in-transit
-arrival-age profile, a sales window of length `delivery_lag`, cash, and capacity — not the
-Market multiplier or the disruption type. An
+Per-SKU buyer fit on the transition log. The encoder sees on-hand, the in-transit
+arrival-age profile, a sales window of its own length (28 ticks, well above the delivery
+lead time), cash, capacity, and the nominal delivery lead time — not the Market multiplier,
+the disruption identity, or the calendar. Feature width does not follow the sampled lag, so
+one fitted model serves every episode. An
 EMA target encoder supplies the stopped embedding. An action-conditioned predictor unrolls
 open-loop for `H = delivery_lag`. The latent loss matches that target at each step, plus an
 anti-collapse penalty. Probes decode next on-hand, next in-transit, and step sales from a stopped
@@ -559,7 +563,7 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — Variable-K RL: shared-weight per-product policy, deterministic arbiter owning capacity + cash, implicit assortment, no mid-episode churn. **Accepted — supersedes ADR 0004 Decision 2.**
 - [ADR 0022](docs/adr/0022-rl-policy-as-first-class-intermediate-policy-eval-via-runner.md) — `RLNodePolicy` as a first-class `IntermediatePolicy`; eval rebuilt on `Runner.run()`; Arbiter travels with the policy; eval-history discontinuity noted. **Accepted.**
 - [ADR 0023](docs/adr/0023-web-demo-cloud-run.md) — Streamlit CRN lab as a sibling `Runner` consumer; Cloud Run slim image (not Fargate, not full `uv sync`). **Accepted.**
-- [ADR 0024](docs/adr/0024-ordering-only-learned-policy.md) — Learned replenishment policy orders only; list price matches the textbook arm. Pricing policies are a later action space. **Accepted.**
+- [ADR 0024](docs/adr/0024-ordering-only-learned-policy.md) — Learned replenishment policy orders only; list price matches the textbook arm. Pricing policies are a later action space. The encoder may see on-hand, the arrival-age profile, a sales window longer than the lead time, cash, capacity, and the delivery lead time. It may not see the Market multiplier, the disruption identity, or the calendar. Routing stays outside the learned action. **Accepted.**
 - [ADR 0025](docs/adr/0025-priority-ration.md) — Learned policy rations capacity and cash by priority. Engine Allocation is unchanged. A joint multi-SKU dynamics model is deferred. **Accepted.**
 - [ADR 0026](docs/adr/0026-replay-window-adaptation.md) — M5 replay stays an exam for the headline number. A separate row may fit a reward-free predictor on an earlier window and test it on a later one. **Accepted.** Widens ADR 0020.
 - [ADR 0027](docs/adr/0027-frozen-holding-rate-retarget.md) — Holding-rate retarget re-scores a frozen predictor; imagined cash uses the new rate and feeds the ration. **Accepted.**
