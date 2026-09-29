@@ -2,11 +2,14 @@
 
 ``decide`` draws a fixed budget of cover-and-priority proposals from
 ``policy_rng``, rations each one, and keeps the proposal whose imagined
-engine ``net_profit`` is highest over the lead-time horizon. Imagined
-profit is revenue minus purchase cost minus holding cost minus the
-order fee. There is no stockout penalty and no learned reward head.
-Imagined cash uses the holding rate under test and is the cash the next
-ration sees.
+score is highest over ``horizon_multiple * delivery_lag`` steps
+(``horizon_multiple`` defaults to 4). Each step's profit is revenue
+minus purchase cost minus holding cost minus the order fee. Ending
+inventory position — on-hand plus in-transit — is then credited at unit
+cost, so unsold stock is not confiscated at the window boundary. There
+is no stockout penalty and no learned reward head. Imagined cash uses
+the holding rate under test and is the cash the next ration sees. The
+terminal credit is not cash.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from src.jepa.policy import COVERS, _flatten_pending, _priority_ration, _supplie
 from src.sim.policy import IntermediatePolicy, _allocate_two_pass_fair_share, _estimate_rate
 
 DEFAULT_BUDGET = 64
+DEFAULT_HORIZON_MULTIPLE = 4
 
 
 class ReplenishmentPlanner(IntermediatePolicy):
@@ -46,16 +50,20 @@ class ReplenishmentPlanner(IntermediatePolicy):
         holding_rate: float = 0.01,
         order_fee: float = 50.0,
         ration: str = "priority",
+        horizon_multiple: int = DEFAULT_HORIZON_MULTIPLE,
     ) -> None:
         super().__init__(policy_seed=policy_seed)
         if ration not in ("priority", "fair_share"):
             raise ValueError(f"unknown ration {ration!r}")
+        if int(horizon_multiple) < 1:
+            raise ValueError("horizon_multiple must be at least 1")
         self.dynamics = dynamics
         self.delivery_lag = int(dynamics.delivery_lag if delivery_lag is None else delivery_lag)
         self.budget = int(budget)
         self.holding_rate = float(holding_rate)
         self.order_fee = float(order_fee)
         self.ration = ration
+        self.horizon_multiple = int(horizon_multiple)
         self.min_order = 0
         self.sales_log: dict[str, list[int]] = {}
         self.proposals: list[dict[str, Any]] = []
@@ -70,6 +78,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
             holding_rate=holding_rate,
             order_fee=self.order_fee,
             ration=self.ration,
+            horizon_multiple=self.horizon_multiple,
         )
 
     def fit_probes(self, frame: pd.DataFrame, *, epochs: int) -> None:
@@ -190,7 +199,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
                 for pid in pids
             ]
         )
-        for _step in range(self.delivery_lag):
+        for _step in range(self.horizon_multiple * self.delivery_lag):
             holding = self.holding_rate * sum(
                 on_hand[pid] * float(unit_costs.get(pid, 0.0)) for pid in pids
             )
@@ -232,6 +241,14 @@ class ReplenishmentPlanner(IntermediatePolicy):
             if opening_grant is None:
                 opening_grant = {pid: int(granted.get(pid, 0)) for pid in pids}
             cash_now = cash_now + profit
+        # Purchase cost is charged when the order is imagined. Crediting
+        # unit cost on ending on-hand and in-transit puts that cash back,
+        # so the window does not confiscate stock that has not sold yet.
+        # The credit is not cash the next ration can spend.
+        total += sum(
+            (on_hand[pid] + in_transit[pid]) * float(unit_costs.get(pid, 0.0))
+            for pid in pids
+        )
         return total, opening_grant or {pid: 0 for pid in pids}
 
     def _ration(
@@ -299,6 +316,7 @@ def save_planners(
         "budget": int(latent.budget),
         "holding_rate": float(latent.holding_rate),
         "order_fee": float(latent.order_fee),
+        "horizon_multiple": int(latent.horizon_multiple),
         "latent_policy_seed": latent.policy_seed,
         "direct_policy_seed": direct.policy_seed,
     }
@@ -316,6 +334,7 @@ def load_planners(directory: str | Path) -> tuple[ReplenishmentPlanner, Replenis
         "budget": int(meta["budget"]),
         "holding_rate": float(meta["holding_rate"]),
         "order_fee": float(meta["order_fee"]),
+        "horizon_multiple": int(meta.get("horizon_multiple", DEFAULT_HORIZON_MULTIPLE)),
     }
     latent_dynamics = LatentDynamics(delivery_lag=lag)
     latent_dynamics.load_state_dict(

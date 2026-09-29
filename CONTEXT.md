@@ -191,9 +191,12 @@ open-loop for `H = delivery_lag`. The latent loss matches that target at each st
 anti-collapse penalty. Probes decode next on-hand, next in-transit, and step sales from a stopped
 embedding and do not train the encoder. `decide` draws 64 cover-and-priority proposals from
 `policy_rng` (smoke runs use 4), rations each one, and places the grant with the highest imagined
-`net_profit` over the lead time. Imagined profit is revenue minus purchase cost minus
-`holding_rate × on-hand × unit_cost` (supplier price, the catalog unit cost on the tuner graph)
-minus the per-supplier order fee. There is no stockout penalty and no learned reward head.
+score over `horizon_multiple * delivery_lag` steps (`horizon_multiple` defaults to 4). Each
+step's imagined profit is revenue minus purchase cost minus `holding_rate × on-hand × unit_cost`
+(supplier price, the catalog unit cost on the tuner graph) minus the per-supplier order fee.
+Ending inventory position (on-hand plus in-transit) is credited at unit cost, so unsold stock
+is not confiscated at the window boundary. That credit is not cash the next ration can spend.
+There is no stockout penalty and no learned reward head.
 Each ration spends what is left after that step's holding charge, and the cash after imagined
 profit is what the next ration can spend, so a frozen planner can be retargeted from
 `holding_rate` 0.01 to 0.05 without a new fit. `ration="fair_share"` keeps the same covers and
