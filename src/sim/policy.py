@@ -127,8 +127,9 @@ class FactoryPolicy(NodePolicy, ABC):
     """Policy ABC for ``FactoryNode``.
 
     ``decide`` receives a factory observation and returns production
-    instructions. ``list_price`` must equal ``unit_cost`` per ADR 0013 —
-    concrete implementations should not deviate from that.
+    instructions. ``list_price`` stays at ``unit_cost`` for a zero-margin
+    factory (ADR 0013). A factory that already lists above ``unit_cost``
+    keeps that price (ADR 0031).
     """
 
     @abstractmethod
@@ -1805,13 +1806,17 @@ class _PeriodicReorderCore(TextbookReorderPolicy):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# StaticFactoryPolicy — produces at fixed capacity, lists at unit_cost
+# StaticFactoryPolicy — produces at fixed capacity, keeps list_price
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class StaticFactoryPolicy(FactoryPolicy):
-    """Simple factory policy that lists at ``unit_cost`` (zero-margin, per
-    ADR 0013) and produces by one of two rules:
+    """Simple factory policy that keeps the node's ``list_price`` and
+    produces by one of two rules.
+
+    A node authored at ``list_price == unit_cost`` stays zero-margin
+    (ADR 0013). A node that already lists above ``unit_cost`` keeps that
+    markup (ADR 0031).
 
     - ``target_inventory is None`` (default): produce exactly
       ``capacity_per_tick`` units every tick, unconditionally. Preserves the
@@ -1830,7 +1835,8 @@ class StaticFactoryPolicy(FactoryPolicy):
     capacity_per_tick:
         Maximum number of units producible in a single tick.
     unit_cost:
-        Manufacturing cost per unit. ``list_price`` is set to this value.
+        Manufacturing cost per unit. Used as ``list_price`` only when the
+        observation has no list price.
     target_inventory:
         Base-stock target. ``None`` ⇒ unconditional produce-at-capacity.
     policy_seed:
@@ -1852,10 +1858,12 @@ class StaticFactoryPolicy(FactoryPolicy):
         self.target_inventory = target_inventory
 
     def decide(self, obs_factory: Mapping[str, Any]) -> dict[str, Any]:  # type: ignore[override]
-        """Return ``{"produce_qty": int, "list_price": unit_cost}``.
+        """Return ``{"produce_qty": int, "list_price": float}``.
 
         ``produce_qty`` is ``capacity_per_tick`` when no target is set, else
         the base-stock refill ``clamp(target - inventory, 0, capacity)``.
+        ``list_price`` is the observation's current price, or ``unit_cost``
+        when the observation omits it.
         """
         if self.target_inventory is None:
             produce_qty = self.capacity_per_tick
@@ -1863,9 +1871,12 @@ class StaticFactoryPolicy(FactoryPolicy):
             current = int(obs_factory.get("inventory", 0))
             shortfall = self.target_inventory - current
             produce_qty = max(0, min(shortfall, self.capacity_per_tick))
+        listed = obs_factory.get("list_price", self.unit_cost)
+        if listed is None:
+            listed = self.unit_cost
         return {
             "produce_qty": produce_qty,
-            "list_price": self.unit_cost,
+            "list_price": float(listed),
         }
 
 

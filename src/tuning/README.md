@@ -35,8 +35,9 @@ src/tuning/
 Custom policies write their own ~10-line trial-callback factory (`f(trial) -> Policy`) and pass
 it to `run_study`; the four bundled factories cover the textbook variants.
 
-The tuner runs on the **multi-echelon graph engine**: each trial builds a degenerate
-`factory → IntermediateNode("S") → sink-per-product` graph from the catalog and attaches the
+The tuner runs on the **multi-echelon graph engine**: each trial builds a
+`factories → IntermediateNode("S") → sink-per-product` graph from the catalog — several
+factories per SKU, with sampled markup and lead time (ADR 0031) — and attaches the
 candidate `MultiSupplierTextbookPolicy` to node `S`. The four bundled search spaces tune the
 shared textbook knobs (`cover_horizon_ticks`, the two safety fractions) alongside each variant's
 own parameters (`Q`, `review_interval`). `per_supplier_min_order_floor` and `routing_strategy`
@@ -142,8 +143,8 @@ study = run_study(
 
 ## Deploying a tuned policy in a multi-echelon graph
 
-Tuning optimises a single `IntermediateNode` in the degenerate 3-node
-`factory → "S" → sink-per-product` graph described above — **never your authored multi-echelon
+Tuning optimises a single `IntermediateNode` in the
+`factories → "S" → sink-per-product` graph described above — **never your authored multi-echelon
 scenario**. But the result is just an `OrderUpToPolicy` (an ordinary `IntermediatePolicy`), so
 deploying it into a real multi-echelon graph is a one-liner: **attach it to whichever node you
 want via `Runner`'s `policy_overrides`; every other node keeps its own policy.** Rebuild the

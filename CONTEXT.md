@@ -16,8 +16,8 @@ attached. Nodes are not frozen dataclasses — the simulation engine mutates run
 **FactoryNode** (`FactoryNode(Node)`, `src/sim/node.py`)
 Produces one product per tick in exchange for cash at manufacturing cost. Fields:
 `produces_product_id: str`, `unit_cost: float`, `capacity_per_tick: int | float | Distribution`,
-`inventory: int`, `list_price: float` (always == `unit_cost` per ADR 0013; zero-margin by
-construction). Factories are the entry point for inventory into the chain.
+`inventory: int`, `list_price: float` (equal to `unit_cost` on authored zero-margin
+factories, ADR 0013; the replenishment sampler may set a markup, ADR 0031).
 
 **IntermediateNode** (`IntermediateNode(Node)`, `src/sim/node.py`)
 Holds multi-product inventory, sets list prices, routes orders across multiple upstream suppliers.
@@ -175,7 +175,7 @@ minimum-order floor is zero. `OrderUpToPolicy` keeps fair-share. See ADR 0024, A
 
 **Transition log** (`collect_transition_log`, `src/jepa/log.py`)
 Per-SKU rows on the tuner episode shape: 365 ticks, `K` sampled per episode from
-1 to 30, lead time 3, `holding_rate` 0.01, the tuner order fee. The synthetic
+1 to 30, a nominal delivery lag sampled from 2 through 6 unless pinned, `holding_rate` 0.01, the tuner order fee. The synthetic
 catalog is about 750 SKUs, heterogeneous in demand scale, margin, volatility, and
 lifecycle rate. Half the episodes run published-default
 `OrderUpToPolicy`; half run `ExploratoryPolicy`. Seeds start at `14_000_000`. A row holds
@@ -191,7 +191,10 @@ The published parquet is `runs/jepa-replenishment/log/transitions.parquet`, writ
 seed range, episode length, `K_active` (null when K is sampled, plus `K_min` and
 `K_max_episode`), delivery lag, holding rate, order fee, catalog
 identity, behaviour-mixture composition, the realised fraction of rows with a non-zero
-filled quantity, and the git SHA. Neither file is committed.
+filled quantity, and the git SHA. `delivery_lag` in the manifest is null when the lag
+was sampled. A completed `Runner` log records `global.supplier_fill_rate`: factory units
+filled divided by factory units requested, or null when nothing was requested.
+Neither the parquet nor the manifest is committed.
 
 **Latent replenishment planner** (`ReplenishmentPlanner(IntermediatePolicy)`, `fit_latent`, `src/jepa/plan.py`)
 Per-SKU buyer fit on the transition log. The encoder sees on-hand, the sum of the in-transit
@@ -438,7 +441,8 @@ Owns the simulation loop. `Runner(scenario).run() → dict` builds all subsystem
 and runs the observe → decide → advance → log loop for `scenario.n_steps` ticks. Maintains the
 four-stream RNG split (`world_rng`, `allocation_rng`, one `policy_rng` per Policy, one `init_rng`
 per NodeInstance) that makes CRN comparison correct. Returns a run log with keys `n_steps`,
-`ticks`, `global`.
+`ticks`, `global`. `global.supplier_fill_rate` is factory units filled divided by factory units
+requested, or null when the episode requested nothing from a factory (ADR 0031).
 
 **DataExporter** (`src/sim/data_exporter.py`)
 Consumes a `Scenario` and a completed run log and writes: parquet time-series, parquet static
@@ -450,13 +454,19 @@ node/product tables, JSON config snapshot and run log, and a regional supply/dem
 **Episode sampler** (`src/sim/episode_sampler.py`, `src/tuning/episode.py`)
 Sub-seed derivation: `sub = (episode_seed * PRIME + OFFSET) & 0xFFFF_FFFF`, one `(PRIME, OFFSET)`
 pair per purpose. Sim purposes: `assortment`, `capacity`, `balance`, `world`, `init_stock`,
-`allocation` (ADR 0016), and `lifecycle`. The tuning sampler draws `K` per episode from
-`[K_min, K_max_episode]` (default 1 through 30) unless `K_active` is pinned. Lifecycle parameter
+`allocation` (ADR 0016), `lifecycle`, `delivery_lag`, and `supply`. The tuning sampler draws `K`
+per episode from `[K_min, K_max_episode]` (default 1 through 30) unless `K_active` is pinned.
+It draws a nominal delivery lag from 2 through 6 unless `delivery_lag` is pinned. Each active
+SKU is supplied by three `FactoryNode`s (`F_<pid>_0` is fastest). Production per tick and
+opening inventory are sampled as multiples of that SKU's expected demand per tick, split
+across those suppliers, not as multiples of the shop's capacity. `list_price` is unit cost
+times one plus a sampled markup; a faster supplier lists higher. Edge lead times are the
+nominal lag, that lag plus 2, and that lag plus 4. Lifecycle parameter
 draws use the `lifecycle` sub-seed of the episode seed: a shared stage-change table, one scale
 on authored tables, and a per-SKU initial stage. Transition draws during the run use a per-SKU
 stream of that same purpose off `world_seed`, not `world_rng`.
 `make_synthetic_catalog` defaults to about 750 SKUs. RL still samples K from `[1, 20]` in
-`src/rl/episode_sampler.py`.
+`src/rl/episode_sampler.py` and still builds one zero-margin factory per SKU.
 
 **Metrics** (`src/sim/metrics.py`)
 Canonical home for `RunSlice`, `aggregate_episode(run_slice) -> dict[str, float]`, and five KPI
@@ -530,7 +540,7 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0010](docs/adr/0010-sim-as-base-for-ml-layers.md) — `src/sim/` is the canonical home for rollout primitives; `src/tuning/` and `src/rl/` are sibling consumers.
 - [ADR 0011](docs/adr/0011-multi-echelon-graph.md) — Multi-echelon DAG of typed nodes replaces the single-`Store` flat model. **Accepted.**
 - [ADR 0012](docs/adr/0012-central-table-fcfs-allocation.md) — Central table + sequential FCFS allocation with live offer-book mutation. **Accepted.**
-- [ADR 0013](docs/adr/0013-cash-flow-conservation.md) — Cash flow conservation: sinks create, ops destroy, inter-node trades transfer; factories are zero-margin. **Accepted.**
+- [ADR 0013](docs/adr/0013-cash-flow-conservation.md) — Cash flow conservation: sinks create, ops destroy, inter-node trades transfer; authored factories are zero-margin. **Accepted.** ADR 0031 samples a markup on replenishment factories.
 - [ADR 0014](docs/adr/0014-tick-phasing-cascade.md) — Tick phasing as upward cascade by echelon level (sinks → intermediates → factories). **Accepted — superseded by ADR 0018.**
 - [ADR 0015](docs/adr/0015-demand-sinks-market-multiplier.md) — Demand-sinks own demand sampling; `Market` shrinks to a multiplier engine (`demand_multiplier`). **Accepted.**
 - [ADR 0016](docs/adr/0016-allocation-rng-sub-seed.md) — `allocation` sub-seed added to CRN seeding contract; drives deterministic per-phase buyer shuffle. **Accepted.**
@@ -547,3 +557,4 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0028](docs/adr/0028-m5-slice.md) — M5 arm is `shop-CA_1`, one factory at lead time 3, five FOODS items chosen on 2015 only. Test window is 2016-01-01 through 2016-04-24. **Accepted.**
 - [ADR 0029](docs/adr/0029-probe-stop-gradient.md) — Probe losses update the probes only. The encoder is trained by the latent loss and the anti-collapse penalty. **Accepted.**
 - [ADR 0030](docs/adr/0030-market-seasonal-cycle-read-time.md) — Seasonal cycle is a read-time multiplier on the demand level; `abs(cycle_amp) < 1`. Supersedes CRN baselines that depended on the integrated cycle. **Accepted.**
+- [ADR 0031](docs/adr/0031-supply-side-scarcity.md) — Replenishment episodes have several factories per SKU, a sampled markup, demand-relative supply, and differing lead times. Realised supplier fill rate is on the run log. Routing stays outside the learned action. **Accepted.** Amends ADR 0013 rule 3 for those episodes.

@@ -1,15 +1,18 @@
-"""Tuning-side episode sampler: builds a graph-mode 3-node episode.
+"""Tuning-side episode sampler: builds a graph-mode replenishment episode.
 
-``sample_episode(catalog, base_template, config, episode_seed) → TuningEpisodeSpec``
-builds a degenerate single-store tuning episode as a 3-node graph:
+``sample_episode(catalog, config, episode_seed) → TuningEpisodeSpec``
+builds one shop between factories and demand sinks:
 
-    FactoryNode("F_<pid>") → IntermediateNode("S") → DemandSinkNode("D_<pid>")
+    FactoryNode("F_<pid>_<i>") → IntermediateNode("S") → DemandSinkNode("D_<pid>")
 
+Each active SKU has several factories. Their production, opening stock,
+list price, and edge lead time are sampled for that episode (ADR 0031).
 The intermediate node "S" is the node under policy optimisation.
 
 ``TuningEpisodeSpec`` is the canonical tuning episode descriptor. It carries
-the graph-mode ``Scenario`` plus the per-episode ``capacity`` and ``balance``
-so ``evaluator.py`` can normalise returns without inspecting ``stores[0]``.
+the graph-mode ``Scenario`` plus the per-episode ``capacity``, ``balance``,
+and nominal ``delivery_lag`` so callers can read the supply contract
+without walking the edges.
 
 ``load_catalog_and_market_from_setup`` and ``make_synthetic_catalog`` are the
 setup-directory helpers used when ``TuningConfig.setup_dir`` is set.
@@ -56,20 +59,23 @@ class TuningEpisodeSpec:
     Fields
     ------
     scenario
-        A graph-mode ``Scenario`` with a 3-node graph
-        (FactoryNode "F_<pid>" → IntermediateNode "S" → DemandSinkNode "D_<pid>").
+        A graph-mode ``Scenario``: several ``FactoryNode``s per active SKU,
+        one ``IntermediateNode`` "S", one ``DemandSinkNode`` per active SKU.
     active_subset
         The K product ids selected for this episode, in catalog order.
     capacity
         The IntermediateNode capacity for this episode (int).
     balance
         The IntermediateNode opening cash for this episode (float).
+    delivery_lag
+        Nominal lead time for this episode. Supplier edges differ around it.
     """
 
     scenario: Scenario
     active_subset: tuple[str, ...]
     capacity: int
     balance: float
+    delivery_lag: int
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +84,77 @@ class TuningEpisodeSpec:
 
 # The historical name in this module; also re-exported from sim for compatibility.
 EpisodeSpec = TuningEpisodeSpec
+
+
+# ---------------------------------------------------------------------------
+# Supply side (ADR 0031)
+# ---------------------------------------------------------------------------
+
+# Several factories per SKU. Index 0 is the fastest and the dearest.
+_SUPPLIERS_PER_SKU = 3
+_LEAD_OFFSETS = (0, 2, 4)
+_LAG_MIN = 2
+_LAG_MAX = 6
+# Production per tick and opening stock, as multiples of that SKU's
+# expected demand per tick. Summed across the SKU's suppliers.
+_PROD_LOW = 0.15
+_PROD_HIGH = 1.25
+_OPEN_LOW = 0.0
+_OPEN_HIGH = 4.0
+# Markup over unit cost. Each step faster than the slowest supplier
+# adds another draw of the speed premium.
+_MARKUP_LOW = 0.05
+_MARKUP_HIGH = 0.25
+_PREMIUM_LOW = 0.10
+_PREMIUM_HIGH = 0.35
+
+
+def _expected_demand_per_tick(ware: Ware) -> float:
+    """Catalog demand per tick. Missing scale keeps the ``Uniform(2, 8)`` midpoint."""
+    if ware.demand_mean is None:
+        return 5.0
+    return max(float(ware.demand_mean), 1e-6)
+
+
+def _mix_seed(seed: int, text: str) -> int:
+    mixed = seed & _MASK_32
+    for char in text:
+        mixed = (mixed * 0x01000193 + ord(char)) & _MASK_32
+    return mixed
+
+
+def _nominal_delivery_lag(config: "TuningConfig", episode_seed: int) -> int:
+    """Pinned lag, or a draw from ``[_LAG_MIN, _LAG_MAX]``."""
+    if config.delivery_lag is not None:
+        return int(config.delivery_lag)
+    rng = Random(_sim_derive_seed(episode_seed, "delivery_lag"))
+    return rng.randint(_LAG_MIN, _LAG_MAX)
+
+
+def _supplier_plan(ware: Ware, episode_seed: int, nominal_lag: int) -> list[dict[str, Any]]:
+    """Per-supplier production, opening stock, price, and lead time for one SKU."""
+    rng = Random(_mix_seed(_sim_derive_seed(episode_seed, "supply"), ware.product_id))
+    demand = _expected_demand_per_tick(ware)
+    prod_factor = rng.uniform(_PROD_LOW, _PROD_HIGH)
+    open_days = rng.uniform(_OPEN_LOW, _OPEN_HIGH)
+    weights = [rng.uniform(0.4, 1.0) for _ in range(_SUPPLIERS_PER_SKU)]
+    weight_sum = sum(weights)
+    slow_markup = rng.uniform(_MARKUP_LOW, _MARKUP_HIGH)
+    premium = rng.uniform(_PREMIUM_LOW, _PREMIUM_HIGH)
+    plan: list[dict[str, Any]] = []
+    for index, offset in enumerate(_LEAD_OFFSETS):
+        share = weights[index] / weight_sum
+        steps_faster = _SUPPLIERS_PER_SKU - 1 - index
+        plan.append(
+            {
+                "index": index,
+                "lead": int(nominal_lag) + offset,
+                "production": max(0, int(round(prod_factor * demand * share))),
+                "opening": max(0, int(round(open_days * demand * share))),
+                "list_price": float(ware.unit_cost) * (1.0 + slow_markup + steps_faster * premium),
+            }
+        )
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +171,7 @@ def _build_tuning_graph_scenario(
     world_seed: int,
     episode_length: int,
     delivery_lag: int,
+    episode_seed: int,
     holding_rate: float,
     order_fee: float,
     init_seed: int,
@@ -105,14 +183,14 @@ def _build_tuning_graph_scenario(
 ) -> Scenario:
     """Build a graph-mode Scenario for a single-policy tuning episode.
 
-    The graph has exactly 3 node types:
-      - FactoryNode("F_<pid>") — one per active product
+    The graph has three node types:
+      - FactoryNode("F_<pid>_<i>") — several per active product
       - IntermediateNode("S") — the node under policy evaluation
       - DemandSinkNode("D_<pid>") — one per active product
 
     Edges:
-      F_<pid> → S (with default_lead_time = delivery_lag)
-      S → D_<pid>  (with default_lead_time = 1 — intra-day)
+      F_<pid>_<i> → S (lead time differs across i)
+      S → D_<pid>  (default_lead_time = 1 — intra-day)
     """
     from src.sim.distributions import Constant
     from src.sim.node import DemandSinkNode, FactoryNode, IntermediateNode
@@ -124,22 +202,32 @@ def _build_tuning_graph_scenario(
     node_instances: list[Any] = []
     edge_specs: list[Any] = []
 
-    # One factory per active product.
-    for i, pid in enumerate(active_subset):
+    n_factories = len(active_subset) * _SUPPLIERS_PER_SKU
+    factory_slot = 0
+    for pid in active_subset:
         ware = pid_to_ware[pid]
-        factory_id = f"F_{pid}"
-        factory = FactoryNode(
-            id=factory_id,
-            region="US",
-            init_seed=init_seed + i,
-            produces_product_id=pid,
-            unit_cost=float(ware.unit_cost),
-            capacity_per_tick=Constant(capacity * 4),  # ample production
-            inventory=capacity * 2,  # pre-stocked at start
-            list_price=float(ware.unit_cost),
-            cash=0.0,
-        )
-        node_instances.append(NodeInstance(node=factory, init_seed=init_seed + i, policy=None))
+        for supplier in _supplier_plan(ware, episode_seed, delivery_lag):
+            factory_id = f"F_{pid}_{supplier['index']}"
+            factory = FactoryNode(
+                id=factory_id,
+                region="US",
+                init_seed=init_seed + factory_slot,
+                produces_product_id=pid,
+                unit_cost=float(ware.unit_cost),
+                capacity_per_tick=Constant(supplier["production"]),
+                inventory=supplier["opening"],
+                list_price=supplier["list_price"],
+                cash=0.0,
+            )
+            node_instances.append(
+                NodeInstance(node=factory, init_seed=init_seed + factory_slot, policy=None)
+            )
+            edge_specs.append(EdgeSpec(
+                supplier_id=factory_id,
+                buyer_id="S",
+                default_lead_time=supplier["lead"],
+            ))
+            factory_slot += 1
 
     # One intermediate node "S" carrying all active products.
     # Use init_stock_pct to determine opening inventory (same as the old StoreTemplate path).
@@ -152,7 +240,7 @@ def _build_tuning_graph_scenario(
     intermediate = IntermediateNode(
         id="S",
         region="US",
-        init_seed=init_seed + len(active_subset),
+        init_seed=init_seed + n_factories,
         carried_products=set(active_subset),
         capacity=capacity,
         tags=["shop"],
@@ -164,29 +252,27 @@ def _build_tuning_graph_scenario(
         holding_rate=holding_rate,
         order_fee=order_fee,
     )
-    node_instances.append(NodeInstance(node=intermediate, init_seed=init_seed + len(active_subset), policy=None))
+    node_instances.append(
+        NodeInstance(node=intermediate, init_seed=init_seed + n_factories, policy=None)
+    )
 
     # One demand sink per active product.
     for j, pid in enumerate(active_subset):
         sink = DemandSinkNode(
             id=f"D_{pid}",
             region="US",
-            init_seed=init_seed + len(active_subset) + 1 + j,
+            init_seed=init_seed + n_factories + 1 + j,
             product_id=pid,
             demand_dist=_sink_demand_dist(pid_to_ware[pid]),
             income_rate=float(pid_to_ware[pid].base_price) * 10.0,  # ample income
             cash=balance,
             activation_tick={pid: 0},
         )
-        node_instances.append(NodeInstance(node=sink, init_seed=init_seed + len(active_subset) + 1 + j, policy=None))
+        node_instances.append(
+            NodeInstance(node=sink, init_seed=init_seed + n_factories + 1 + j, policy=None)
+        )
 
-    # Build edges: factories → intermediate, intermediate → sinks.
     for pid in active_subset:
-        edge_specs.append(EdgeSpec(
-            supplier_id=f"F_{pid}",
-            buyer_id="S",
-            default_lead_time=delivery_lag,
-        ))
         edge_specs.append(EdgeSpec(
             supplier_id="S",
             buyer_id=f"D_{pid}",
@@ -271,8 +357,9 @@ def sample_episode(
     config:
         ``TuningConfig`` instance. ``K_active`` pins the assortment; when it
         is ``None``, K is drawn from ``[K_min, K_max_episode]``. Also reads
-        ``capacity_dist``, ``balance_dist``, ``delivery_lag``,
-        ``holding_rate``, ``order_fee``, and ``episode_length``.
+        ``capacity_dist``, ``balance_dist``, ``delivery_lag`` (``None``
+        samples the nominal lag), ``holding_rate``, ``order_fee``, and
+        ``episode_length``.
     episode_seed:
         Single integer seed. Any two calls with the same seed and the same
         ``(catalog, config)`` produce identical ``TuningEpisodeSpec``
@@ -331,6 +418,8 @@ def sample_episode(
         sorted(active_pids, key=lambda p: pid_order[p])
     )
 
+    delivery_lag = _nominal_delivery_lag(config, episode_seed)
+
     # --- build the graph-mode Scenario ---
     scenario = _build_tuning_graph_scenario(
         catalog=catalog,
@@ -339,7 +428,8 @@ def sample_episode(
         balance=balance,
         world_seed=world_seed,
         episode_length=config.episode_length,
-        delivery_lag=config.delivery_lag,
+        delivery_lag=delivery_lag,
+        episode_seed=episode_seed,
         holding_rate=config.holding_rate,
         order_fee=config.order_fee,
         init_seed=assortment_seed,
@@ -355,6 +445,7 @@ def sample_episode(
         active_subset=active_subset,
         capacity=capacity,
         balance=balance,
+        delivery_lag=delivery_lag,
     )
 
 

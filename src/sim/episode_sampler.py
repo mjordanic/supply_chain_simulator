@@ -11,6 +11,8 @@ the others:
   - ``balance_seed``    — opening cash draw
   - ``world_seed``      — ``Scenario.world_seed`` (drives all world-side RNG)
   - ``lifecycle``       — per-episode stage table and per-SKU initial stages
+  - ``delivery_lag``    — nominal lead time when the tuning config does not pin it
+  - ``supply``          — per-SKU supplier production, opening stock, and markup
 
 RL adds a fifth ``slot`` stream in ``src.rl.episode_sampler``; the slot
 stream and ``slot_permutation`` are RL-observation-encoder concerns and
@@ -85,6 +87,10 @@ _SUB_SEED_PARAMS: dict[str, tuple[int, int]] = {
     # Parameter draws for one episode's lifecycle. Transition draws during
     # the run use the same purpose off ``world_seed``, per SKU.
     "lifecycle":  (0x1656_67B1, 0x0000_000B),
+    # Nominal delivery lag and per-supplier scarcity for one tuning episode.
+    # RL does not read these purposes.
+    "delivery_lag": (0xC2B2_AE3D, 0x0000_000D),
+    "supply":       (0x27BB_2EE6, 0x0000_000F),
 }
 _MASK_32 = 0xFFFF_FFFF
 

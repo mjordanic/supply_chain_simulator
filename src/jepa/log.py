@@ -56,16 +56,16 @@ def collection_config(
     *,
     episode_length: int = 365,
     k_active: int | None = None,
-    delivery_lag: int = 3,
+    delivery_lag: int | None = None,
     holding_rate: float = 0.01,
     order_fee: float | None = None,
 ) -> TuningConfig:
     """Tuner episode shape used for the log.
 
     Unspecified knobs (capacity, opening cash, initial stock, assortment
-    size) stay at the ``TuningConfig`` defaults, so K is sampled unless
-    ``k_active`` is passed. ``order_fee`` stays at that default unless
-    the caller passes one.
+    size, nominal delivery lag) stay at the ``TuningConfig`` defaults, so
+    K and the delivery lag are sampled unless the caller pins them.
+    ``order_fee`` stays at that default unless the caller passes one.
     """
     kwargs: dict[str, Any] = {
         "episode_length": episode_length,
@@ -155,10 +155,10 @@ def collect_transition_log(
     """Collect the per-SKU transition log.
 
     Defaults are the published shape from ``collection_config``: 365 ticks,
-    K sampled from the tuner range, lead time 3, ``holding_rate`` 0.01, the
-    tuner order fee, and 64 episodes of each behavior from
-    ``LOG_SEED_OFFSET``. Pass a shorter episode or a smaller count for a
-    smoke run.
+    K and the nominal delivery lag sampled from the tuner ranges,
+    ``holding_rate`` 0.01, the tuner order fee, and 64 episodes of each
+    behavior from ``LOG_SEED_OFFSET``. Pass a shorter episode or a smaller
+    count for a smoke run. Pass ``delivery_lag`` to pin the nominal lag.
 
     Order-up-to episodes use seeds ``seed_offset .. seed_offset + n - 1``.
     Exploratory episodes use the next ``n`` seeds. The last tick of each
@@ -190,7 +190,7 @@ def collect_transition_log(
                     spec.scenario,
                     behavior=behavior,
                     episode_seed=episode_seed,
-                    delivery_lag=config.delivery_lag,
+                    delivery_lag=spec.delivery_lag,
                 )
             )
 
@@ -249,7 +249,9 @@ def _write_manifest(
         "K_active": None if config.K_active is None else int(config.K_active),
         "K_min": int(config.K_min),
         "K_max_episode": int(config.K_max_episode),
-        "delivery_lag": int(config.delivery_lag),
+        "delivery_lag": (
+            None if config.delivery_lag is None else int(config.delivery_lag)
+        ),
         "holding_rate": float(config.holding_rate),
         "order_fee": float(config.order_fee),
         "catalog_identity": catalog_identity(catalog),

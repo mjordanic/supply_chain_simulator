@@ -47,7 +47,7 @@ src/sim/
 ## Concepts
 
 - **Node** (`Node` ABC) — the actor in the supply-chain graph. Three concrete subtypes:
-  - **`FactoryNode`** — produces one product per tick at `unit_cost`; sells at `list_price` == `unit_cost` (zero-margin, ADR 0013). The entry point of inventory into the chain.
+  - **`FactoryNode`** — produces one product per tick at `unit_cost`. Authored setups sell at `list_price` == `unit_cost` (ADR 0013). The replenishment episode sampler may list above `unit_cost` (ADR 0031). The entry point of inventory into the chain.
   - **`IntermediateNode`** — warehouse / DC / shop. Holds multi-product `inventory`, sets `list_prices`, imposes per-product `min_order_imposed`, routes orders across multiple upstream suppliers, tracks `pending` (per-supplier × pid in-transit). Warehouse-vs-shop is a free-form `tags` label, never branches mechanics.
   - **`DemandSinkNode`** — the only source of new cash. Bound to one `product_id`; each tick earns `income_rate`, computes a demand target, and buys from intermediates. Unmet demand (no supplier stock or no cash) is a lost sale.
   - **`ReplayDemandSinkNode`** (`replay_demand_sink.py`) — a `DemandSinkNode` whose per-tick demand comes from an observed series instead of `demand_dist` — the real-data replay mode. The full market multiplier chain still applies on top, and the node burns the same `world_rng` draws as the stochastic sink, so mixed replay/stochastic graphs stay CRN-clean. See [Real-data demand replay (M5)](#real-data-demand-replay-m5).
@@ -312,7 +312,7 @@ Each policy owns a private `policy_rng` seeded from its `policy_seed` kwarg, dis
 
 | class | base | role |
 | --- | --- | --- |
-| `StaticFactoryPolicy(*, capacity_per_tick, unit_cost, policy_seed=None)` | `FactoryPolicy` | produce a fixed quantity each tick, publish at `unit_cost` |
+| `StaticFactoryPolicy(*, capacity_per_tick, unit_cost, policy_seed=None)` | `FactoryPolicy` | produce a fixed quantity each tick; publish the node's `list_price` (falls back to `unit_cost`) |
 | `DefaultDemandSinkPolicy(*, policy_seed=None)` | `DemandSinkPolicy` | greedy: buy the demand target from the cheapest feasible direct suppliers first |
 | `IntermediatePolicy.SingleSupplierAdapter(*, supplier_id, ...)` | `IntermediatePolicy` | route a textbook reorder policy to a single named supplier |
 | `MultiSupplierTextbookPolicy` (+ 4 concrete) | `IntermediatePolicy` | textbook reorder rules with multi-supplier routing |

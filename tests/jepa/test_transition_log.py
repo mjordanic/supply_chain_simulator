@@ -13,7 +13,7 @@ Seams, from the issue acceptance criteria:
    fraction, and git SHA.
 4. Mix and shape. Half the episodes are published-default ``OrderUpToPolicy``
    and half are ``ExploratoryPolicy``. Defaults are 365 ticks, K sampled
-   from 1 to 30, lead time 3, ``holding_rate`` 0.01, the tuner order fee, 64 episodes of
+   from 1 to 30, a sampled nominal delivery lag, ``holding_rate`` 0.01, the tuner order fee, 64 episodes of
    each behavior, seed offset ``14_000_000``. Factories stay on
    ``StaticFactoryPolicy``. The package does not import the RL stack.
 """
@@ -337,7 +337,7 @@ def test_published_collector_matches_the_tuner_episode_shape():
     assert cfg.K_active is None and plain.K_active is None
     assert cfg.K_min == 1 == plain.K_min
     assert cfg.K_max_episode == 30 == plain.K_max_episode
-    assert cfg.delivery_lag == 3 == plain.delivery_lag
+    assert cfg.delivery_lag is None and plain.delivery_lag is None
     assert cfg.holding_rate == 0.01 == plain.holding_rate
     assert cfg.order_fee == plain.order_fee
     assert EPISODES_EACH == 64
@@ -353,14 +353,27 @@ def test_published_collector_matches_the_tuner_episode_shape():
     assert min(sizes) >= cfg.K_min
     assert max(sizes) <= cfg.K_max_episode
     assert min(sizes) < max(sizes)
+    nominal = {
+        build_log_scenario(cfg, LOG_SEED_OFFSET + i).delivery_lag
+        for i in range(24)
+    }
+    assert min(nominal) >= 2
+    assert max(nominal) <= 6
+    assert min(nominal) < max(nominal)
     spec = build_log_scenario(cfg, LOG_SEED_OFFSET)
     shop = next(instance.node for instance in spec.scenario.nodes if instance.node.id == "S")
     assert shop.holding_rate == 0.01
     assert shop.order_fee == plain.order_fee
     assert spec.scenario.n_steps == 365
     assert cfg.K_min <= len(spec.active_subset) <= cfg.K_max_episode
-    lags = [edge.default_lead_time for edge in spec.scenario.edges if edge.buyer_id == "S"]
-    assert lags and set(lags) == {3}
+    pid = spec.active_subset[0]
+    lags = [
+        edge.default_lead_time
+        for edge in spec.scenario.edges
+        if edge.buyer_id == "S" and edge.supplier_id.startswith(f"F_{pid}_")
+    ]
+    assert len(lags) >= 2
+    assert len(set(lags)) == len(lags)
     assert spec.scenario.world_seed != LOG_SEED_OFFSET
 
 
@@ -375,9 +388,21 @@ def test_factories_stay_static_and_order_up_to_keeps_published_defaults():
     order_up_to = build_log_overrides(
         spec.scenario, behavior="order_up_to", policy_seed=1, delivery_lag=3
     )
+    from src.sim.node import FactoryNode
+
+    factories = [
+        instance.node
+        for instance in spec.scenario.nodes
+        if isinstance(instance.node, FactoryNode)
+    ]
+    by_pid: dict[str, list[str]] = {}
+    for node in factories:
+        by_pid.setdefault(node.produces_product_id, []).append(node.id)
     for pid in spec.active_subset:
-        assert isinstance(exploratory[f"F_{pid}"], StaticFactoryPolicy)
-        assert isinstance(order_up_to[f"F_{pid}"], StaticFactoryPolicy)
+        assert len(by_pid[pid]) >= 2
+        for factory_id in by_pid[pid]:
+            assert isinstance(exploratory[factory_id], StaticFactoryPolicy)
+            assert isinstance(order_up_to[factory_id], StaticFactoryPolicy)
     assert isinstance(exploratory["S"], ExploratoryPolicy)
     assert type(order_up_to["S"]) is OrderUpToPolicy
     bare = OrderUpToPolicy()
@@ -414,7 +439,18 @@ def test_each_half_calls_its_own_policy(monkeypatch):
     assert calls["order_up_to"] == 2
 
 
-def test_collector_builds_a_static_factory_per_sku(monkeypatch):
+def test_collector_builds_a_static_factory_per_factory_node(monkeypatch):
+    from src.sim.node import FactoryNode
+
+    spec = build_log_scenario(
+        collection_config(episode_length=2, k_active=2, delivery_lag=3),
+        episode_seed=1,
+    )
+    n_factories = sum(
+        1
+        for instance in spec.scenario.nodes
+        if isinstance(instance.node, FactoryNode)
+    )
     built: list[int] = []
     original = StaticFactoryPolicy.__init__
 
@@ -427,9 +463,11 @@ def test_collector_builds_a_static_factory_per_sku(monkeypatch):
         n_episodes_each=1,
         episode_length=2,
         k_active=2,
+        delivery_lag=3,
         seed_offset=14_000_000,
     )
-    assert len(built) == 4
+    assert n_factories >= 2
+    assert len(built) == n_factories * 2
 
 
 def test_collecting_twice_repeats_the_log():
@@ -450,6 +488,7 @@ def test_collector_writes_parquet(tmp_path):
         n_episodes_each=1,
         episode_length=2,
         k_active=2,
+        delivery_lag=3,
         seed_offset=14_000_000,
         path=path,
     )

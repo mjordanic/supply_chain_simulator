@@ -52,7 +52,10 @@ from src.sim.scenario import (
 # -0.48 and -0.24. Restoring the additive cycle reproduces the previous digest.
 # Re-baselined again when lifecycle stages advance on their own stream and
 # scale demand, and the run log records the stage series.
-EXPECTED_HASH = "a4dadb70d3f9e68fcdf8e834c562a56c8febf5fa5f8ac9bbbed01e7e1e2dec8d"
+# Re-baselined when the log gained ``global.supplier_fill_rate``. Stripping
+# that key reproduces the previous digest; canonical cash and inventory
+# did not move (factories on this scenario already listed at unit cost).
+EXPECTED_HASH = "7e6b8eaf3568526e94941d8bae4d4cc9d3feebdce08918731034fb3e3cc6d7f6"
 
 
 N_STEPS = 30

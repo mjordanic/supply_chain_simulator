@@ -505,6 +505,27 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                             sup_sales[pid] = sup_sales.get(pid, 0) + result.qty_filled
 
 
+def _supplier_fill_rate(ticks: list[dict], factory_ids: set[str]) -> float | None:
+    """Factory units filled divided by units requested.
+
+    ``None`` when the episode never asked a factory for anything.
+    """
+    requested = 0
+    filled = 0
+    for tick in ticks:
+        for flow in tick.get("node_flows") or []:
+            if flow.get("node_id") not in factory_ids:
+                continue
+            demand = int(flow.get("demand") or 0)
+            if demand <= 0:
+                continue
+            requested += demand
+            filled += int(flow.get("sales") or 0)
+    if requested <= 0:
+        return None
+    return filled / requested
+
+
 def _produce_factories(sim: "Simulation", current_tick: int) -> None:
     """Run factory produce step for all FactoryNodes."""
     from src.sim.node import FactoryNode
@@ -522,7 +543,7 @@ def _produce_factories(sim: "Simulation", current_tick: int) -> None:
                     produce_qty = int(cap.sample(sim.world_rng))
                 else:
                     produce_qty = int(cap)
-                action = {"produce_qty": produce_qty, "list_price": node.unit_cost}
+                action = {"produce_qty": produce_qty, "list_price": node.list_price}
 
             produce_qty = int(action.get("produce_qty", 0))
             node.inventory += produce_qty
@@ -803,7 +824,9 @@ class Runner:
                 (length ``n_steps + 1``), ``"lifecycle"``
                 (``{product_id: [stage, ...]}``, length ``n_steps + 1``,
                 stage before the first transition then after each tick),
-                and ``"events"``.
+                ``"events"``, and ``"supplier_fill_rate"`` (factory units
+                filled over units requested, or ``None`` when no factory
+                was asked for anything).
         """
         # Capture step-0 snapshot before any tick. Lifecycle series includes
         # the stage before the first transition, then the stage after each tick.
@@ -839,6 +862,13 @@ class Runner:
             for pid, stage in self._sim.lifecycle.stages.items():
                 lifecycle_series[pid].append(stage)
 
+        from src.sim.node import FactoryNode
+
+        factory_ids = {
+            node_id
+            for node_id, node in self._sim.nodes.items()
+            if isinstance(node, FactoryNode)
+        }
         return {
             "n_steps": self.scenario.n_steps,
             "ticks": ticks,
@@ -851,6 +881,7 @@ class Runner:
                 "market_demand": market_demand_series,
                 "lifecycle": lifecycle_series,
                 "events": {"occurrences": [None] * self.scenario.n_steps},
+                "supplier_fill_rate": _supplier_fill_rate(ticks, factory_ids),
             },
         }
 

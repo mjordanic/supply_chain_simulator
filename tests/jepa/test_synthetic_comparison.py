@@ -186,7 +186,7 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
 
 
 class _FixedOrder(IntermediatePolicy):
-    """Buys ``qty`` of every SKU from its factory, every tick."""
+    """Buys ``qty`` of every SKU from one of its factories, every tick."""
 
     def __init__(self, qty: int) -> None:
         super().__init__(policy_seed=0)
@@ -195,9 +195,17 @@ class _FixedOrder(IntermediatePolicy):
     def decide(self, obs_intermediate, central_table):
         inventory = obs_intermediate.get("inventory") or {}
         pids = sorted(inventory)
+        direct = obs_intermediate.get("direct_supplier_ids") or []
         prices = obs_intermediate.get("base_prices") or obs_intermediate.get("list_prices") or {}
+        order = {}
+        for pid in pids:
+            suppliers = sorted(
+                sid for sid in direct if str(sid).startswith(f"F_{pid}_")
+            )
+            if suppliers:
+                order[pid] = [(suppliers[0], self.qty)]
         return {
-            "order": {pid: [(f"F_{pid}", self.qty)] for pid in pids},
+            "order": order,
             "list_price": {pid: float(prices.get(pid, 0.0)) for pid in pids},
             "min_order_imposed": {pid: 0 for pid in pids},
             "promotions": {},

@@ -85,7 +85,11 @@ class TuningConfig:
     # ------------------------------------------------------------------
     # Simulator knobs (forwarded into the StoreTemplate)
     # ------------------------------------------------------------------
-    delivery_lag: int = 3
+    delivery_lag: int | None = None
+    """Nominal lead time. ``None`` draws an integer from 2 through 6.
+    An explicit value pins that nominal lag. Supplier edges still differ
+    around it (ADR 0031)."""
+
     holding_rate: float = 0.01
     order_fee: float = 50.0
 

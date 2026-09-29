@@ -90,22 +90,27 @@ class Node(ABC):
 class FactoryNode(Node):
     """A factory that produces exactly one product each tick.
 
-    Factories are the lowest echelon (level 0). They sell at ``list_price``
-    which is always equal to ``unit_cost`` (ADR 0013: zero-margin factories).
+    Factories are the lowest echelon (level 0). Authored setups sell at
+    ``list_price == unit_cost`` (ADR 0013). The replenishment episode
+    sampler may set ``list_price`` above ``unit_cost`` (ADR 0031). The
+    engine does not force the two equal.
 
     Fields
     ------
     produces_product_id:
         The single product ID this factory manufactures.
     unit_cost:
-        Manufacturing cost per unit. ``list_price`` must equal this.
+        Manufacturing cost per unit. Production debits this. ``list_price``
+        equals it on an authored zero-margin factory, and may be higher when
+        a markup was set (ADR 0031).
     capacity_per_tick:
         Maximum units producible per tick. Scalar or Distribution (sampled
         at construction time from ``init_seed``).
     inventory:
         Current on-hand stock (units). Starts at 0 by default.
     list_price:
-        Selling price per unit. Must equal ``unit_cost`` (zero-margin).
+        Selling price per unit. Equal to ``unit_cost`` unless a markup
+        was authored (ADR 0031).
     """
 
     produces_product_id: str = ""
