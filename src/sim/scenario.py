@@ -19,6 +19,7 @@ This module also hosts authoring helpers:
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from collections import namedtuple
 from dataclasses import dataclass, field, fields
@@ -335,8 +336,8 @@ class MarketParams:
 
     # Period of the seasonal sine wave in steps.
     cycle_len: int | Distribution
-    # Amplitude of the same wave.
-    cycle_amp: float | Distribution
+    # Amplitude of the same wave. Finite scalar with absolute value below 1.
+    cycle_amp: float
     # Step-0 demand / supply levels.
     init_demand: float
     init_supply: float
@@ -377,6 +378,24 @@ class MarketParams:
     supply_shock: Distribution
     # Base demand draw consumed once per (store, product, tick) in ``sample_demand``.
     base_demand: Distribution
+
+    def __post_init__(self) -> None:
+        """Reject a seasonal amplitude that can zero or negate the read-time multiplier.
+
+        The emitted cycle factor is ``1 + cycle_amp * sin(...)``. That factor
+        stays strictly positive for every step iff ``abs(cycle_amp) < 1``.
+        """
+        amp = self.cycle_amp
+        if isinstance(amp, bool) or not isinstance(amp, (int, float)):
+            amp_f = None
+        else:
+            amp_f = float(amp)
+        if amp_f is None or not math.isfinite(amp_f) or abs(amp_f) >= 1.0:
+            raise ValueError(
+                "MarketParams.cycle_amp must be a finite float with absolute "
+                "value below 1 so 1 + cycle_amp * sin(2π * step / cycle_len) "
+                f"stays positive; got {amp!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Recursive ``_serialize`` over every field."""

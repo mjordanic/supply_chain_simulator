@@ -230,10 +230,14 @@ the Kaggle download and this slice rule, when `data/m5/` is absent. Item ids
 are pinned in that notebook only after a quality report runs. See ADR 0026, ADR 0028.
 
 **Market** (`Market`, `src/sim/market.py`)
-Regional economic environment shared across nodes. Holds per-region demand/supply state, seasonal
-cycle, and trend drift. Provides `demand_multiplier(pid, region, tick) -> float` — bundles
-seasonality + regional shock + active disruption multipliers. `Market.tick()` advances per-region
-demand/supply state, cycle, trend. One Market per simulation run. See ADR 0015.
+Regional economic environment shared across nodes. Holds per-region demand and supply levels
+and a trend draw. The demand level updates as level × trend + shock, clamped to
+`[min_value, max_value]`. The seasonal cycle is not part of that update: `demand_multiplier`
+applies `1 + cycle_amp * sin(2π * step / cycle_len)` when the factor is read, and
+`MarketParams` rejects `abs(cycle_amp) >= 1`. Disruption shocks still write the stored level.
+`demand_multiplier(pid, region) -> float` bundles calendar seasonality, that cycle-scaled
+regional level, and any disruption already folded into the level. One Market per simulation
+run. See ADR 0015, ADR 0030.
 
 **Item** / **Ware** / **SKU**
 A product in the catalog. `Ware` is the static record (`product_id P####`, `name`, `category`,
@@ -504,3 +508,4 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0027](docs/adr/0027-frozen-holding-rate-retarget.md) — Holding-rate retarget re-scores a frozen predictor; imagined cash uses the new rate and feeds the ration. **Accepted.**
 - [ADR 0028](docs/adr/0028-m5-slice.md) — M5 arm is `shop-CA_1`, one factory at lead time 3, five FOODS items chosen on 2015 only. Test window is 2016-01-01 through 2016-04-24. **Accepted.**
 - [ADR 0029](docs/adr/0029-probe-stop-gradient.md) — Probe losses update the probes only. The encoder is trained by the latent loss and the anti-collapse penalty. **Accepted.**
+- [ADR 0030](docs/adr/0030-market-seasonal-cycle-read-time.md) — Seasonal cycle is a read-time multiplier on the demand level; `abs(cycle_amp) < 1`. Supersedes CRN baselines that depended on the integrated cycle. **Accepted.**

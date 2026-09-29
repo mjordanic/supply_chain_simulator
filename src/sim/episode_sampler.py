@@ -101,13 +101,14 @@ def _derive_seed(episode_seed: int, purpose: str) -> int:
 
 
 def default_market_params() -> MarketParams:
-    """Return a sensible ``MarketParams`` for synthetic/fallback episodes.
+    """Return ``MarketParams`` for synthetic episodes.
 
-    All fields are kept simple (scalar or low-variance distributions) so
-    the training signal is dominated by the store's pricing / ordering
-    decisions, not by exotic market dynamics.
+    ``demand_shock`` and ``trend`` are wide enough that two world seeds
+    produce different demand paths, and narrow enough that the level does
+    not sit on a clamp. The seasonal cycle is applied when the demand
+    factor is read, not inside the level update.
     """
-    from src.sim.distributions import Constant, Normal, Uniform
+    from src.sim.distributions import Normal, Uniform
 
     return MarketParams(
         cycle_len=365,
@@ -136,8 +137,8 @@ def default_market_params() -> MarketParams:
         cross_inv_lo=0.3,
         cross_inv_hi=0.7,
         cross_factor_range=(0.3, 1.6),
-        trend=Constant(1.0),
-        demand_shock=Normal(0.0, 0.01),
+        trend=Uniform(0.997, 1.003),
+        demand_shock=Normal(0.0, 0.02),
         supply_shock=Normal(0.0, 0.01),
         base_demand=Uniform(2, 8),
     )

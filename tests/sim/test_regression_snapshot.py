@@ -45,7 +45,12 @@ from src.sim.scenario import (
 # failing assertion prints the observed digest so it can be copied here.
 # Re-baselined for ADR 0019 issue 03: engine now charges holding cost and
 # order fee each tick on IntermediateNodes, changing cash/equity trajectories.
-EXPECTED_HASH = "085cb4904b59c0dc537762a872c38ea1829062bbea709a86f0dd0f67bbba7d90"
+# Re-baselined for ADR 0030: the seasonal cycle is a read-time multiplier, so
+# it no longer integrates into market_demand. On this scenario
+# (cycle_amp=0.0015, 30 ticks) the US demand level moved by mean |Δ| 0.0072
+# (max 0.0208); supply was unchanged; shop-store1/2 final cash moved by
+# -0.48 and -0.24. Restoring the additive cycle reproduces the previous digest.
+EXPECTED_HASH = "452af00424353958b87e6d1969baf588171047102aebe7501d1b8e187338c7d1"
 
 
 N_STEPS = 30

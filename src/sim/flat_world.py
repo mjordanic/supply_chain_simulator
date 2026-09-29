@@ -10,10 +10,12 @@ region, enabling pure demand replay:
 
 - ``seasonal`` = ``peak_factor`` or ``off_factor`` (whichever season applies).
   Set both to 1.0 so seasonal is always 1.0.
-- ``regional`` = ``max(demand_factor_min, market_state[region]["market_demand"])``.
+- ``regional`` = ``max(demand_factor_min, market_state[region]["market_demand"])``
+  times the read-time cycle ``1 + cycle_amp * sin(2π * step / cycle_len)``.
   Set ``init_demand = 1.0``, ``cycle_amp = 0``, ``demand_shock = Constant(0)``,
   ``trend = Constant(1.0)`` (multiplicative) so ``market_demand`` stays at 1.0
-  every tick. Set ``demand_factor_min = 0.0`` so ``max(0.0, 1.0) = 1.0``.
+  and the cycle factor stays at 1. Set ``demand_factor_min = 0.0`` so
+  ``max(0.0, 1.0) = 1.0``.
 
 Result: ``market.demand_multiplier(pid, region) == 1.0`` — bit-exact — for all
 (pid, region) on every tick.
