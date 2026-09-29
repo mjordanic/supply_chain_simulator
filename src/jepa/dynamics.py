@@ -58,10 +58,15 @@ def _groups(frame: pd.DataFrame):
         yield group.sort_values("tick", kind="mergesort")
 
 
+def _units(value: Any) -> float:
+    """Sum an arrival-age profile. The encoder still reads that total."""
+    return float(sum(float(part) for part in value))
+
+
 def _row_features(row: dict, delivery_lag: int) -> list[float]:
     return sku_features(
         on_hand=float(row["on_hand"]),
-        in_transit=float(row["in_transit"]),
+        in_transit=_units(row["in_transit"]),
         sales_window=list(row["sales_window"]),
         cash=float(row["cash"]),
         capacity=float(row["capacity"]),
@@ -72,7 +77,7 @@ def _row_features(row: dict, delivery_lag: int) -> list[float]:
 def _targets(row: dict) -> list[float]:
     return [
         float(row["next_on_hand"]),
-        float(row["next_in_transit"]),
+        _units(row["next_in_transit"]),
         float(row["next_sales"]),
     ]
 
@@ -325,7 +330,7 @@ class LatentDynamics(_ScaledDynamics):
             for start in range(len(rows) - horizon):
                 sequences.append(features[start : start + horizon + 1])
                 actions.append(
-                    [float(rows[start + step]["granted_qty"]) for step in range(horizon)]
+                    [float(rows[start + step]["filled_qty"]) for step in range(horizon)]
                 )
         if not sequences:
             return (
@@ -420,7 +425,7 @@ class DirectDynamics(_ScaledDynamics):
             for index in range(len(rows) - 1):
                 current = rows[index]
                 features.append(_row_features(current, self.delivery_lag))
-                actions.append(float(current["granted_qty"]))
+                actions.append(float(current["filled_qty"]))
                 targets.append(_targets(current))
         dim = _feature_dim(self.delivery_lag)
         if not features:

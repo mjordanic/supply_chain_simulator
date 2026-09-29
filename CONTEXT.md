@@ -169,15 +169,23 @@ minimum-order floor is zero. `OrderUpToPolicy` keeps fair-share. See ADR 0024, A
 Per-SKU rows on the tuner episode shape: 365 ticks, five active SKUs, lead time 3,
 `holding_rate` 0.01, the tuner order fee. Half the episodes run published-default
 `OrderUpToPolicy`; half run `ExploratoryPolicy`. Seeds start at `14_000_000`. A row holds
-on-hand, in-transit, a sales window of length `delivery_lag`, cash, capacity, the granted
-quantity, and the next on-hand, in-transit, and sales. Each row is labelled `order_up_to` or
-`exploratory`. Factories stay on `StaticFactoryPolicy`.
-The published file is `runs/jepa-replenishment/log/transitions.parquet`, written by
-`python -m src.jepa collect`, and is not committed.
+on-hand, an in-transit arrival-age profile, a sales window of length `delivery_lag`, cash,
+capacity, the quantity the buyer requested (`requested_qty`), the quantity Allocation filled
+(`filled_qty`), and the next on-hand, arrival-age profile, and sales. The profile index is
+age in ticks — units filled that many ticks ago and still in transit — and its length is
+`delivery_lag`. Age 0 is empty at decision time, because `decide` runs before Allocation.
+`filled_qty` is the recorded action. Each row is labelled `order_up_to` or `exploratory`.
+Factories stay on `StaticFactoryPolicy`.
+The published parquet is `runs/jepa-replenishment/log/transitions.parquet`, written by
+`python -m src.jepa collect`, with a `transitions.manifest.json` sidecar: episode count and
+seed range, episode length, `K_active`, delivery lag, holding rate, order fee, catalog
+identity, behaviour-mixture composition, the realised fraction of rows with a non-zero
+filled quantity, and the git SHA. Neither file is committed.
 
 **Latent replenishment planner** (`ReplenishmentPlanner(IntermediatePolicy)`, `fit_latent`, `src/jepa/plan.py`)
-Per-SKU buyer fit on the transition log. The encoder sees on-hand, in-transit, a sales window of
-length `delivery_lag`, cash, and capacity — not the Market multiplier or the disruption type. An
+Per-SKU buyer fit on the transition log. The encoder sees on-hand, the sum of the in-transit
+arrival-age profile, a sales window of length `delivery_lag`, cash, and capacity — not the
+Market multiplier or the disruption type. An
 EMA target encoder supplies the stopped embedding. An action-conditioned predictor unrolls
 open-loop for `H = delivery_lag`. The latent loss matches that target at each step, plus an
 anti-collapse penalty. Probes decode next on-hand, next in-transit, and step sales from a stopped
@@ -192,9 +200,9 @@ profit is what the next ration can spend, so a frozen planner can be retargeted 
 uses the textbook fair-share split. See ADR 0024, ADR 0025, ADR 0027, ADR 0029.
 
 **Direct replenishment predictor** (`fit_direct`, `src/jepa/plan.py`)
-The same planner and the same priority ration, trained to emit next on-hand, next in-transit, and
-step sales from the observation window and the granted quantity. No latent target and no EMA
-encoder. See ADR 0029.
+The same planner and the same priority ration, trained to emit next on-hand, the summed next
+arrival-age profile, and step sales from the observation window and the quantity Allocation
+filled. No latent target and no EMA encoder. See ADR 0029.
 
 **Synthetic comparison** (`compare_synthetic`, `src/jepa/eval.py`)
 Scores the latent planner, the direct planner, and the latent planner with textbook fair-share

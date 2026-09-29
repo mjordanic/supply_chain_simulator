@@ -18,7 +18,7 @@ into the paper.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** existing transition-log tests; the `Transition log`, `Allocation`
 and `Ration` entries in `CONTEXT.md`; ADR 0012 (central table FCFS allocation) for
@@ -28,19 +28,19 @@ the clamp order that `execute_buy` applies.
 `runs/` (gitignored) — it is an input to the regenerated paper, not a committed
 file itself. Anything that must be committed goes in `docs/`.
 
-- [ ] The recorded action is the quantity Allocation filled, not the quantity the
+- [x] The recorded action is the quantity Allocation filled, not the quantity the
       buyer requested.
-- [ ] The requested quantity is retained as its own column, so the size of the
+- [x] The requested quantity is retained as its own column, so the size of the
       clamp is measurable.
-- [ ] A test covers ticks where the request was clamped by offer availability, by
+- [x] A test covers ticks where the request was clamped by offer availability, by
       buyer cash, and by buyer capacity, and asserts the two columns differ there.
-- [ ] In-transit units are recorded as an arrival-age profile rather than a single
+- [x] In-transit units are recorded as an arrival-age profile rather than a single
       summed scalar.
-- [ ] A manifest sidecar records every parameter that produced the log: episode
+- [x] A manifest sidecar records every parameter that produced the log: episode
       count and seed range, episode length, `K_active`, delivery lag, holding
       rate, order fee, catalog identity, behaviour mixture composition, and the
       git SHA.
-- [ ] The realised fraction of transitions carrying a non-zero order is computed
+- [x] The realised fraction of transitions carrying a non-zero order is computed
       and written to the manifest.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the new
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the new
       columns is updated in this ticket.

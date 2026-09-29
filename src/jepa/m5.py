@@ -388,7 +388,7 @@ def collect_adaptation_log(
     """
     import pandas as pd
 
-    from src.jepa.log import COLUMNS, _TransitionRecorder, _transitions
+    from src.jepa.log import COLUMNS, _TransitionRecorder, _annotate_steps, _transitions
     from src.jepa.policy import ExploratoryPolicy
     from src.sim.policy import OrderUpToPolicy
 
@@ -402,7 +402,8 @@ def collect_adaptation_log(
     for episode_seed, (name, policy) in enumerate(behaviors):
         wrapped = wrap_price_replay(policy, prices, scenario.n_steps)
         recorder = _TransitionRecorder(wrapped, delivery_lag)
-        _run_scenario(scenario, recorder, prices)
+        run_log = _run_scenario(scenario, recorder, prices)
+        _annotate_steps(recorder.steps, run_log, scenario, SHOP_ID, delivery_lag)
         rows.extend(_transitions(recorder.steps, episode_seed, name))
     return pd.DataFrame(rows, columns=list(COLUMNS))
 
