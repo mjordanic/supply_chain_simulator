@@ -12,11 +12,16 @@ Seams, from the issue acceptance criteria:
 3. Manifest. Writing the parquet also writes a sidecar with the episode
    parameters, catalog identity, behaviour mixture, realised non-zero-order
    fraction, and git SHA.
-4. Mix and shape. Half the episodes are published-default ``OrderUpToPolicy``
-   and half are ``ExploratoryPolicy``. Defaults are 365 ticks, K sampled
-   from 1 to 30, a sampled nominal delivery lag, ``holding_rate`` 0.01, the tuner order fee, 64 episodes of
-   each behavior, seed offset ``14_000_000``. Factories stay on
+4. Mix and shape. Every textbook family is sampled from the tuning search
+   spaces, plus exploratory, never-order, and a heavier over-order arm.
+   Planning depth varies by episode. Defaults are 365 ticks, K sampled
+   from 1 to 30, a sampled nominal delivery lag, one ``holding_rate`` of
+   0.01, the tuner order fee, a base of 64 episodes per arm (over-order
+   weighted higher), seed offset ``14_000_000``. Factories stay on
    ``StaticFactoryPolicy``. The package does not import the RL stack.
+5. Coverage. The manifest's realised non-zero fill is materially above
+   13%, and the log visits low-inventory, high-inventory, capacity-bound,
+   and cash-bound states.
 """
 
 from __future__ import annotations
@@ -27,21 +32,35 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from src.jepa.dynamics import ARRIVAL_AGE_SLOTS, SALES_WINDOW, arrival_age_profile
 from src.jepa.log import (
+    BEHAVIORS,
+    COVER_HORIZON_TICKS,
     EPISODES_EACH,
     LOG_SEED_OFFSET,
+    behavior_schedule,
     build_log_overrides,
     build_log_scenario,
     catalog_identity,
     collect_episode_transitions,
     collect_transition_log,
     collection_config,
+    episodes_for,
+    log_buyer,
 )
-from src.jepa.policy import ExploratoryPolicy
-from src.sim.policy import IntermediatePolicy, OrderUpToPolicy, StaticFactoryPolicy
+from src.jepa.policy import ExploratoryPolicy, NeverOrderPolicy, OverOrderPolicy
+from src.sim.policy import (
+    IntermediatePolicy,
+    OrderUpToPolicy,
+    PeriodicOrderUpToPolicy,
+    PeriodicReorderPolicy,
+    ReorderPointPolicy,
+    StaticFactoryPolicy,
+)
 from src.tuning.config import TuningConfig
+from src.tuning.search_spaces import sample_textbook_policy
 
 
 def _as_window(value) -> list[int]:
@@ -338,7 +357,7 @@ def test_decision_time_lots_match_the_logged_arrival_profile():
         assert _as_profile(row.in_transit) == arrival_age_profile(lots, int(row.tick))
 
 
-def test_smoke_log_is_half_order_up_to_and_half_exploratory():
+def test_smoke_log_covers_every_mixture_arm():
     lag = 3
     df = collect_transition_log(
         n_episodes_each=1,
@@ -348,12 +367,12 @@ def test_smoke_log_is_half_order_up_to_and_half_exploratory():
         seed_offset=14_000_000,
     )
 
-    assert set(df["behavior"]) == {"order_up_to", "exploratory"}
+    schedule = behavior_schedule(1, 14_000_000)
+    assert set(df["behavior"]) == set(BEHAVIORS)
     counts = df.groupby("behavior")["episode_seed"].nunique()
-    assert int(counts["order_up_to"]) == 1
-    assert int(counts["exploratory"]) == 1
-    assert set(df.loc[df["behavior"] == "order_up_to", "episode_seed"]) == {14_000_000}
-    assert set(df.loc[df["behavior"] == "exploratory", "episode_seed"]) == {14_000_001}
+    for behavior, seed in schedule:
+        assert int(counts[behavior]) == episodes_for(behavior, 1)
+        assert seed in set(df.loc[df["behavior"] == behavior, "episode_seed"])
 
     required = {
         "episode_seed",
@@ -378,7 +397,7 @@ def test_smoke_log_is_half_order_up_to_and_half_exploratory():
 
     # Last tick has no next observation, so each episode contributes
     # (length - 1) ticks × K rows.
-    assert len(df) == 2 * 2 * (3 - 1)
+    assert len(df) == len(schedule) * 2 * (3 - 1)
     assert df.groupby("episode_seed")["product_id"].nunique().eq(2).all()
 
     for (_, _), group in df.groupby(["episode_seed", "product_id"]):
@@ -400,8 +419,8 @@ def test_smoke_log_is_half_order_up_to_and_half_exploratory():
     for (_, _), group in df.groupby(["episode_seed", "tick"]):
         assert group["cash"].nunique() == 1
         assert group["capacity"].nunique() == 1
-        transit = sum(sum(_as_profile(value)) for value in group["in_transit"])
-        free = int(group["capacity"].iloc[0]) - int(group["on_hand"].sum()) - transit
+        # Allocation clamps on on-hand, not on the in-transit pipeline.
+        free = int(group["capacity"].iloc[0]) - int(group["on_hand"].sum())
         assert int(group["filled_qty"].sum()) <= max(0, free)
         assert (group["filled_qty"] >= 0).all()
         assert (group["filled_qty"] <= group["requested_qty"]).all()
@@ -454,7 +473,7 @@ def test_published_collector_matches_the_tuner_episode_shape():
     assert spec.scenario.world_seed != LOG_SEED_OFFSET
 
 
-def test_factories_stay_static_and_order_up_to_keeps_published_defaults():
+def test_factories_stay_static_and_order_up_to_uses_the_sampled_space():
     spec = build_log_scenario(
         collection_config(episode_length=2, k_active=2),
         episode_seed=1,
@@ -481,39 +500,42 @@ def test_factories_stay_static_and_order_up_to_keeps_published_defaults():
             assert isinstance(exploratory[factory_id], StaticFactoryPolicy)
             assert isinstance(order_up_to[factory_id], StaticFactoryPolicy)
     assert isinstance(exploratory["S"], ExploratoryPolicy)
-    assert type(order_up_to["S"]) is OrderUpToPolicy
-    bare = OrderUpToPolicy()
+    sampled, params = sample_textbook_policy("order_up_to", 1)
     got = order_up_to["S"]
-    assert got.cover_horizon_ticks == bare.cover_horizon_ticks
-    assert got.safety_lead_pct_of_lag == bare.safety_lead_pct_of_lag
-    assert got.min_qty == bare.min_qty == 0
-    assert got.per_supplier_min_order_floor == bare.per_supplier_min_order_floor == 0
-    assert got.delivery_lag == bare.delivery_lag
+    assert type(got) is type(sampled) is OrderUpToPolicy
+    assert got.cover_horizon_ticks == params["cover_horizon_ticks"]
+    assert got.safety_lead_pct_of_lag == params["safety_lead_pct_of_lag"]
+    assert got.min_qty == 0
+    assert got.per_supplier_min_order_floor == 0
 
 
-def test_each_half_calls_its_own_policy(monkeypatch):
-    calls = {"exploratory": 0, "order_up_to": 0}
-    exploratory = ExploratoryPolicy.decide
-    order_up_to = OrderUpToPolicy.decide
+def test_each_arm_calls_its_own_policy(monkeypatch):
+    classes = {
+        "order_up_to": OrderUpToPolicy,
+        "reorder_point": ReorderPointPolicy,
+        "periodic_order_up_to": PeriodicOrderUpToPolicy,
+        "periodic_reorder": PeriodicReorderPolicy,
+        "exploratory": ExploratoryPolicy,
+        "never_order": NeverOrderPolicy,
+        "over_order": OverOrderPolicy,
+    }
+    calls = {name: 0 for name in classes}
+    for name, cls in classes.items():
+        original = cls.decide
 
-    def exploratory_decide(self, obs, table):
-        calls["exploratory"] += 1
-        return exploratory(self, obs, table)
+        def counted(self, *args, _name=name, _original=original, **kwargs):
+            calls[_name] += 1
+            return _original(self, *args, **kwargs)
 
-    def order_up_to_decide(self, *args, **kwargs):
-        calls["order_up_to"] += 1
-        return order_up_to(self, *args, **kwargs)
+        monkeypatch.setattr(cls, "decide", counted)
 
-    monkeypatch.setattr(ExploratoryPolicy, "decide", exploratory_decide)
-    monkeypatch.setattr(OrderUpToPolicy, "decide", order_up_to_decide)
     collect_transition_log(
         n_episodes_each=1,
         episode_length=2,
         k_active=2,
         seed_offset=14_000_000,
     )
-    assert calls["exploratory"] == 2
-    assert calls["order_up_to"] == 2
+    assert calls == {name: episodes_for(name, 1) * 2 for name in classes}
 
 
 def test_collector_builds_a_static_factory_per_factory_node(monkeypatch):
@@ -544,7 +566,7 @@ def test_collector_builds_a_static_factory_per_factory_node(monkeypatch):
         seed_offset=14_000_000,
     )
     assert n_factories >= 2
-    assert len(built) == n_factories * 2
+    assert len(built) == n_factories * len(behavior_schedule(1, 14_000_000))
 
 
 def test_collecting_twice_repeats_the_log():
@@ -572,7 +594,7 @@ def test_collector_writes_parquet(tmp_path):
     assert path.is_file()
     loaded = pd.read_parquet(path)
     assert len(loaded) == len(frame)
-    assert set(loaded["behavior"]) == {"order_up_to", "exploratory"}
+    assert set(loaded["behavior"]) == set(BEHAVIORS)
     assert len(_as_profile(loaded["in_transit"].iloc[0])) == ARRIVAL_AGE_SLOTS
     assert int(loaded["delivery_lag"].iloc[0]) == 3
     assert "filled_qty" in loaded.columns
@@ -598,21 +620,36 @@ def test_collector_writes_a_manifest_beside_the_log(tmp_path):
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     nonzero = float((frame["filled_qty"] > 0).mean()) if len(frame) else 0.0
 
-    assert manifest["episode_count"] == 2
+    schedule = behavior_schedule(1, 14_000_000)
+    assert manifest["episode_count"] == len(schedule)
     assert manifest["seed_min"] == 14_000_000
-    assert manifest["seed_max"] == 14_000_001
+    assert manifest["seed_max"] == 14_000_000 + len(schedule) - 1
     assert manifest["episode_length"] == 2
     assert manifest["K_active"] == 2
     assert manifest["delivery_lag"] == 3
     assert manifest["holding_rate"] == config.holding_rate
+    assert isinstance(manifest["holding_rate"], float)
     assert manifest["order_fee"] == config.order_fee
     assert manifest["catalog_identity"] == catalog_identity(catalog)
-    assert manifest["behavior_mixture"] == [
-        {"behavior": "order_up_to", "episodes": 1, "policy": "OrderUpToPolicy"},
-        {"behavior": "exploratory", "episodes": 1, "policy": "ExploratoryPolicy"},
-    ]
+    mixture = {row["behavior"]: row for row in manifest["behavior_mixture"]}
+    assert list(mixture) == list(BEHAVIORS)
+    for behavior in BEHAVIORS:
+        arm = mixture[behavior]
+        assert arm["episodes"] == episodes_for(behavior, 1)
+        assert len(arm["hyperparameters"]) == episodes_for(behavior, 1)
+        for hyper in arm["hyperparameters"]:
+            _policy, expected = log_buyer(behavior, hyper["episode_seed"], 3)
+            assert set(hyper) == set(expected)
+            for key, value in expected.items():
+                assert hyper[key] == pytest.approx(value)
     assert manifest["git_sha"] == sha
     assert manifest["nonzero_order_fraction"] == nonzero
+    assert set(manifest["state_coverage"]) == {
+        "low_inventory",
+        "high_inventory",
+        "capacity_bound",
+        "cash_bound",
+    }
 
 
 def test_log_package_does_not_import_the_rl_stack():
@@ -621,15 +658,93 @@ def test_log_package_does_not_import_the_rl_stack():
         assert "src.rl" not in text
         assert "optuna" not in text
 
-    # Collection stays on OrderUpTo and the exploratory policy. The comparison
-    # entry point is the module that scores the other textbook policies.
-    collected = (Path("src/jepa") / "log.py").read_text() + (Path("src/jepa") / "policy.py").read_text()
-    assert "Periodic" not in collected
-    assert "ReorderPoint" not in collected
-
     script = (
         "import src.jepa, sys\n"
         "bad = [name for name in sys.modules if name == 'src.rl' or name.startswith('src.rl.')]\n"
         "assert not bad, bad\n"
     )
     subprocess.check_call([sys.executable, "-c", script])
+
+
+def _stored(policy, key: str):
+    """Attribute on the buyer, or on the inner textbook policy it wraps."""
+    if hasattr(policy, key):
+        return getattr(policy, key)
+    inner = getattr(policy, "_inner", None)
+    if inner is not None and hasattr(inner, key):
+        return getattr(inner, key)
+    raise AssertionError(f"{type(policy).__name__} dropped {key}")
+
+
+def test_textbook_buyers_match_the_tuning_search_spaces():
+    """The log does not invent ranges. It calls the space factories."""
+    for behavior in (
+        "order_up_to",
+        "reorder_point",
+        "periodic_order_up_to",
+        "periodic_reorder",
+    ):
+        for seed in (0, 1, 14_000_000):
+            policy, hyper = log_buyer(behavior, seed, delivery_lag=4)
+            sampled, params = sample_textbook_policy(behavior, seed)
+            assert type(policy) is type(sampled)
+            assert hyper["planning_depth"] == params["cover_horizon_ticks"]
+            for key, value in params.items():
+                assert hyper[key] == value
+                assert _stored(policy, key) == _stored(sampled, key) == value
+
+
+def test_planning_depth_varies_across_log_episodes():
+    depths: dict[str, set[int]] = {behavior: set() for behavior in BEHAVIORS}
+    for behavior, seed in behavior_schedule(8, LOG_SEED_OFFSET):
+        _policy, hyper = log_buyer(behavior, seed, delivery_lag=3)
+        depths[behavior].add(int(hyper["planning_depth"]))
+    for behavior in ("order_up_to", "reorder_point", "exploratory", "over_order"):
+        assert len(depths[behavior]) > 1
+    assert depths["never_order"] == {0}
+    low, high = COVER_HORIZON_TICKS
+    assert all(low <= depth <= high for depth in depths["exploratory"])
+    assert all(low <= depth <= high for depth in depths["order_up_to"])
+    assert all(depth > high for depth in depths["over_order"])
+
+
+def test_published_log_uses_one_holding_rate():
+    cfg = collection_config()
+    assert cfg.holding_rate == 0.01
+    rates = set()
+    for offset in range(5):
+        spec = build_log_scenario(cfg, LOG_SEED_OFFSET + offset)
+        shop = next(instance.node for instance in spec.scenario.nodes if instance.node.id == "S")
+        rates.add(shop.holding_rate)
+    assert rates == {0.01}
+
+
+@pytest.fixture(scope="module")
+def mixture_log(tmp_path_factory):
+    """Two episodes of each arm, eight of over-order, on the capacity-hitting seed block."""
+    path = tmp_path_factory.mktemp("mixture") / "transitions.parquet"
+    frame = collect_transition_log(
+        n_episodes_each=2,
+        episode_length=80,
+        k_active=2,
+        delivery_lag=3,
+        seed_offset=LOG_SEED_OFFSET,
+        path=path,
+    )
+    manifest = json.loads(path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    return frame, manifest
+
+
+def test_nonzero_order_fraction_is_materially_above_the_old_log(mixture_log):
+    frame, manifest = mixture_log
+    realised = float((frame["filled_qty"] > 0).mean())
+    assert manifest["nonzero_order_fraction"] == pytest.approx(realised)
+    assert realised > 0.18
+
+
+def test_state_coverage_is_asserted_on_the_collected_log(mixture_log):
+    frame, manifest = mixture_log
+    coverage = manifest["state_coverage"]
+    assert coverage["low_inventory"] == pytest.approx(float((frame["on_hand"] == 0).mean()))
+    for key in ("low_inventory", "high_inventory", "capacity_bound", "cash_bound"):
+        assert coverage[key] > 0.0

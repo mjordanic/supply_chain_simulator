@@ -168,8 +168,9 @@ anchor for RL evaluation. See ADR 0006, ADR 0008.
 **Exploratory replenishment policy** (`ExploratoryPolicy(IntermediatePolicy)`, `src/jepa/policy.py`)
 Ordering-only buyer for the latent-replenishment study. Each tick draws a cover from `{0, 1, 2, 4}`
 lead times of the textbook censored-sales rate and a priority over SKUs, both from `policy_rng`.
-Before the ration the quantity is `max(0, round(cover × rate × delivery_lag) − position)`, with
-position equal to on-hand plus in-transit. A greedy fill grants units in that priority order until
+Before the ration the quantity is `max(0, round(cover × rate × horizon) − position)`, with
+position equal to on-hand plus in-transit. `horizon` is `delivery_lag` unless `planning_depth`
+is set; the rate window stays `delivery_lag`. A greedy fill grants units in that priority order until
 free capacity or cash is gone. `list_price` stays at `base_price`, promotions are empty, and the
 minimum-order floor is zero. `OrderUpToPolicy` keeps fair-share. See ADR 0024, ADR 0025.
 
@@ -177,8 +178,11 @@ minimum-order floor is zero. `OrderUpToPolicy` keeps fair-share. See ADR 0024, A
 Per-SKU rows on the tuner episode shape: 365 ticks, `K` sampled per episode from
 1 to 30, a nominal delivery lag sampled from 2 through 6 unless pinned, `holding_rate` 0.01, the tuner order fee. The synthetic
 catalog is about 750 SKUs, heterogeneous in demand scale, margin, volatility, and
-lifecycle rate. Half the episodes run published-default
-`OrderUpToPolicy`; half run `ExploratoryPolicy`. Seeds start at `14_000_000`. A row holds
+lifecycle rate. The mixture draws every textbook family, with hyperparameters sampled from
+the tuning search spaces, plus `ExploratoryPolicy`, never-order, and over-order. Over-order
+contributes more episodes than each other arm, so the realised non-zero fill is not the
+old handful of competent orders. Planning depth varies by episode. Every episode uses one
+holding rate. Seeds start at `14_000_000`. A row holds
 on-hand, an in-transit arrival-age profile, a sales window whose length is the encoder's
 sales-window knob (28 ticks, not the delivery lag), cash, capacity, the episode's nominal
 delivery lag, the quantity the buyer requested (`requested_qty`), the quantity Allocation
@@ -186,14 +190,16 @@ filled (`filled_qty`), and the next on-hand, arrival-age profile, and sales. The
 index is age in ticks — units filled that many ticks ago and still in transit — and its
 length is the longest study edge (10), not the episode's nominal lag. Age 0 is empty at
 decision time, because `decide` runs before Allocation.
-`filled_qty` is the recorded action. Each row is labelled `order_up_to` or `exploratory`.
+`filled_qty` is the recorded action. Each row is labelled with its behaviour arm.
 Factories stay on `StaticFactoryPolicy`.
 The published parquet is `runs/jepa-replenishment/log/transitions.parquet`, written by
 `python -m src.jepa collect`, with a `transitions.manifest.json` sidecar: episode count and
 seed range, episode length, `K_active` (null when K is sampled, plus `K_min` and
 `K_max_episode`), delivery lag, holding rate, order fee, catalog
-identity, behaviour-mixture composition, the realised fraction of rows with a non-zero
-filled quantity, and the git SHA. `delivery_lag` in the manifest is null when the lag
+identity, behaviour-mixture composition and the sampled hyperparameters, the realised
+fraction of rows with a non-zero filled quantity, state coverage (low inventory, high
+inventory, capacity-bound, cash-bound), and the git SHA. `holding_rate` in the manifest
+is one number. `delivery_lag` in the manifest is null when the lag
 was sampled. A completed `Runner` log records `global.supplier_fill_rate`: factory units
 filled divided by factory units requested, or null when nothing was requested.
 Neither the parquet nor the manifest is committed.

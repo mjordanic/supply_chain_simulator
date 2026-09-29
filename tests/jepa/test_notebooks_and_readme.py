@@ -10,8 +10,8 @@ Seams, from the issue acceptance criteria:
    in-distribution rule and the retarget rule next to the loaded tables.
 3. Missing artifacts. When that directory is absent, the results notebook
    prints the published command that fills it and does not raise.
-4. Root README. Exact commands for the published log (64 episodes of each
-   behavior), the fit, the two 150-trial ``OrderUpToPolicy`` studies
+4. Root README. Exact commands for the published log (base count 64, with
+   over-order weighted higher), the fit, the two 150-trial ``OrderUpToPolicy`` studies
    (``holding_rate`` 0.01 and 0.05), and the synthetic eval on the tuner
    holdout. Raw outputs stay under ``runs/jepa-replenishment/`` and are
    not committed.
@@ -164,7 +164,9 @@ def test_root_readme_publishes_the_commands_and_leaves_runs_uncommitted():
         M5_COMMAND,
     ):
         assert command in section
-    assert "64 episodes of each behavior" in section
+    assert "Over-order" in section
+    assert "contributes 512" in section
+    assert "one `holding_rate` of 0.01" in section
     assert "OrderUpToPolicy" in section
     assert "150" in section
     assert "0.01" in section and "0.05" in section

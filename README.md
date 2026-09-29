@@ -359,12 +359,14 @@ below instead of inventing numbers. Package notes:
 
 Raw outputs stay under `runs/jepa-replenishment/` and are not committed.
 
-Published log — 64 episodes of each behavior (published-default `OrderUpToPolicy`
-and the exploratory cover policy), seed offset `14_000_000`, 365 ticks, `K`
-sampled from 1 to 30 out of a synthetic catalog of about 750 SKUs. Each episode
-samples a nominal delivery lag from 2 through 6 and gives every SKU three
-suppliers, with a markup over unit cost and a longer lead time on the cheaper
-offer:
+Published log — `--episodes-each 64` is the base count. Each textbook family,
+the exploratory policy, and never-order contribute 64 episodes. Over-order
+contributes 512. Textbook hyperparameters are sampled from the tuning search
+spaces. Planning depth varies by episode. Seed offset `14_000_000`, 365 ticks,
+one `holding_rate` of 0.01, `K` sampled from 1 to 30 out of a synthetic catalog
+of about 750 SKUs. Each episode samples a nominal delivery lag from 2 through
+6 and gives every SKU three suppliers, with a markup over unit cost and a
+longer lead time on the cheaper offer:
 
 ```bash
 uv run python -m src.jepa collect --episodes-each 64 --output runs/jepa-replenishment/log/transitions.parquet

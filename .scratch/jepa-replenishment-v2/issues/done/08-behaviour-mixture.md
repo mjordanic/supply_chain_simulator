@@ -11,7 +11,7 @@ visits — not behaviour quality.
 
 **Blocked by:** 02, 07.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** existing transition-log tests; the `Transition log`,
 `Exploratory replenishment policy`, `TextbookReorderPolicy family` and
@@ -19,19 +19,19 @@ visits — not behaviour quality.
 define the hyperparameter distributions this ticket samples from — reuse them
 rather than inventing new ranges.
 
-- [ ] The behaviour mixture draws from all four `TextbookReorderPolicy` families
+- [x] The behaviour mixture draws from all four `TextbookReorderPolicy` families
       with hyperparameters sampled from the existing tuning search spaces.
-- [ ] `ExploratoryPolicy` and deliberately poor arms — never-order and
+- [x] `ExploratoryPolicy` and deliberately poor arms — never-order and
       over-order — are included, so the log covers states a competent policy
       never reaches.
-- [ ] Behaviour policies vary their own planning depth across log episodes.
-- [ ] The realised fraction of transitions carrying a non-zero order is reported
+- [x] Behaviour policies vary their own planning depth across log episodes.
+- [x] The realised fraction of transitions carrying a non-zero order is reported
       in the manifest and is materially higher than the current 13%.
-- [ ] State coverage is reported: the log visits low-inventory, high-inventory,
+- [x] State coverage is reported: the log visits low-inventory, high-inventory,
       capacity-bound and cash-bound states, asserted rather than assumed.
-- [ ] The published log is collected at a single holding rate, so the
+- [x] The published log is collected at a single holding rate, so the
       holding-rate transfer claim stays a zero-shot claim.
-- [ ] The manifest records the mixture composition and the sampled
+- [x] The manifest records the mixture composition and the sampled
       hyperparameters.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the new
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the new
       mixture is updated in this ticket.

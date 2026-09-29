@@ -328,3 +328,42 @@ def test_factories_importable_from_tuning_package():
     assert f2 is reorder_point_space
     assert f3 is periodic_order_up_to_space
     assert f4 is periodic_reorder_space
+
+
+class _Bounds:
+    """Records the inclusive range each ``suggest_*`` call was given."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, tuple[float, float]] = {}
+
+    def suggest_int(self, name: str, low: int, high: int, *args, **kwargs) -> int:
+        del args, kwargs
+        self.seen[name] = (int(low), int(high))
+        return int(low)
+
+    def suggest_float(self, name: str, low: float, high: float, *args, **kwargs) -> float:
+        del args, kwargs
+        self.seen[name] = (float(low), float(high))
+        return float(low)
+
+
+def test_factories_suggest_the_documented_ranges():
+    """Narrowing a constant must fail here. The numbers are the old literals."""
+    shared = _Bounds()
+    order_up_to_space(shared)
+    assert shared.seen["cover_horizon_ticks"] == (1, 30)
+    assert shared.seen["safety_lead_pct_of_lag"] == (0.0, 3.0)
+    assert shared.seen["stockout_safety_bonus_pct_of_lag"] == (0.0, 2.0)
+
+    reorder = _Bounds()
+    reorder_point_space(reorder)
+    assert reorder.seen["Q"] == (1, 30)
+
+    periodic = _Bounds()
+    periodic_order_up_to_space(periodic)
+    assert periodic.seen["review_interval"] == (1, 14)
+
+    both = _Bounds()
+    periodic_reorder_space(both)
+    assert both.seen["review_interval"] == (1, 14)
+    assert "Q" not in both.seen

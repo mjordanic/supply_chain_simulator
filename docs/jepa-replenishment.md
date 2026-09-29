@@ -42,10 +42,11 @@ repeated run. The world seed is not the search seed.
 ration, with no latent and no EMA target. A fair-share arm takes the
 latent model's covers and rations them with textbook fair-share.
 
-The training log is half published-default `OrderUpToPolicy` and half
-random covers from that grid with random priorities, on the tuner
-episode shape. The other three textbook policies stay at published defaults
-and are not inside the log. The in-distribution protocol uses
+The training log mixes all four textbook families, with hyperparameters
+sampled from the tuning search spaces, plus the exploratory policy and
+never-order and over-order arms. Planning depth varies across episodes.
+The log is collected at a single holding rate. Untuned textbook policies
+stay at published defaults on the holdout table. The in-distribution protocol uses
 the tuner holdout at `holding_rate = 0.01`. The anchor is an
 `OrderUpToPolicy` tuned at that rate. The retarget keeps the predictor
 trained at `holding_rate = 0.01`. Imagined cash is rolled forward at

@@ -4,8 +4,9 @@ Seams, from the issue acceptance criteria:
 
 1. Cover formula. Every tick the policy draws a cover in ``{0, 1, 2, 4}``
    and, before the ration, orders
-   ``max(0, round(cover × censored-sales rate × delivery_lag) − position)``
-   with position = on-hand + in-transit. The rate is the textbook
+   ``max(0, round(cover × censored-sales rate × horizon) − position)``
+   with position = on-hand + in-transit. ``horizon`` is ``delivery_lag``
+   unless ``planning_depth`` is set. The rate is the textbook
    censored-sales mean over ``delivery_lag``, including the current tick.
 2. Ordering only. ``list_price`` equals ``base_price``, promotions are
    empty, and ``min_order_imposed`` is zero.
@@ -151,6 +152,28 @@ def _seed_with_equal_positive_covers(lag: int, sales: int) -> tuple[int, int]:
         if covers["A"] == covers["B"] and covers["A"] > 0:
             return seed, covers["A"]
     raise AssertionError("no seed drew equal positive covers")
+
+
+def test_planning_depth_changes_the_order_horizon():
+    """A deeper horizon raises the target. The rate window stays the lag."""
+    lag = 3
+    sales = 4
+    seed, cover = _seed_with_equal_positive_covers(lag, sales)
+    obs = _obs(
+        inventory={"A": 0, "B": 0},
+        observed_sales={"A": sales, "B": sales},
+    )
+    table = _table({"A": ("F_A", 4.0), "B": ("F_B", 4.0)})
+    short = ExploratoryPolicy(policy_seed=seed, delivery_lag=lag, planning_depth=4)
+    deep = ExploratoryPolicy(policy_seed=seed, delivery_lag=lag, planning_depth=12)
+    short_action = short.decide(obs, table)
+    deep_action = deep.decide(obs, table)
+    assert short.proposals[-1]["covers"] == deep.proposals[-1]["covers"] == {"A": cover, "B": cover}
+    short_qty = _granted(short_action, "A") + _granted(short_action, "B")
+    deep_qty = _granted(deep_action, "A") + _granted(deep_action, "B")
+    assert deep_qty > short_qty
+    assert short_qty == 2 * max(0, round(cover * sales * 4))
+    assert deep_qty == 2 * max(0, round(cover * sales * 12))
 
 
 def test_higher_priority_takes_the_whole_pool_when_only_one_cover_fits():
