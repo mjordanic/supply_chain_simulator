@@ -211,7 +211,9 @@ lead time), cash, capacity, and the nominal delivery lead time — not the Marke
 the disruption identity, or the calendar. Feature width does not follow the sampled lag, so
 one fitted model serves every episode. An
 EMA target encoder supplies the stopped embedding. An action-conditioned predictor unrolls
-open-loop for `H = delivery_lag`. The latent loss matches that target at each step, plus an
+open-loop for `model_unroll_steps`. That length defaults to the planning horizon
+`horizon_multiple * delivery_lag` (`horizon_multiple` defaults to 4) and is not the
+delivery lead time. The latent loss matches that target at each step, plus an
 anti-collapse penalty. Probes decode next on-hand, the next arrival-age profile, and step sales
 from a stopped embedding and do not train the encoder. The planner sums that profile when it
 scores inventory position. `fit(epochs=N)` takes N shuffled passes of 256-row minibatches over
@@ -242,8 +244,10 @@ search and uses the textbook fair-share split. See ADR 0024, ADR 0025, ADR 0027,
 **Direct replenishment predictor** (`fit_direct`, `src/jepa/plan.py`)
 The same planner and the same priority ration, trained to emit next on-hand, the next
 arrival-age profile, and step sales from the observation window and the quantity Allocation
-filled. The same minibatch passes, episode holdout, early stopping, and loss curve as the
-latent fit. No latent target and no EMA encoder. See ADR 0029.
+filled. Training is one step of decoded-state feedback, with the same minibatch passes,
+episode holdout, early stopping, and loss curve as the latent fit. The rollout report
+scores that predictor over the same `model_unroll_steps`. No latent target and no EMA
+encoder. See ADR 0029.
 
 **Synthetic comparison** (`compare_synthetic`, `src/jepa/eval.py`)
 Scores the latent planner, the direct planner, and the latent planner with textbook fair-share
@@ -256,7 +260,11 @@ when that frozen planner beats the `OrderUpToPolicy` from the 0.01 anchor, left 
 `OrderUpToPolicy` factory for `holding_rate` 0.05 is the ceiling and is not a pass bar. Smoke
 runs shorten the episode and the seed count. `python -m src.jepa eval` writes
 `in_distribution.parquet` and `retarget.parquet` under
-`runs/jepa-replenishment/synthetic/`. The log, the fit, the 150-trial
+`runs/jepa-replenishment/synthetic/` only when the latent model's held-out
+per-step rollout R² beats an ordinary-least-squares baseline on the same
+inputs. The per-step curve for the latent model, the direct predictor, and
+that baseline is `rollout_accuracy.json` in the same directory, written
+whether or not the profit table is. The log, the fit, the 150-trial
 `OrderUpToPolicy` studies at holding rates 0.005, 0.01, 0.02, 0.05, and 0.1,
 and that eval are the commands in the root README. On that corrected episode
 distribution the tuned anchor beats the published default. At `holding_rate`

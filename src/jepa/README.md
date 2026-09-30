@@ -14,4 +14,5 @@ walks through a smoke log, a fit, and one `decide`.
 reads `runs/jepa-replenishment/synthetic/` and prints the eval command when
 those tables are absent. Raw outputs stay under `runs/jepa-replenishment/`
 and are not committed. A fit writes its loss curve and episode holdout under
-`runs/jepa-replenishment/fit/`.
+`runs/jepa-replenishment/fit/`. Eval writes a profit table only when held-out
+rollout accuracy beats an ordinary-least-squares baseline on the same inputs.

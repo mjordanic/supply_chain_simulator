@@ -11,7 +11,8 @@ Seams, from the issue acceptance criteria:
    lead time. A market-multiplier column, a disruption column, and a
    calendar column are not features: two fits that differ only in those
    columns place the same orders.
-3. Horizon. The predictor unrolls open-loop for ``H = delivery_lag`` with a
+3. Horizon. The predictor unrolls open-loop for ``model_unroll_steps``
+   (the planning horizon unless that length is set on its own) with a
    stopped target embedding and an anti-collapse penalty. Loss values,
    latent width, and EMA decay are not asserted (PRD testing decision).
 4. Probes. Fitting probes does not change encoder parameters. Profit is

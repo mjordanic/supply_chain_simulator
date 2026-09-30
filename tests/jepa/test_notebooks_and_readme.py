@@ -184,19 +184,10 @@ def _study_dir(directory: Path) -> None:
     )
 
 
-def test_smoke_commands_write_tables_the_results_notebook_reads(tmp_path, monkeypatch):
-    """The published subcommands, on smoke overrides, fill the notebook's files.
-
-    Profit figures are whatever the run produced. This test checks that the
-    notebook can state both rules beside those files, and that the numbers
-    are finite.
-    """
-    import math
-
-    import pandas as pd
-
+def test_smoke_eval_does_not_publish_an_undertrained_profit_table(tmp_path, monkeypatch):
+    """Smoke fit is one epoch on a short log. The rollout gate withholds the table."""
     from src.jepa.commands import main
-    from src.jepa.eval import IN_DISTRIBUTION_RULE, RETARGET_RULE
+    from src.jepa.eval import RolloutGateError
 
     log = tmp_path / "transitions.parquet"
     checkpoints = tmp_path / "checkpoints"
@@ -221,28 +212,31 @@ def test_smoke_commands_write_tables_the_results_notebook_reads(tmp_path, monkey
         "--budget", "4",
         "--delivery-lag", "2",
     ])
-    main([
-        "eval",
-        "--checkpoints", str(checkpoints),
-        "--anchor", str(anchor),
-        "--ceiling", str(ceiling),
-        "--output", str(out),
-        "--n-seeds", "1",
-        "--episode-length", "4",
-        "--k-active", "2",
-        "--delivery-lag", "2",
-    ])
-    in_dist = pd.read_parquet(out / "in_distribution.parquet")
-    retarget = pd.read_parquet(out / "retarget.parquet")
-    assert {"seed", "latent", "anchor"} <= set(in_dist.columns)
-    assert {"seed", "latent", "anchor", "ceiling"} <= set(retarget.columns)
-    assert math.isfinite(float(in_dist["latent"].iloc[0]))
-    assert math.isfinite(float(retarget["latent"].iloc[0]))
+    try:
+        main([
+            "eval",
+            "--checkpoints", str(checkpoints),
+            "--log", str(log),
+            "--anchor", str(anchor),
+            "--ceiling", str(ceiling),
+            "--output", str(out),
+            "--n-seeds", "1",
+            "--episode-length", "4",
+            "--k-active", "2",
+            "--delivery-lag", "2",
+        ])
+    except RolloutGateError:
+        refused = True
+    else:
+        refused = False
+    assert refused
+    assert not (out / "in_distribution.parquet").exists()
+    assert not (out / "retarget.parquet").exists()
+    assert (out / "rollout_accuracy.json").is_file()
     monkeypatch.setenv("JEPA_SYNTHETIC_DIR", str(out))
     output = _run_notebook(RESULTS)
-    assert output.index(IN_DISTRIBUTION_RULE) < output.index(RETARGET_RULE)
-    assert "in_distribution_passes" in output
-    assert "retarget_passes" in output
+    assert "in_distribution_passes" not in output
+    assert "retarget_passes" not in output
 
 
 def test_sweep_study_names_keep_the_published_directories():

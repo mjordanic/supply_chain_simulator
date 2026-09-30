@@ -9,6 +9,8 @@ policy on that paired profit.
 
 from __future__ import annotations
 
+import json
+import math
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -16,6 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.jepa.dynamics import RolloutAccuracy, held_out_rollout_accuracy, rollout_beats_baseline
 from src.jepa.plan import ReplenishmentPlanner
 from src.sim.policy import (
     IntermediatePolicy,
@@ -269,3 +272,65 @@ def write_synthetic_comparison(result: SyntheticComparison, directory: str | Pat
         index=False,
     )
     return destination
+
+
+class RolloutGateError(RuntimeError):
+    """Held-out rollout accuracy did not beat ordinary least squares."""
+
+    def __init__(self, accuracy: RolloutAccuracy) -> None:
+        self.accuracy = accuracy
+        super().__init__(
+            "held-out rollout accuracy did not beat the ordinary-least-squares baseline"
+        )
+
+
+def _json_number(value: float) -> float | None:
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return float(value)
+
+
+def _write_rollout_accuracy(accuracy: RolloutAccuracy, path: Path) -> None:
+    payload = {
+        "steps": list(accuracy.steps),
+        "latent": [_json_number(value) for value in accuracy.latent],
+        "direct": [_json_number(value) for value in accuracy.direct],
+        "ols": [_json_number(value) for value in accuracy.ols],
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def write_gated_profit_table(
+    result: SyntheticComparison,
+    directory: str | Path,
+    accuracy: RolloutAccuracy,
+) -> Path:
+    """Write the profit tables when rollout accuracy beats least squares.
+
+    The per-step curve is written either way. The profit parquets are not.
+    """
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    _write_rollout_accuracy(accuracy, destination / "rollout_accuracy.json")
+    if not rollout_beats_baseline(accuracy):
+        raise RolloutGateError(accuracy)
+    return write_synthetic_comparison(result, destination)
+
+
+def publish_synthetic_comparison(
+    latent: ReplenishmentPlanner,
+    direct: ReplenishmentPlanner,
+    frame: pd.DataFrame,
+    directory: str | Path,
+    **compare_kwargs: object,
+) -> SyntheticComparison:
+    """Score rollout accuracy, then the profit table if the gate opens."""
+    accuracy = held_out_rollout_accuracy(latent.dynamics, direct.dynamics, frame)
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    _write_rollout_accuracy(accuracy, destination / "rollout_accuracy.json")
+    if not rollout_beats_baseline(accuracy):
+        raise RolloutGateError(accuracy)
+    result = compare_synthetic(latent, direct, **compare_kwargs)
+    write_synthetic_comparison(result, destination)
+    return result

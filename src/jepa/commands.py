@@ -51,6 +51,7 @@ TUNE_COMMANDS = tuple(tune_command(rate) for rate in SWEEP_HOLDING_RATES)
 EVAL_COMMAND = (
     "uv run python -m src.jepa eval "
     "--checkpoints runs/jepa-replenishment/checkpoints "
+    "--log runs/jepa-replenishment/log/transitions.parquet "
     "--anchor runs/jepa-replenishment/tuning/order_up_to_holding_0_01 "
     "--ceiling runs/jepa-replenishment/tuning/order_up_to_holding_0_05 "
     "--output runs/jepa-replenishment/synthetic"
@@ -100,6 +101,7 @@ def _parser() -> argparse.ArgumentParser:
     fit.add_argument("--epochs", type=int, default=fit_params["epochs"].default)
     fit.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     fit.add_argument("--delivery-lag", type=int, default=fit_params["delivery_lag"].default)
+    fit.add_argument("--model-unroll-steps", type=int, default=None)
 
     tune = sub.add_parser("tune", help="Tune OrderUpToPolicy at one holding rate.")
     tune.add_argument("--holding-rate", type=float, required=True)
@@ -131,6 +133,11 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--episode-length", type=int, default=None)
     evaluate.add_argument("--k-active", type=int, default=None)
     evaluate.add_argument("--delivery-lag", type=int, default=None)
+    evaluate.add_argument(
+        "--log",
+        type=Path,
+        default=Path("runs/jepa-replenishment/log/transitions.parquet"),
+    )
     return parser
 
 
@@ -189,8 +196,10 @@ def _fit(args: argparse.Namespace) -> None:
         "budget": args.budget,
         "holding_rate": IN_DISTRIBUTION_HOLDING_RATE,
     }
+    if args.model_unroll_steps is not None:
+        shared["model_unroll_steps"] = args.model_unroll_steps
     latent = fit_latent(frame, seed=0, policy_seed=0, **shared)
-    direct = fit_direct(frame, seed=1, policy_seed=1, **shared)
+    direct = fit_direct(frame, seed=0, policy_seed=1, **shared)
     save_planners(latent, direct, args.output)
 
 
@@ -228,23 +237,27 @@ def _tune(args: argparse.Namespace) -> None:
 
 
 def _eval(args: argparse.Namespace) -> None:
-    from src.jepa.eval import compare_synthetic, write_synthetic_comparison
+    import pandas as pd
+
+    from src.jepa.eval import publish_synthetic_comparison
     from src.jepa.plan import load_planners
     from src.tuning.config import TuningConfig
 
     latent, direct = load_planners(args.checkpoints)
+    frame = pd.read_parquet(args.log)
     shape = _tuning_shape(args, ("episode_length", "k_active", "delivery_lag"))
     config = TuningConfig(**shape) if shape else None
     seed_count = {} if args.n_seeds is None else {"n_seeds": args.n_seeds}
-    result = compare_synthetic(
+    publish_synthetic_comparison(
         latent,
         direct,
+        frame,
+        args.output,
         anchor_factory=_policy_factory(args.anchor),
         ceiling_factory=_policy_factory(args.ceiling),
         config=config,
         **seed_count,
     )
-    write_synthetic_comparison(result, args.output)
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -379,8 +379,13 @@ uv run python -m src.jepa fit --log runs/jepa-replenishment/log/transitions.parq
 ```
 
 `--epochs` (default 20) is one shuffled pass over the training episodes, not one
-gradient step. Episodes are held out whole for early stopping. The loss curve and
-holdout metrics are written to `runs/jepa-replenishment/fit/` and are not committed.
+gradient step. The open-loop unroll is `model_unroll_steps`, which defaults to
+the planning horizon `4 * delivery_lag` rather than the lead time. Episodes are
+held out whole for early stopping. The loss curve and holdout metrics are
+written to `runs/jepa-replenishment/fit/` and are not committed. `eval` writes
+a profit table only when the latent model's held-out per-step rollout R² beats
+an ordinary-least-squares baseline on the same inputs. The curve is
+`rollout_accuracy.json` next to that table.
 
 Five 150-trial `OrderUpToPolicy` studies, one at each holding rate the transfer
 sweep uses: 0.005, 0.01, 0.02, 0.05, and 0.1. Search and holdout seed counts
@@ -402,7 +407,7 @@ is `order_up_to_holding_0_05`, both under the tuning directory above. The other
 three directories are the ceilings for the remaining sweep rates.
 
 ```bash
-uv run python -m src.jepa eval --checkpoints runs/jepa-replenishment/checkpoints --anchor runs/jepa-replenishment/tuning/order_up_to_holding_0_01 --ceiling runs/jepa-replenishment/tuning/order_up_to_holding_0_05 --output runs/jepa-replenishment/synthetic
+uv run python -m src.jepa eval --checkpoints runs/jepa-replenishment/checkpoints --log runs/jepa-replenishment/log/transitions.parquet --anchor runs/jepa-replenishment/tuning/order_up_to_holding_0_01 --ceiling runs/jepa-replenishment/tuning/order_up_to_holding_0_05 --output runs/jepa-replenishment/synthetic
 ```
 
 M5 walkthrough. When `data/m5/` is absent the notebook skips and prints the

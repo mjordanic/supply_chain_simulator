@@ -22,8 +22,10 @@ lead time, cash, capacity, and that lead time. The Market
 multiplier, the disruption identity, and the calendar are not
 features. An
 exponential-moving-average target encoder supplies the regression
-target. The predictor rolls its embedding forward for the edge lead
-time, open-loop, and the latent loss is the distance to that stopped
+target. The predictor rolls its embedding forward for the planning
+horizon, `model_unroll_steps`, which defaults to
+`horizon_multiple * delivery_lag` and is not the delivery lead time.
+The latent loss is the distance to that stopped
 target at each step. An anti-collapse penalty keeps embedding variance
 off the floor and penalizes cross-dimension correlation. Probes decode
 next on-hand, the next arrival-age profile, and sales over the step.

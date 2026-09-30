@@ -32,6 +32,7 @@ import torch
 
 from src.jepa.dynamics import (
     ARRIVAL_AGE_SLOTS,
+    PLANNING_HORIZON_MULTIPLE,
     DirectDynamics,
     LatentDynamics,
     arrival_age_profile,
@@ -50,7 +51,7 @@ from src.sim.policy import (
 )
 
 DEFAULT_BUDGET = 64
-DEFAULT_HORIZON_MULTIPLE = 4
+DEFAULT_HORIZON_MULTIPLE = PLANNING_HORIZON_MULTIPLE
 _CEM_ELITE_FRACTION = 0.25
 _CEM_SMOOTHING = 0.7
 
@@ -600,6 +601,17 @@ class ReplenishmentPlanner(IntermediatePolicy):
         return _priority_ration(desired, priority, free_space, cash, unit_costs)
 
 
+def _unroll_steps(
+    delivery_lag: int,
+    model_unroll_steps: int | None,
+    horizon_multiple: int,
+) -> int:
+    """Planning horizon, unless ``model_unroll_steps`` is set on its own."""
+    if model_unroll_steps is None:
+        return int(horizon_multiple) * int(delivery_lag)
+    return int(model_unroll_steps)
+
+
 def fit_latent(
     frame: pd.DataFrame,
     *,
@@ -608,12 +620,20 @@ def fit_latent(
     seed: int = 0,
     lr: float = 1e-3,
     artifact_dir: str | Path | None = None,
+    model_unroll_steps: int | None = None,
     **planner_kwargs: Any,
 ) -> ReplenishmentPlanner:
     """Fit the latent predictor on a transition log and wrap it as a Policy."""
-    dynamics = LatentDynamics(delivery_lag=delivery_lag)
+    multiple = int(planner_kwargs.pop("horizon_multiple", DEFAULT_HORIZON_MULTIPLE))
+    steps = _unroll_steps(delivery_lag, model_unroll_steps, multiple)
+    dynamics = LatentDynamics(delivery_lag=delivery_lag, model_unroll_steps=steps)
     dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr, artifact_dir=artifact_dir)
-    return ReplenishmentPlanner(dynamics, delivery_lag=delivery_lag, **planner_kwargs)
+    return ReplenishmentPlanner(
+        dynamics,
+        delivery_lag=delivery_lag,
+        horizon_multiple=multiple,
+        **planner_kwargs,
+    )
 
 
 def fit_direct(
@@ -624,12 +644,24 @@ def fit_direct(
     seed: int = 0,
     lr: float = 1e-3,
     artifact_dir: str | Path | None = None,
+    model_unroll_steps: int | None = None,
     **planner_kwargs: Any,
 ) -> ReplenishmentPlanner:
-    """Fit the direct predictor on a transition log and wrap it as a Policy."""
-    dynamics = DirectDynamics(delivery_lag=delivery_lag)
+    """Fit the direct predictor on a transition log and wrap it as a Policy.
+
+    Training stays one-step. ``model_unroll_steps`` is the horizon the
+    rollout report scores, the same planning horizon as the latent fit.
+    """
+    multiple = int(planner_kwargs.pop("horizon_multiple", DEFAULT_HORIZON_MULTIPLE))
+    steps = _unroll_steps(delivery_lag, model_unroll_steps, multiple)
+    dynamics = DirectDynamics(delivery_lag=delivery_lag, model_unroll_steps=steps)
     dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr, artifact_dir=artifact_dir)
-    return ReplenishmentPlanner(dynamics, delivery_lag=delivery_lag, **planner_kwargs)
+    return ReplenishmentPlanner(
+        dynamics,
+        delivery_lag=delivery_lag,
+        horizon_multiple=multiple,
+        **planner_kwargs,
+    )
 
 
 def save_planners(
@@ -648,6 +680,9 @@ def save_planners(
         "holding_rate": float(latent.holding_rate),
         "order_fee": float(latent.order_fee),
         "horizon_multiple": int(latent.horizon_multiple),
+        "model_unroll_steps": int(latent.dynamics.model_unroll_steps),
+        "train_episodes": sorted(int(episode) for episode in latent.dynamics.train_episodes),
+        "val_episodes": sorted(int(episode) for episode in latent.dynamics.val_episodes),
         "latent_policy_seed": latent.policy_seed,
         "direct_policy_seed": direct.policy_seed,
     }
@@ -667,11 +702,16 @@ def load_planners(directory: str | Path) -> tuple[ReplenishmentPlanner, Replenis
         "order_fee": float(meta["order_fee"]),
         "horizon_multiple": int(meta.get("horizon_multiple", DEFAULT_HORIZON_MULTIPLE)),
     }
-    latent_dynamics = LatentDynamics(delivery_lag=lag)
+    steps = meta.get("model_unroll_steps")
+    if steps is None:
+        steps = int(shared["horizon_multiple"]) * lag
+    latent_dynamics = LatentDynamics(delivery_lag=lag, model_unroll_steps=int(steps))
     latent_dynamics.load_state_dict(
         torch.load(destination / "latent.pt", weights_only=True)
     )
-    direct_dynamics = DirectDynamics(delivery_lag=lag)
+    latent_dynamics.train_episodes = {int(episode) for episode in meta.get("train_episodes", [])}
+    latent_dynamics.val_episodes = {int(episode) for episode in meta.get("val_episodes", [])}
+    direct_dynamics = DirectDynamics(delivery_lag=lag, model_unroll_steps=int(steps))
     direct_dynamics.load_state_dict(
         torch.load(destination / "direct.pt", weights_only=True)
     )

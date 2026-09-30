@@ -78,12 +78,9 @@ def _read(directory: Path, kind: str) -> dict:
 @pytest.mark.parametrize("kind", ["direct", "latent"])
 def test_one_epoch_is_a_pass_over_minibatches(tmp_path: Path, kind: str):
     lag = 2
-    if kind == "direct":
-        ticks = FIT_BATCH_SIZE + 3
-        examples = ticks - 1
-    else:
-        ticks = FIT_BATCH_SIZE + lag + 2
-        examples = ticks - lag
+    horizon = _unroll(kind, lag)
+    ticks = FIT_BATCH_SIZE + horizon + 2
+    examples = ticks - horizon
     frame = _frame(episodes=1, ticks=ticks, lag=lag)
     _model(kind, lag).fit(frame, epochs=1, seed=0, artifact_dir=tmp_path)
     curve = _read(tmp_path, kind)["curve"]
@@ -118,22 +115,31 @@ def test_shuffle_follows_the_fit_seed(tmp_path: Path, kind: str):
     assert not _same(_state(first), _state(third))
 
 
+def _unroll(kind: str, lag: int) -> int:
+    """Direct training is one step. The latent unroll is its own length."""
+    if kind == "direct":
+        return 1
+    return LatentDynamics(delivery_lag=lag).model_unroll_steps
+
+
 def _examples(frame: pd.DataFrame, episodes: list[int], *, kind: str, lag: int) -> int:
+    horizon = _unroll(kind, lag)
     subset = frame[frame["episode_seed"].isin(episodes)]
     total = 0
     for _, group in subset.groupby(["episode_seed", "product_id"], sort=False):
         n_rows = len(group)
-        if kind == "direct":
-            total += max(0, n_rows - 1)
-        elif n_rows >= lag + 1:
-            total += n_rows - lag
+        if n_rows >= horizon + 1:
+            total += n_rows - horizon
     return total
 
 
 @pytest.mark.parametrize("kind", ["direct", "latent"])
 def test_validation_split_holds_out_whole_episodes(tmp_path: Path, kind: str):
     lag = 2
-    ticks = 33
+    # Eight training episodes of this many windows fit in one batch.
+    # Ten episodes do not, so holding episodes out changes the step count.
+    windows = 28
+    ticks = _unroll(kind, lag) + windows
     episodes = 10
     frame = _frame(episodes=episodes, ticks=ticks, lag=lag)
     _model(kind, lag).fit(frame, epochs=1, seed=0, artifact_dir=tmp_path)

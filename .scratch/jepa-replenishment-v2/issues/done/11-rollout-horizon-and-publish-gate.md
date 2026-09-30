@@ -17,24 +17,24 @@ model with R² ≈ 0. Nothing in the pipeline objected.
 
 **Blocked by:** 03, 08, 10.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** existing dynamics tests; the `Latent replenishment planner` and
 `Direct replenishment predictor` entries in `CONTEXT.md`. The ordinary-least-
 squares baseline is the reference: it reaches +0.94 / +0.75 / +0.65 on the old
 feature set and any learned model must beat it on the new one.
 
-- [ ] The open-loop unroll trains at the planning horizon;
+- [x] The open-loop unroll trains at the planning horizon;
       `model_unroll_steps` is its own config value rather than `delivery_lag`.
-- [ ] Held-out rollout accuracy is reported per step from one step to the
+- [x] Held-out rollout accuracy is reported per step from one step to the
       planning horizon, for the latent model, the direct predictor and the
       ordinary-least-squares baseline.
-- [ ] A publish gate refuses to produce a profit table when held-out rollout
+- [x] A publish gate refuses to produce a profit table when held-out rollout
       accuracy fails to beat the ordinary-least-squares baseline on the same
       inputs.
-- [ ] The gate runs at a real training budget on a reduced episode count — not at
+- [x] The gate runs at a real training budget on a reduced episode count — not at
       `epochs=1` — so it means something.
-- [ ] A test demonstrates the gate fires: a deliberately undertrained model does
+- [x] A test demonstrates the gate fires: a deliberately undertrained model does
       not reach the results table.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the gate
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the gate
       is updated in this ticket.
