@@ -363,8 +363,11 @@ Published log — `--episodes-each 64` is the base count. Each textbook family,
 the exploratory policy, and never-order contribute 64 episodes. Over-order
 contributes 512. Textbook hyperparameters are sampled from the tuning search
 spaces. Planning depth varies by episode. Seed offset `14_000_000`, 365 ticks,
-one `holding_rate` of 0.01, `K` sampled from 1 to 30 out of a synthetic catalog
-of about 750 SKUs. Each episode samples a nominal delivery lag from 2 through
+one `holding_rate` of 0.01, `K` sampled from 1 to 30 out of the training
+partition of a synthetic catalog of about 750 SKUs. One fifth of that
+catalog is held out, strided across product-id order, and does not appear
+in the log.
+Each episode samples a nominal delivery lag from 2 through
 6 and gives every SKU three suppliers, with a markup over unit cost and a
 longer lead time on the cheaper offer:
 
@@ -405,7 +408,8 @@ a profit table only when the latent model's held-out per-step rollout R² beats
 an ordinary-least-squares baseline on the same inputs. The 112-episode
 measurement, latent mean R² 0.124 against least squares at 0.358, does not
 clear that gate, so it does not publish a profit table. The curve is
-`rollout_accuracy.json` next to that table. When the gate opens, each table
+`rollout_accuracy.json` next to that table. When the gate refuses, it writes
+`profit_table_refused.json` and does not write the protocol parquets. When the gate opens, each table
 carries a never-order floor, a random-cover floor, a least-squares model in
 the planner, and an oracle model in the planner, plus the permutation-priority
 arm beside fair-share. Order volume, service level, stockout rate, and
@@ -428,7 +432,13 @@ uv run python -m src.jepa tune --holding-rate 0.05 --trials 150 --output-dir run
 uv run python -m src.jepa tune --holding-rate 0.1 --trials 150 --output-dir runs/jepa-replenishment/tuning
 ```
 
-Synthetic eval on the tuner holdout (32 seeds from `13_000_000`). The
+Synthetic eval writes three generalisation tables and the holding-rate retarget,
+as separate files. In-distribution uses the training SKUs and the tuner holdout
+(32 seeds from `13_000_000`) at the default disruption. Unseen-SKU uses the
+held-out SKUs and 32 seeds from `15_000_000`. Unseen-disruption uses the training
+SKUs, 32 seeds from `16_000_000`, and a harsher disruption regime the log never
+samples. Those seed ranges are disjoint and are recorded in the log manifest.
+The retarget rescores the in-distribution seeds at `holding_rate` 0.05. The
 in-distribution anchor is `order_up_to_holding_0_01` and the retarget ceiling
 is `order_up_to_holding_0_05`, both under the tuning directory above. The other
 three directories are the ceilings for the remaining sweep rates.

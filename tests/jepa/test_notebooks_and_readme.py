@@ -130,6 +130,16 @@ def test_results_notebook_states_the_rules_beside_the_loaded_tables(tmp_path, mo
     })
     in_dist.to_parquet(tmp_path / "in_distribution.parquet", index=False)
     retarget.to_parquet(tmp_path / "retarget.parquet", index=False)
+    pd.DataFrame({
+        "seed": [15_000_000, 15_000_001],
+        "latent": [0.201, 0.201],
+        "anchor": [0.050, 0.050],
+    }).to_parquet(tmp_path / "unseen_sku.parquet", index=False)
+    pd.DataFrame({
+        "seed": [16_000_000, 16_000_001],
+        "latent": [0.202, 0.202],
+        "anchor": [0.040, 0.040],
+    }).to_parquet(tmp_path / "unseen_disruption.parquet", index=False)
     monkeypatch.setenv("JEPA_SYNTHETIC_DIR", str(tmp_path))
 
     output = _run_notebook(RESULTS)
@@ -138,6 +148,8 @@ def test_results_notebook_states_the_rules_beside_the_loaded_tables(tmp_path, mo
     retarget_at = output.index(RETARGET_RULE)
     loaded_out = output.index("-0.456")
     assert in_at < loaded_in < retarget_at < loaded_out
+    assert loaded_in < output.index("protocol unseen_sku") < output.index("protocol unseen_disruption") < retarget_at
+    assert "0.201" in output and "0.202" in output
     assert "9.876" not in output
     assert f"in_distribution_passes {in_distribution_passes(in_latent, in_anchor)}" in output
     assert f"retarget_passes {retarget_passes(retarget_latent, retarget_anchor)}" in output
@@ -231,8 +243,11 @@ def test_smoke_eval_does_not_publish_an_undertrained_profit_table(tmp_path, monk
         refused = False
     assert refused
     assert not (out / "in_distribution.parquet").exists()
+    assert not (out / "unseen_sku.parquet").exists()
+    assert not (out / "unseen_disruption.parquet").exists()
     assert not (out / "retarget.parquet").exists()
     assert (out / "rollout_accuracy.json").is_file()
+    assert (out / "profit_table_refused.json").is_file()
     monkeypatch.setenv("JEPA_SYNTHETIC_DIR", str(out))
     output = _run_notebook(RESULTS)
     assert "in_distribution_passes" not in output

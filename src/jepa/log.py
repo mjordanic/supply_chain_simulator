@@ -6,7 +6,10 @@ and over-order. Over-order contributes more episodes than each other arm,
 because a competent cover orders too rarely to carry the action
 distribution. Planning depth varies by episode. Factories stay on
 ``StaticFactoryPolicy``. Seeds start at ``14_000_000``, disjoint from the
-tuner search and holdout offsets. Every episode uses one holding rate.
+tuner search and holdout offsets and from the unseen-SKU and
+unseen-disruption blocks. Episodes sample the training partition of the
+catalog. Every episode uses one holding rate and the default disruption
+regime.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from src.sim.node import FactoryNode
 from src.sim.policy import IntermediatePolicy, StaticFactoryPolicy
 from src.sim.runner import Runner
 from src.tuning.config import TuningConfig
-from src.tuning.episode import make_synthetic_catalog, sample_episode
+from src.tuning.episode import make_synthetic_catalog, partition_catalog, sample_episode
 from src.tuning.search_spaces import (
     COVER_HORIZON_TICKS,
     sample_cover_horizon_ticks,
@@ -120,9 +123,14 @@ def collection_config(
 
 
 def build_log_scenario(config: TuningConfig, episode_seed: int, catalog: list | None = None):
-    """One tuner-graph episode at ``episode_seed``."""
+    """One tuner-graph episode at ``episode_seed`` on the training SKUs.
+
+    ``catalog`` is that training partition. When it is omitted the synthetic
+    catalog is built and partitioned, and the evaluation SKUs are dropped.
+    """
     if catalog is None:
-        catalog = make_synthetic_catalog(config.active_catalog_size())
+        full = make_synthetic_catalog(config.active_catalog_size())
+        catalog, _evaluation = partition_catalog(full)
     return sample_episode(catalog, config, episode_seed)
 
 
@@ -285,7 +293,8 @@ def collect_transition_log(
     if delivery_lag is not None:
         shape["delivery_lag"] = delivery_lag
     config = collection_config(**shape)
-    catalog = make_synthetic_catalog(config.active_catalog_size())
+    full_catalog = make_synthetic_catalog(config.active_catalog_size())
+    catalog, evaluation_catalog = partition_catalog(full_catalog)
 
     rows: list[dict[str, Any]] = []
     sampled: list[dict[str, Any]] = []
@@ -316,6 +325,7 @@ def collect_transition_log(
             frame,
             config,
             catalog,
+            evaluation_catalog=evaluation_catalog,
             n_episodes_each=n_episodes_each,
             seed_offset=seed_offset,
             sampled=sampled,
@@ -398,6 +408,7 @@ def _write_manifest(
     config: TuningConfig,
     catalog,
     *,
+    evaluation_catalog,
     n_episodes_each: int,
     seed_offset: int,
     sampled: list[dict[str, Any]],
@@ -416,6 +427,19 @@ def _write_manifest(
     else:
         fraction = float((frame["filled_qty"] > 0).mean())
     seeds = [seed for _behavior, seed in schedule]
+    # Local import: eval does not import the log, but src.jepa does, so a
+    # module-level import here cycles through the package init.
+    from src.jepa.eval import harsh_disruption_params, published_protocol_ranges
+    from src.sim.episode_sampler import default_disruption_params
+
+    protocols = published_protocol_ranges()
+    protocols["training"] = {
+        "seed_min": int(min(seeds)) if seeds else int(seed_offset),
+        "seed_max": int(max(seeds)) if seeds else int(seed_offset),
+        "n_seeds": len(schedule),
+        "catalog": "training",
+        "disruption": "default",
+    }
     manifest = {
         "episode_count": len(schedule),
         "seed_min": int(min(seeds)) if seeds else int(seed_offset),
@@ -430,6 +454,12 @@ def _write_manifest(
         "holding_rate": float(config.holding_rate),
         "order_fee": float(config.order_fee),
         "catalog_identity": catalog_identity(catalog),
+        "evaluation_catalog_identity": catalog_identity(evaluation_catalog),
+        "training_sku_count": len(catalog),
+        "evaluation_sku_count": len(evaluation_catalog),
+        "disruption": default_disruption_params().to_dict(),
+        "harsh_disruption": harsh_disruption_params().to_dict(),
+        "protocols": protocols,
         "behavior_mixture": _mixture_manifest(sampled),
         "state_coverage": state_coverage(
             frame, capacity_bound=capacity_bound, cash_bound=cash_bound

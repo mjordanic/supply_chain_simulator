@@ -26,8 +26,10 @@ Seams, from the issue acceptance criteria:
    pass bar. With no anchor factory, the anchor is the published default.
    Anchor and planner share routing, the minimum-order floor, and the
    supplier's unit cost. No tuning study runs.
-6. Holdout defaults. The entry point's published seed count is 32 and the
-   offset is ``13_000_000``. Smoke tests override the seed count.
+6. Holdout defaults. The in-distribution seed count is 32 and the offset
+   is ``13_000_000``. Unseen-SKU starts at ``15_000_000`` and
+   unseen-disruption at ``16_000_000``. Smoke tests override the seed count.
+   The three blocks stay disjoint. Retarget reuses the in-distribution seeds.
 7. The RL stack is not imported. The publish gate is unchanged.
 """
 
@@ -48,10 +50,13 @@ from src.jepa.eval import (
     HOLDOUT_SEED_OFFSET,
     LEARNED_ARMS,
     N_HOLDOUT_SEEDS,
+    UNSEEN_DISRUPTION_SEED_OFFSET,
+    UNSEEN_SKU_SEED_OFFSET,
     ComparisonTable,
     SyntheticComparison,
     collinear_report,
     compare_synthetic,
+    harsh_disruption_params,
     pearson,
     in_distribution_passes,
     learned_beats_never_order,
@@ -72,7 +77,7 @@ from src.sim.policy import (
     ReorderPointPolicy,
 )
 from src.tuning.config import TuningConfig
-from src.tuning.episode import make_synthetic_catalog, sample_episode
+from src.tuning.episode import make_synthetic_catalog, partition_catalog, sample_episode
 from src.tuning.evaluator import evaluate_policy_normalised
 
 
@@ -147,13 +152,30 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
         "periodic_reorder",
     }
     assert set(result.in_distribution.per_seed) == learned | floors | textbooks
+    assert set(result.unseen_sku.per_seed) == learned | floors | textbooks
+    assert set(result.unseen_disruption.per_seed) == learned | floors | textbooks
     assert set(result.retarget.per_seed) == learned | floors | {"anchor"}
     assert result.in_distribution.holding_rate == 0.01
+    assert result.unseen_sku.holding_rate == 0.01
+    assert result.unseen_disruption.holding_rate == 0.01
     assert result.retarget.holding_rate == 0.05
     assert result.in_distribution.seeds == (offset, offset + 1)
     assert result.retarget.seeds == (offset, offset + 1)
+    assert result.unseen_sku.seeds == (UNSEEN_SKU_SEED_OFFSET, UNSEEN_SKU_SEED_OFFSET + 1)
+    assert result.unseen_disruption.seeds == (
+        UNSEEN_DISRUPTION_SEED_OFFSET,
+        UNSEEN_DISRUPTION_SEED_OFFSET + 1,
+    )
+    assert set(result.in_distribution.seeds).isdisjoint(result.unseen_sku.seeds)
+    assert set(result.in_distribution.seeds).isdisjoint(result.unseen_disruption.seeds)
+    assert set(result.unseen_sku.seeds).isdisjoint(result.unseen_disruption.seeds)
 
-    for table in (result.in_distribution, result.retarget):
+    for table in (
+        result.in_distribution,
+        result.unseen_sku,
+        result.unseen_disruption,
+        result.retarget,
+    ):
         assert table.collinear_warnings == collinear_report(table.per_seed)[0]
         assert len(table.tightness) == len(table.cash_tightness) == 2
         assert len(table.paired_difference) == 2
@@ -179,12 +201,29 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
 
     assert result.in_distribution.per_seed["anchor"] == result.in_distribution.per_seed["order_up_to"]
 
-    catalog = make_synthetic_catalog(config.K_catalog)
+    training, evaluation = partition_catalog(make_synthetic_catalog(config.K_catalog))
     at_one = [
-        sample_episode(catalog, replace(config, holding_rate=0.01), offset + i) for i in range(2)
+        sample_episode(training, replace(config, holding_rate=0.01), offset + i) for i in range(2)
     ]
     at_five = [
-        sample_episode(catalog, replace(config, holding_rate=0.05), offset + i) for i in range(2)
+        sample_episode(training, replace(config, holding_rate=0.05), offset + i) for i in range(2)
+    ]
+    unseen = [
+        sample_episode(
+            evaluation,
+            replace(config, holding_rate=0.01),
+            UNSEEN_SKU_SEED_OFFSET + i,
+        )
+        for i in range(2)
+    ]
+    shocked = [
+        sample_episode(
+            training,
+            replace(config, holding_rate=0.01),
+            UNSEEN_DISRUPTION_SEED_OFFSET + i,
+            disruption_params=harsh_disruption_params(),
+        )
+        for i in range(2)
     ]
     published_arms = {
         "order_up_to": OrderUpToPolicy,
@@ -194,6 +233,10 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
     }
     for label, policy_cls in published_arms.items():
         assert result.in_distribution.per_seed[label] == _series(policy_cls, at_one)
+    assert result.unseen_sku.per_seed["order_up_to"] == _series(OrderUpToPolicy, unseen)
+    assert result.unseen_disruption.per_seed["order_up_to"] == _series(
+        OrderUpToPolicy, shocked
+    )
     frozen = _series(OrderUpToPolicy, at_five)
     assert result.retarget.per_seed["anchor"] == frozen
     assert all(
@@ -266,12 +309,12 @@ def test_anchor_and_ceiling_factories_are_scored_without_a_study():
     latent, direct, frame = _fitted()
     config = _smoke_config()
     offset = 13_000_000
-    catalog = make_synthetic_catalog(config.K_catalog)
+    training, _evaluation = partition_catalog(make_synthetic_catalog(config.K_catalog))
     at_one = [
-        sample_episode(catalog, replace(config, holding_rate=0.01), offset + i) for i in range(2)
+        sample_episode(training, replace(config, holding_rate=0.01), offset + i) for i in range(2)
     ]
     at_five = [
-        sample_episode(catalog, replace(config, holding_rate=0.05), offset + i) for i in range(2)
+        sample_episode(training, replace(config, holding_rate=0.05), offset + i) for i in range(2)
     ]
 
     def anchor() -> _FixedOrder:
@@ -375,10 +418,22 @@ def test_collinear_arms_are_a_warning_and_omitted_from_the_written_table(tmp_pat
         in_distribution_passes=False,
         retarget_passes=True,
         in_distribution_paired_interval=(0.1, 0.2),
+        unseen_sku=ComparisonTable(
+            holding_rate=0.01,
+            seeds=(15_000_000, 15_000_001),
+            per_seed={"latent": (0.2, 0.3), "anchor": (0.1, 0.1)},
+        ),
+        unseen_disruption=ComparisonTable(
+            holding_rate=0.01,
+            seeds=(16_000_000, 16_000_001),
+            per_seed={"latent": (0.2, 0.3), "anchor": (0.1, 0.1)},
+        ),
         rollout_accuracy=Accuracy(steps=(1, 2), latent=(0.6, 0.4), direct=(0.2, 0.2), ols=(0.1, 0.1)),
     )
     write_synthetic_comparison(result, tmp_path)
     frame = pd.read_parquet(tmp_path / "in_distribution.parquet")
+    sku_frame = pd.read_parquet(tmp_path / "unseen_sku.parquet")
+    shock_frame = pd.read_parquet(tmp_path / "unseen_disruption.parquet")
     assert "latent" in frame.columns and "anchor" in frame.columns
     assert "direct" not in frame.columns
     assert "direct_order_volume" not in frame.columns
@@ -395,6 +450,9 @@ def test_collinear_arms_are_a_warning_and_omitted_from_the_written_table(tmp_pat
     written = json.loads((tmp_path / "comparison_warnings.json").read_text(encoding="utf-8"))
     assert any("direct" in line and "latent" in line for line in written["in_distribution"])
     assert "direct" in result.in_distribution.per_seed
+    assert not (tmp_path / "pooled.parquet").exists()
+    assert set(frame["seed"]).isdisjoint(sku_frame["seed"])
+    assert set(sku_frame["seed"]).isdisjoint(shock_frame["seed"])
 
 
 def test_oracle_sells_the_recent_rate_and_lands_the_grant_after_the_lead_time():
@@ -466,11 +524,12 @@ def test_learned_arms_beat_the_never_order_floor_and_a_duplicate_is_a_warning():
 
     The published catalog's demand runs from about 0.5 to 40, and a sampled
     dead lifecycle makes a purchase lose to never-order for a reason other
-    than refusing to buy. This world pins one SKU at demand 12 with the
-    inert lifecycle, and sets the order fee to zero because the published
-    fee of 50 exceeds the margin of a tightness-sized opening order. One
-    SKU makes permutation the same buyer as the density arm, so the
-    comparison must warn instead of treating it as an ablation.
+    than refusing to buy. This world pins two SKUs at demand 12, one in each
+    catalog partition, with the inert lifecycle, and sets the order fee to
+    zero because the published fee of 50 exceeds the margin of a
+    tightness-sized opening order. One SKU per episode makes permutation
+    the same buyer as the density arm, so the comparison must warn instead
+    of treating it as an ablation.
     """
     catalog = load_catalog(
         [
@@ -483,7 +542,17 @@ def test_learned_arms_beat_the_never_order_floor_and_a_duplicate_is_a_warning():
                 "seasonality": "all_season",
                 "demand_mean": 12.0,
                 "demand_cv": 0.05,
-            }
+            },
+            {
+                "name": "Product 1",
+                "category": "General",
+                "related_products": [],
+                "base_price": 10.0,
+                "unit_cost": 5.0,
+                "seasonality": "all_season",
+                "demand_mean": 12.0,
+                "demand_cv": 0.05,
+            },
         ]
     )
     original_sample = sample_episode
@@ -514,6 +583,7 @@ def test_learned_arms_beat_the_never_order_floor_and_a_duplicate_is_a_warning():
             frame=frame,
         )
     assert learned_beats_never_order(result.in_distribution)
+    assert learned_beats_never_order(result.unseen_sku)
     assert learned_beats_never_order(result.retarget)
     for name in LEARNED_ARMS:
         assert name in result.in_distribution.per_seed

@@ -602,7 +602,7 @@ def test_collector_writes_parquet(tmp_path):
 
 
 def test_collector_writes_a_manifest_beside_the_log(tmp_path):
-    from src.tuning.episode import make_synthetic_catalog
+    from src.tuning.episode import make_synthetic_catalog, partition_catalog
 
     path = tmp_path / "log" / "transitions.parquet"
     frame = collect_transition_log(
@@ -616,7 +616,8 @@ def test_collector_writes_a_manifest_beside_the_log(tmp_path):
     sidecar = path.with_suffix(".manifest.json")
     manifest = json.loads(sidecar.read_text(encoding="utf-8"))
     config = collection_config(episode_length=2, k_active=2, delivery_lag=3)
-    catalog = make_synthetic_catalog(config.active_catalog_size())
+    full = make_synthetic_catalog(config.active_catalog_size())
+    catalog, evaluation = partition_catalog(full)
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     nonzero = float((frame["filled_qty"] > 0).mean()) if len(frame) else 0.0
 
@@ -631,6 +632,12 @@ def test_collector_writes_a_manifest_beside_the_log(tmp_path):
     assert isinstance(manifest["holding_rate"], float)
     assert manifest["order_fee"] == config.order_fee
     assert manifest["catalog_identity"] == catalog_identity(catalog)
+    assert manifest["evaluation_catalog_identity"] == catalog_identity(evaluation)
+    assert manifest["training_sku_count"] == len(catalog)
+    assert manifest["evaluation_sku_count"] == len(evaluation)
+    training_ids = {ware.product_id for ware in catalog}
+    evaluation_ids = {ware.product_id for ware in evaluation}
+    assert training_ids.isdisjoint(evaluation_ids)
     mixture = {row["behavior"]: row for row in manifest["behavior_mixture"]}
     assert list(mixture) == list(BEHAVIORS)
     for behavior in BEHAVIORS:

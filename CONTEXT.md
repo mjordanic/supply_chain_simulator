@@ -178,11 +178,11 @@ minimum-order floor is zero. `OrderUpToPolicy` keeps fair-share. See ADR 0024, A
 Per-SKU rows on the tuner episode shape: 365 ticks, `K` sampled per episode from
 1 to 30, a nominal delivery lag sampled from 2 through 6 unless pinned, `holding_rate` 0.01, the tuner order fee. The synthetic
 catalog is about 750 SKUs, heterogeneous in demand scale, margin, volatility, and
-lifecycle rate. The mixture draws every textbook family, with hyperparameters sampled from
+lifecycle rate. Episodes sample the training partition only. One fifth of the catalog, strided across product-id order, is the evaluation partition and does not appear in the log. The mixture draws every textbook family, with hyperparameters sampled from
 the tuning search spaces, plus `ExploratoryPolicy`, never-order, and over-order. Over-order
 contributes more episodes than each other arm, so the realised non-zero fill is not the
 old handful of competent orders. Planning depth varies by episode. Every episode uses one
-holding rate. Seeds start at `14_000_000`. A row holds
+holding rate. Seeds start at `14_000_000`. The manifest records that range and the disjoint seed ranges of the in-distribution, unseen-SKU, and unseen-disruption protocols. A row holds
 on-hand, an in-transit arrival-age profile, a sales window whose length is the encoder's
 sales-window knob (28 ticks, not the delivery lag), cash, capacity, the episode's nominal
 delivery lag, the quantity the buyer requested (`requested_qty`), the quantity Allocation
@@ -272,9 +272,15 @@ encoder. See ADR 0029.
 
 **Synthetic comparison** (`compare_synthetic`, `src/jepa/eval.py`)
 Scores the latent planner, the direct planner, the latent planner with a random-permutation
-priority, and the latent planner with textbook fair-share on the tuner holdout (32 seeds from
-`13_000_000`), beside published-default `OrderUpToPolicy`, an optional tuned `OrderUpToPolicy`,
-and the other three textbook policies at published defaults. Every table also carries a
+priority, and the latent planner with textbook fair-share as three separate generalisation
+tables, beside published-default `OrderUpToPolicy`, an optional tuned `OrderUpToPolicy`,
+and the other three textbook policies at published defaults. In-distribution uses the
+training SKUs, the default disruption regime, and the tuner holdout (32 seeds from
+`13_000_000`). Unseen-SKU uses the evaluation partition, the same default regime, and
+32 seeds from `15_000_000`. Unseen-disruption uses the training SKUs, 32 seeds from
+`16_000_000`, and `harsh_disruption_params`, which training episodes never use. The
+holding-rate retarget rescores the in-distribution seeds; it is not pooled with those
+three. Every table also carries a
 never-order floor, a random-cover floor (`ExploratoryPolicy`), a least-squares model inside
 the same planner, and an oracle model inside the same planner. The oracle is the inventory
 recursion: arrivals follow the arrival-age profile, and sales are capped by the mean of the
@@ -292,13 +298,15 @@ interval of latent minus that anchor excludes zero. The retarget rescores the sa
 `holding_rate` 0.05 and passes when that frozen planner beats the `OrderUpToPolicy` from the
 0.01 anchor, left frozen. An `OrderUpToPolicy` factory for `holding_rate` 0.05 is reported
 as `ceiling` and is not a pass bar. Smoke runs shorten the episode and the seed count.
-`python -m src.jepa eval` writes `in_distribution.parquet` and `retarget.parquet` under
+`python -m src.jepa eval` writes `in_distribution.parquet`, `unseen_sku.parquet`,
+`unseen_disruption.parquet`, and `retarget.parquet` under
 `runs/jepa-replenishment/synthetic/` only when the latent model's held-out per-step rollout
 R² beats an ordinary-least-squares baseline on the same inputs. The 112-episode measurement
 (latent mean R² 0.124 versus least squares 0.358) does not clear that gate, so that fit does
 not publish a profit table. The per-step curve for the latent model, the direct predictor,
 and that baseline is `rollout_accuracy.json` in the same directory, written whether or not
-the profit table is. The log, the fit, the 150-trial
+the profit table is. A refusal also writes `profit_table_refused.json` and does not
+write the protocol parquets. The log, the fit, the 150-trial
 `OrderUpToPolicy` studies at holding rates 0.005, 0.01, 0.02, 0.05, and 0.1,
 and that eval are the commands in the root README. On that corrected episode
 distribution the tuned anchor beats the published default. At `holding_rate`
@@ -350,7 +358,10 @@ that SKU's demand.
 **EventEngine**
 Generates stochastic disruption events (natural_disaster, economic_crisis, political_unrest,
 pandemic, technological_breakthrough) that shift regional demand/supply. Also dispatches scheduled
-callbacks for order arrivals.
+callbacks for order arrivals. The latent-replenishment log uses `default_disruption_params`
+(event probability 0.05, severity 0.01, duration 3). `harsh_disruption_params` raises all three
+and adds pandemic and political unrest. That regime is the unseen-disruption protocol and is
+not used on a training episode.
 
 **Order**
 In the graph engine, an order is a list of `(supplier_id, qty)` tuples produced by an

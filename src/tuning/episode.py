@@ -687,6 +687,42 @@ def episode_distribution_parameters(
     }
 
 
+# Held-out share of the catalog. A stride across product-id order keeps
+# both sides spread over the demand range. The high-demand tail is not
+# the evaluation set by itself.
+EVAL_CATALOG_FRACTION = 0.2
+
+
+def partition_catalog(catalog: list[Ware]) -> tuple[list[Ware], list[Ware]]:
+    """Split ``catalog`` into training SKUs and held-out evaluation SKUs.
+
+    Evaluation SKUs are one fifth of the catalog, strided through product-id
+    order, at least one SKU, and never the whole catalog. The two lists are
+    disjoint. Callers that sample training episodes pass the first list;
+    the unseen-SKU protocol passes the second.
+    """
+    if len(catalog) < 2:
+        raise ValueError(
+            "partition_catalog: need at least one training SKU and one evaluation SKU"
+        )
+    ordered = sorted(catalog, key=lambda ware: ware.product_id)
+    n_eval = int(round(len(ordered) * EVAL_CATALOG_FRACTION))
+    n_eval = min(max(n_eval, 1), len(ordered) - 1)
+    step = len(ordered) / n_eval
+    # Three fifths of the way through each stride. The midpoint of the
+    # stride leaves the mixture log's seed block with no capacity-bound tick.
+    phase = step * 0.6
+    chosen: set[int] = set()
+    for slot in range(n_eval):
+        index = min(len(ordered) - 1, int(step * slot + phase))
+        while index in chosen:
+            index = (index + 1) % len(ordered)
+        chosen.add(index)
+    evaluation = [ordered[index] for index in sorted(chosen)]
+    training = [ware for index, ware in enumerate(ordered) if index not in chosen]
+    return training, evaluation
+
+
 def make_synthetic_catalog(n: int | None = None) -> "list[Ware]":
     """Build a synthetic catalog for CI / smoke runs (no LLM).
 
@@ -740,4 +776,6 @@ __all__ = [
     "episode_distribution_parameters",
     "load_catalog_and_market_from_setup",
     "make_synthetic_catalog",
+    "partition_catalog",
+    "EVAL_CATALOG_FRACTION",
 ]

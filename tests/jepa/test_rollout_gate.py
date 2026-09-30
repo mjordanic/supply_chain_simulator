@@ -179,9 +179,17 @@ def test_undertrained_model_does_not_publish_a_profit_table(tmp_path: Path):
     )
     with pytest.raises(RolloutGateError):
         publish_synthetic_comparison(latent, direct, frame, tmp_path / "out")
+    import json
+
     assert not (tmp_path / "out" / "in_distribution.parquet").exists()
+    assert not (tmp_path / "out" / "unseen_sku.parquet").exists()
+    assert not (tmp_path / "out" / "unseen_disruption.parquet").exists()
     assert not (tmp_path / "out" / "retarget.parquet").exists()
     assert (tmp_path / "out" / "rollout_accuracy.json").is_file()
+    refused = json.loads(
+        (tmp_path / "out" / "profit_table_refused.json").read_text(encoding="utf-8")
+    )
+    assert refused["refused"] is True
 
 
 def test_real_budget_on_a_reduced_log_scores_the_planning_horizon(tmp_path: Path):
@@ -233,6 +241,12 @@ def test_real_budget_on_a_reduced_log_scores_the_planning_horizon(tmp_path: Path
     with pytest.raises(RolloutGateError):
         publish_synthetic_comparison(latent, direct, frame, tmp_path / "out")
     assert not (tmp_path / "out" / "in_distribution.parquet").exists()
+    assert not (tmp_path / "out" / "unseen_sku.parquet").exists()
+    assert not (tmp_path / "out" / "unseen_disruption.parquet").exists()
+    refused = json.loads(
+        (tmp_path / "out" / "profit_table_refused.json").read_text(encoding="utf-8")
+    )
+    assert refused["refused"] is True
 
 
 def test_passing_rollout_accuracy_writes_the_profit_table(tmp_path: Path):
@@ -256,10 +270,65 @@ def test_passing_rollout_accuracy_writes_the_profit_table(tmp_path: Path):
         in_distribution_passes=True,
         retarget_passes=True,
         in_distribution_paired_interval=(0.0, 0.0),
+        unseen_sku=ComparisonTable(
+            holding_rate=0.01,
+            seeds=(15_000_000,),
+            per_seed={"latent": (0.2,), "anchor": (0.1,)},
+        ),
+        unseen_disruption=ComparisonTable(
+            holding_rate=0.01,
+            seeds=(16_000_000,),
+            per_seed={"latent": (0.2,), "anchor": (0.1,)},
+        ),
     )
     write_gated_profit_table(result, tmp_path, accuracy)
     assert (tmp_path / "in_distribution.parquet").is_file()
+    assert (tmp_path / "unseen_sku.parquet").is_file()
+    assert (tmp_path / "unseen_disruption.parquet").is_file()
     assert (tmp_path / "retarget.parquet").is_file()
+
+
+def test_a_refused_rerun_removes_a_stale_profit_table(tmp_path: Path):
+    for name in (
+        "in_distribution.parquet",
+        "unseen_sku.parquet",
+        "unseen_disruption.parquet",
+        "retarget.parquet",
+        "comparison_warnings.json",
+    ):
+        (tmp_path / name).write_text("stale\n", encoding="utf-8")
+    accuracy = RolloutAccuracy(
+        steps=(1,),
+        latent=(0.1,),
+        direct=(0.0,),
+        ols=(0.9,),
+    )
+    bare = ComparisonTable(
+        holding_rate=0.01,
+        seeds=(1,),
+        per_seed={"latent": (0.2,), "anchor": (0.0,)},
+    )
+    result = SyntheticComparison(
+        in_distribution=bare,
+        retarget=bare,
+        in_distribution_passes=False,
+        retarget_passes=False,
+        in_distribution_paired_interval=(0.0, 0.0),
+        unseen_sku=bare,
+        unseen_disruption=bare,
+    )
+    with pytest.raises(RolloutGateError):
+        write_gated_profit_table(result, tmp_path, accuracy)
+    for name in (
+        "in_distribution.parquet",
+        "unseen_sku.parquet",
+        "unseen_disruption.parquet",
+        "retarget.parquet",
+        "comparison_warnings.json",
+    ):
+        assert not (tmp_path / name).exists()
+    assert (tmp_path / "rollout_accuracy.json").is_file()
+    assert (tmp_path / "profit_table_refused.json").is_file()
 
 
 def test_checkpoint_keeps_its_own_unroll_length(tmp_path: Path):

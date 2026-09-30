@@ -14,20 +14,20 @@ study's paper. It becomes a protocol here.
 
 **Blocked by:** 15.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** existing synthetic comparison tests; the `Synthetic comparison`,
 `Active subset` and `EventEngine` entries in `CONTEXT.md`; ADR 0026 (replay
 window adaptation) for how an existing transfer protocol is framed.
 
-- [ ] The catalog is partitioned so that training SKUs and evaluation SKUs never
+- [x] The catalog is partitioned so that training SKUs and evaluation SKUs never
       overlap, asserted by a test.
-- [ ] A harsher disruption regime is held entirely out of the training episodes
+- [x] A harsher disruption regime is held entirely out of the training episodes
       and evaluated as its own protocol.
-- [ ] In-distribution, unseen-SKU and unseen-disruption results are reported as
+- [x] In-distribution, unseen-SKU and unseen-disruption results are reported as
       three separate tables rather than pooled, so each claim stands alone.
-- [ ] Each table carries the same floors, ceiling and operational columns as
+- [x] Each table carries the same floors, ceiling and operational columns as
       ticket 15 specifies.
-- [ ] Seed ranges for every protocol are disjoint and recorded in the manifest.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the new
+- [x] Seed ranges for every protocol are disjoint and recorded in the manifest.
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the new
       protocols is updated in this ticket.

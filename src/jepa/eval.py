@@ -1,8 +1,9 @@
-"""In-distribution and holding-rate retarget comparison.
+"""In-distribution, unseen-SKU, unseen-disruption, and holding-rate retarget.
 
-Reports paired ``net_profit / initial_cash`` on the tuner holdout, with
+Reports paired ``net_profit / initial_cash`` for each protocol, with
 order volume, service level, stockout rate, and realised fill rate on
-every arm. The in-distribution rule passes when the learned arm beats
+every arm. The three generalisation protocols are separate tables.
+The in-distribution rule passes when the learned arm beats
 the tuned anchor and the bootstrap interval of that difference excludes
 zero. The retarget rule passes when the frozen planner beats the frozen
 textbook policy on that paired profit.
@@ -28,6 +29,7 @@ from src.jepa.dynamics import (
 )
 from src.jepa.plan import ReplenishmentPlanner
 from src.jepa.policy import ExploratoryPolicy, NeverOrderPolicy
+from src.sim.distributions import Constant
 from src.sim.policy import (
     IntermediatePolicy,
     OrderUpToPolicy,
@@ -35,13 +37,16 @@ from src.sim.policy import (
     PeriodicReorderPolicy,
     ReorderPointPolicy,
 )
+from src.sim.scenario import DisruptionParams, Ware
 from src.tuning.config import TuningConfig
-from src.tuning.episode import TuningEpisodeSpec, make_synthetic_catalog, sample_episode
+from src.tuning.episode import TuningEpisodeSpec, make_synthetic_catalog, partition_catalog, sample_episode
 from src.tuning.evaluator import evaluate_policy_normalised
 
 _TUNER = TuningConfig()
 N_HOLDOUT_SEEDS = _TUNER.n_holdout_seeds
 HOLDOUT_SEED_OFFSET = _TUNER.holdout_seed_offset
+UNSEEN_SKU_SEED_OFFSET = 15_000_000
+UNSEEN_DISRUPTION_SEED_OFFSET = 16_000_000
 IN_DISTRIBUTION_HOLDING_RATE = 0.01
 RETARGET_HOLDING_RATE = 0.05
 COLLINEAR_THRESHOLD = 0.99
@@ -227,19 +232,110 @@ class ComparisonTable:
 
 @dataclass(frozen=True)
 class SyntheticComparison:
-    """In-distribution table, retarget table, and the two pass booleans."""
+    """In-distribution, unseen-SKU, unseen-disruption, and retarget tables."""
 
     in_distribution: ComparisonTable
     retarget: ComparisonTable
     in_distribution_passes: bool
     retarget_passes: bool
     in_distribution_paired_interval: tuple[float, float]
+    unseen_sku: ComparisonTable
+    unseen_disruption: ComparisonTable
     rollout_accuracy: RolloutAccuracy | None = None
 
 
-def _specs(config: TuningConfig, n_seeds: int, seed_offset: int) -> list[TuningEpisodeSpec]:
-    catalog = make_synthetic_catalog(config.K_catalog)
-    return [sample_episode(catalog, config, seed_offset + i) for i in range(n_seeds)]
+def harsh_disruption_params() -> DisruptionParams:
+    """Disruption regime held out of every training episode.
+
+    Harsher than ``default_disruption_params`` on frequency, severity, and
+    duration, and it adds pandemic and political unrest. The log and the
+    in-distribution and unseen-SKU protocols keep the default regime.
+    """
+    return DisruptionParams(
+        event_prob=0.2,
+        types=[
+            "natural_disaster",
+            "economic_crisis",
+            "pandemic",
+            "political_unrest",
+        ],
+        regions=["US"],
+        severity=Constant(0.2),
+        duration=Constant(21),
+    )
+
+
+def _specs(
+    config: TuningConfig,
+    n_seeds: int,
+    seed_offset: int,
+    catalog: list[Ware],
+    disruption_params: DisruptionParams | None = None,
+) -> list[TuningEpisodeSpec]:
+    return [
+        sample_episode(
+            catalog,
+            config,
+            seed_offset + i,
+            disruption_params=disruption_params,
+        )
+        for i in range(n_seeds)
+    ]
+
+
+def protocol_episodes(
+    config: TuningConfig,
+    n_seeds: int,
+    *,
+    seed_offset: int | None = None,
+) -> dict[str, list[TuningEpisodeSpec]]:
+    """Episodes for the three generalisation protocols.
+
+    In-distribution and unseen-disruption draw the training partition.
+    Unseen-SKU draws the evaluation partition. Only unseen-disruption
+    uses ``harsh_disruption_params``. Holding rate is the in-distribution
+    rate. ``seed_offset`` moves the in-distribution block; the other two
+    protocols stay on their published offsets.
+    """
+    offset = HOLDOUT_SEED_OFFSET if seed_offset is None else int(seed_offset)
+    shaped = replace(config, holding_rate=IN_DISTRIBUTION_HOLDING_RATE)
+    full = make_synthetic_catalog(config.K_catalog)
+    training, evaluation = partition_catalog(full)
+    return {
+        "in_distribution": _specs(shaped, n_seeds, offset, training),
+        "unseen_sku": _specs(shaped, n_seeds, UNSEEN_SKU_SEED_OFFSET, evaluation),
+        "unseen_disruption": _specs(
+            shaped,
+            n_seeds,
+            UNSEEN_DISRUPTION_SEED_OFFSET,
+            training,
+            harsh_disruption_params(),
+        ),
+    }
+
+
+def published_protocol_ranges() -> dict[str, dict[str, int | str]]:
+    """Published seed block of each generalisation protocol.
+
+    The training block is not included: its length is the log that was
+    collected. These three blocks are disjoint from each other and from
+    the published log, which starts at ``14_000_000``.
+    """
+    rows = (
+        ("in_distribution", HOLDOUT_SEED_OFFSET, "training", "default"),
+        ("unseen_sku", UNSEEN_SKU_SEED_OFFSET, "evaluation", "default"),
+        ("unseen_disruption", UNSEEN_DISRUPTION_SEED_OFFSET, "training", "harsh"),
+    )
+    return {
+        name: {
+            "seed_min": offset,
+            "seed_max": offset + N_HOLDOUT_SEEDS - 1,
+            "n_seeds": N_HOLDOUT_SEEDS,
+            "catalog": catalog,
+            "disruption": disruption,
+        }
+        for name, offset, catalog, disruption in rows
+    }
 
 
 def _column(kpis: dict[str, object], name: str) -> tuple[float, ...]:
@@ -363,28 +459,39 @@ def compare_synthetic(
     config: TuningConfig | None = None,
     frame: pd.DataFrame | None = None,
 ) -> SyntheticComparison:
-    """Score both protocols on the tuner holdout.
+    """Score the generalisation protocols and the holding-rate retarget.
 
-    ``n_seeds`` and ``seed_offset`` default to the tuner holdout (32 seeds
-    from ``13_000_000``). ``config`` supplies the episode shape; smoke
-    tests pass a short one. Holding rate is forced to 0.01 on the
-    in-distribution specs and 0.05 on the retarget specs. ``anchor_factory``
-    is the ``OrderUpToPolicy`` scored at 0.01 and again, unchanged, at
-    0.05. When it is omitted the anchor is published-default
-    ``OrderUpToPolicy``. ``ceiling_factory`` is scored only on the retarget
-    and is not a pass bar. Each seed builds a new planner on the fitted
-    dynamics, so the weights are not refit. This does not run a tuning study.
+    In-distribution uses the training SKUs and, by default, 32 seeds from
+    ``13_000_000``. Unseen-SKU uses the evaluation partition and seeds from
+    ``15_000_000``. Unseen-disruption uses the training SKUs, seeds from
+    ``16_000_000``, and ``harsh_disruption_params``. Those three tables are
+    separate. ``n_seeds`` shortens every protocol. ``seed_offset`` moves
+    only the in-distribution block and the retarget, which rescores that
+    same block at holding rate 0.05. ``config`` supplies the episode
+    shape; smoke tests pass a short one. ``anchor_factory`` is the
+    ``OrderUpToPolicy`` scored at 0.01 on the three generalisation tables
+    and again, unchanged, at 0.05. When it is omitted the anchor is
+    published-default ``OrderUpToPolicy``. ``ceiling_factory`` is scored
+    only on the retarget and is not a pass bar. Each seed builds a new
+    planner on the fitted dynamics, so the weights are not refit. This
+    does not run a tuning study.
 
     ``frame`` is the transition log. The least-squares floor is fit on
     the latent model's training episodes from that log. Without a log the
     floor predicts zeros. The oracle ceiling does not fit.
     """
     base = config if config is not None else TuningConfig()
-    seeds = tuple(seed_offset + i for i in range(n_seeds))
-    in_config = replace(base, holding_rate=IN_DISTRIBUTION_HOLDING_RATE)
+    episodes = protocol_episodes(base, n_seeds, seed_offset=seed_offset)
+    training, _evaluation = partition_catalog(make_synthetic_catalog(base.K_catalog))
     retarget_config = replace(base, holding_rate=RETARGET_HOLDING_RATE)
-    in_specs = _specs(in_config, n_seeds, seed_offset)
-    retarget_specs = _specs(retarget_config, n_seeds, seed_offset)
+    retarget_specs = _specs(retarget_config, n_seeds, seed_offset, training)
+    seeds = {
+        "in_distribution": tuple(seed_offset + i for i in range(n_seeds)),
+        "unseen_sku": tuple(UNSEEN_SKU_SEED_OFFSET + i for i in range(n_seeds)),
+        "unseen_disruption": tuple(
+            UNSEEN_DISRUPTION_SEED_OFFSET + i for i in range(n_seeds)
+        ),
+    }
     order_fee = float(base.order_fee)
     log = frame if frame is not None else pd.DataFrame()
     train_episodes = set(latent.dynamics.train_episodes) or None
@@ -439,23 +546,28 @@ def compare_synthetic(
     published_anchor = anchor_factory is None
     if not published_anchor:
         in_arms["anchor"] = anchor
-    in_table = _comparison_table(
-        holding_rate=IN_DISTRIBUTION_HOLDING_RATE,
-        seeds=seeds,
-        specs=in_specs,
-        arms=in_arms,
-        alias=("anchor", "order_up_to") if published_anchor else None,
-    )
+    alias = ("anchor", "order_up_to") if published_anchor else None
+    generalisation = {
+        name: _comparison_table(
+            holding_rate=IN_DISTRIBUTION_HOLDING_RATE,
+            seeds=seeds[name],
+            specs=episodes[name],
+            arms=in_arms,
+            alias=alias,
+        )
+        for name in ("in_distribution", "unseen_sku", "unseen_disruption")
+    }
     retarget_arms = _shared(RETARGET_HOLDING_RATE)
     retarget_arms["anchor"] = anchor
     if ceiling_factory is not None:
         retarget_arms["ceiling"] = ceiling_factory
     retarget_table = _comparison_table(
         holding_rate=RETARGET_HOLDING_RATE,
-        seeds=seeds,
+        seeds=seeds["in_distribution"],
         specs=retarget_specs,
         arms=retarget_arms,
     )
+    in_table = generalisation["in_distribution"]
     return SyntheticComparison(
         in_distribution=in_table,
         retarget=retarget_table,
@@ -468,6 +580,8 @@ def compare_synthetic(
             retarget_table.per_seed["anchor"],
         ),
         in_distribution_paired_interval=in_table.paired_interval,
+        unseen_sku=generalisation["unseen_sku"],
+        unseen_disruption=generalisation["unseen_disruption"],
     )
 
 
@@ -521,22 +635,19 @@ def _comparison_frame(
 
 
 def write_synthetic_comparison(result: SyntheticComparison, directory: str | Path) -> Path:
-    """Write the in-distribution and retarget tables. Does not invent a cell."""
+    """Write each protocol to its own parquet. Does not invent a cell."""
     destination = Path(directory)
     destination.mkdir(parents=True, exist_ok=True)
     accuracy = result.rollout_accuracy
-    _comparison_frame(result.in_distribution, accuracy).to_parquet(
-        destination / "in_distribution.parquet",
-        index=False,
-    )
-    _comparison_frame(result.retarget, accuracy).to_parquet(
-        destination / "retarget.parquet",
-        index=False,
-    )
-    warnings = {
-        "in_distribution": list(result.in_distribution.collinear_warnings),
-        "retarget": list(result.retarget.collinear_warnings),
+    tables = {
+        "in_distribution": result.in_distribution,
+        "unseen_sku": result.unseen_sku,
+        "unseen_disruption": result.unseen_disruption,
+        "retarget": result.retarget,
     }
+    for name, table in tables.items():
+        _comparison_frame(table, accuracy).to_parquet(destination / f"{name}.parquet", index=False)
+    warnings = {name: list(table.collinear_warnings) for name, table in tables.items()}
     (destination / "comparison_warnings.json").write_text(
         json.dumps(warnings, indent=2) + "\n",
         encoding="utf-8",
@@ -570,6 +681,41 @@ def _write_rollout_accuracy(accuracy: RolloutAccuracy, path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+_PROFIT_ARTIFACTS = (
+    "in_distribution.parquet",
+    "unseen_sku.parquet",
+    "unseen_disruption.parquet",
+    "retarget.parquet",
+    "comparison_warnings.json",
+)
+
+
+def _record_profit_refusal(destination: Path) -> None:
+    """Leave a record that the publish gate withheld the profit tables."""
+    payload = {
+        "refused": True,
+        "reason": "held-out rollout accuracy did not beat the ordinary-least-squares baseline",
+    }
+    (destination / "profit_table_refused.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _clear_profit_refusal(destination: Path) -> None:
+    refused = destination / "profit_table_refused.json"
+    if refused.exists():
+        refused.unlink()
+
+
+def _remove_profit_tables(destination: Path) -> None:
+    """Drop profit tables so a refused re-run cannot leave a stale one."""
+    for name in _PROFIT_ARTIFACTS:
+        path = destination / name
+        if path.exists():
+            path.unlink()
+
+
 def write_gated_profit_table(
     result: SyntheticComparison,
     directory: str | Path,
@@ -577,13 +723,19 @@ def write_gated_profit_table(
 ) -> Path:
     """Write the profit tables when rollout accuracy beats least squares.
 
-    The per-step curve is written either way. The profit parquets are not.
+    The per-step curve is written either way. When the gate refuses, any
+    protocol parquet already in the directory is removed and
+    ``profit_table_refused.json`` records the refusal. The gate is not
+    bypassed.
     """
     destination = Path(directory)
     destination.mkdir(parents=True, exist_ok=True)
     _write_rollout_accuracy(accuracy, destination / "rollout_accuracy.json")
     if not rollout_beats_baseline(accuracy):
+        _remove_profit_tables(destination)
+        _record_profit_refusal(destination)
         raise RolloutGateError(accuracy)
+    _clear_profit_refusal(destination)
     return write_synthetic_comparison(replace(result, rollout_accuracy=accuracy), destination)
 
 
@@ -594,14 +746,20 @@ def publish_synthetic_comparison(
     directory: str | Path,
     **compare_kwargs: object,
 ) -> SyntheticComparison:
-    """Score rollout accuracy, then the profit table if the gate opens."""
+    """Score rollout accuracy, then the profit table if the gate opens.
+
+    A refusal writes ``profit_table_refused.json`` and no protocol parquet.
+    """
     accuracy = held_out_rollout_accuracy(latent.dynamics, direct.dynamics, frame)
     destination = Path(directory)
     destination.mkdir(parents=True, exist_ok=True)
     _write_rollout_accuracy(accuracy, destination / "rollout_accuracy.json")
     if not rollout_beats_baseline(accuracy):
+        _remove_profit_tables(destination)
+        _record_profit_refusal(destination)
         raise RolloutGateError(accuracy)
     result = compare_synthetic(latent, direct, frame=frame, **compare_kwargs)
     result = replace(result, rollout_accuracy=accuracy)
+    _clear_profit_refusal(destination)
     write_synthetic_comparison(result, destination)
     return result
