@@ -44,6 +44,13 @@ DEFAULT_BUDGET = 64
 DEFAULT_HORIZON_MULTIPLE = 4
 
 
+def _in_transit_units(value: Any) -> float:
+    """Pipeline units. An arrival-age profile is summed; a bare total is itself."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(sum(float(part) for part in value))
+
+
 def _decision_profile(obs: Mapping[str, Any], pid: str, pending_units: int) -> list[int] | int:
     """Arrival-age profile at ``decide`` time, or the pending total if ages are unknown.
 
@@ -316,7 +323,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
             for pid, (next_on_hand, next_in_transit, next_sales) in zip(pids, predicted, strict=True):
                 revenue += max(0.0, float(next_sales)) * float(prices.get(pid, 0.0))
                 on_hand[pid] = max(0, int(round(next_on_hand)))
-                in_transit[pid] = max(0, int(round(next_in_transit)))
+                in_transit[pid] = max(0, int(round(_in_transit_units(next_in_transit))))
                 sales_hist[pid].append(max(0, int(round(next_sales))))
             fee = self.order_fee * len(used)
             profit = revenue - purchase - holding - fee
@@ -383,11 +390,12 @@ def fit_latent(
     epochs: int = 20,
     seed: int = 0,
     lr: float = 1e-3,
+    artifact_dir: str | Path | None = None,
     **planner_kwargs: Any,
 ) -> ReplenishmentPlanner:
     """Fit the latent predictor on a transition log and wrap it as a Policy."""
     dynamics = LatentDynamics(delivery_lag=delivery_lag)
-    dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr)
+    dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr, artifact_dir=artifact_dir)
     return ReplenishmentPlanner(dynamics, delivery_lag=delivery_lag, **planner_kwargs)
 
 
@@ -398,11 +406,12 @@ def fit_direct(
     epochs: int = 20,
     seed: int = 0,
     lr: float = 1e-3,
+    artifact_dir: str | Path | None = None,
     **planner_kwargs: Any,
 ) -> ReplenishmentPlanner:
     """Fit the direct predictor on a transition log and wrap it as a Policy."""
     dynamics = DirectDynamics(delivery_lag=delivery_lag)
-    dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr)
+    dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr, artifact_dir=artifact_dir)
     return ReplenishmentPlanner(dynamics, delivery_lag=delivery_lag, **planner_kwargs)
 
 

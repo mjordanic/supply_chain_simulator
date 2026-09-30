@@ -8,15 +8,24 @@ The Market multiplier, the disruption identity, and the calendar are
 not features. An action-conditioned predictor unrolls open-loop for
 ``H = delivery_lag`` steps. The latent loss matches a stopped target
 embedding at each step, plus an anti-collapse penalty. Probes read a
-stopped embedding and regress next on-hand, next in-transit, and sales
-over the step. Probe losses do not update the encoder.
+stopped embedding and regress next on-hand, the next arrival-age
+profile, and sales over the step. Probe losses do not update the encoder.
+
+``fit(epochs=N)`` takes N shuffled minibatch passes over the training
+episodes. A fraction of episodes is held out whole. Early stopping
+watches that holdout and restores the best epoch. The loss curve is
+written under ``runs/jepa-replenishment/fit/``. The EMA decay is set from the
+minibatches in one pass, so the epoch early stopping keeps has already
+left only ``EMA_INIT_SHARE`` of the target encoder's initial weights.
 """
 
 from __future__ import annotations
 
 import copy
+import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -24,7 +33,11 @@ import torch
 from torch import nn
 
 _EMBED_DIM = 32
-_EMA_TAU = 0.99
+FIT_BATCH_SIZE = 256
+VAL_EPISODE_FRACTION = 0.2
+EARLY_STOP_PATIENCE = 5
+EMA_INIT_SHARE = 0.05
+FIT_ARTIFACT_DIR = Path("runs/jepa-replenishment/fit")
 
 # Four weeks of daily sales. The longest sampled edge is a nominal lag
 # of 6 plus the slow supplier's offset of 4, so this sits well above
@@ -40,6 +53,11 @@ ARRIVAL_AGE_SLOTS = 10
 def feature_dim(sales_window_length: int = SALES_WINDOW) -> int:
     """Width of one encoder vector. Independent of the sampled lead time."""
     return 1 + ARRIVAL_AGE_SLOTS + max(0, int(sales_window_length)) + 3
+
+
+def target_dim() -> int:
+    """Width of the quantity head: on-hand, arrival-age profile, sales."""
+    return 2 + ARRIVAL_AGE_SLOTS
 
 
 def arrival_age_profile(
@@ -168,21 +186,150 @@ def _groups(frame: pd.DataFrame):
         yield group.sort_values("tick", kind="mergesort")
 
 
-def _units(value: Any) -> float:
-    """Sum an arrival-age profile. Probes still regress that total."""
-    return float(sum(float(part) for part in value))
-
-
 def _targets(row: dict) -> list[float]:
-    return [
-        float(row["next_on_hand"]),
-        _units(row["next_in_transit"]),
-        float(row["next_sales"]),
-    ]
+    """On-hand, the next arrival-age profile, and sales. Not the pipeline sum."""
+    profile = _as_profile(row["next_in_transit"], ARRIVAL_AGE_SLOTS)
+    return [float(row["next_on_hand"]), *profile, float(row["next_sales"])]
+
+
+def _batch_count(n_rows: int) -> int:
+    if n_rows <= 0:
+        return 0
+    return (int(n_rows) + FIT_BATCH_SIZE - 1) // FIT_BATCH_SIZE
+
+
+def _ema_decay(n_steps: int) -> float:
+    """Decay that leaves ``EMA_INIT_SHARE`` of the initial target after ``n_steps``."""
+    if n_steps <= 0:
+        return 1.0
+    return float(EMA_INIT_SHARE ** (1.0 / float(n_steps)))
+
+
+def _generator(seed: int) -> torch.Generator:
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    return generator
+
+
+def _holdout_episodes(
+    episode_ids: Sequence[int],
+    generator: torch.Generator,
+) -> tuple[set[int], set[int]]:
+    """Train and validation episode ids. One episode stays entirely on one side."""
+    unique = sorted({int(episode) for episode in episode_ids})
+    if len(unique) < 2:
+        return set(unique), set()
+    n_val = int(round(VAL_EPISODE_FRACTION * len(unique)))
+    n_val = min(max(n_val, 1), len(unique) - 1)
+    order = torch.randperm(len(unique), generator=generator).tolist()
+    held = {unique[index] for index in order[:n_val]}
+    return set(unique) - held, held
+
+
+def _by_episode(frame: pd.DataFrame, episodes: set[int]) -> pd.DataFrame:
+    if frame.empty or not episodes:
+        return frame.iloc[0:0]
+    return frame.loc[frame["episode_seed"].isin(episodes)]
+
+
+def _snapshot(module: nn.Module) -> dict[str, torch.Tensor]:
+    return {key: value.detach().clone() for key, value in module.state_dict().items()}
+
+
+def _write_fit_artifact(directory: str | Path | None, name: str, payload: dict[str, Any]) -> None:
+    destination = FIT_ARTIFACT_DIR if directory is None else Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, indent=2, allow_nan=False)
+    (destination / name).write_text(text + "\n", encoding="utf-8")
+
+
+def _fit_record(
+    train_ids: set[int],
+    val_ids: set[int],
+    trained: Mapping[str, Any],
+    **extra: Any,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "train_episodes": sorted(train_ids),
+        "val_episodes": sorted(val_ids),
+        "batch_size": FIT_BATCH_SIZE,
+        "curve": list(trained["curve"]),
+        "stopped_early": bool(trained["stopped_early"]),
+        "best_epoch": trained["best_epoch"],
+    }
+    payload.update(extra)
+    return payload
+
+
+def _train_passes(
+    *,
+    n_train: int,
+    epochs: int,
+    generator: torch.Generator,
+    optimizer: torch.optim.Optimizer,
+    loss_on: Callable[[torch.Tensor], torch.Tensor],
+    val_loss: Callable[[], float | None],
+    after_step: Callable[[], None] | None,
+    snapshot: Callable[[], dict[str, torch.Tensor]],
+    restore: Callable[[Mapping[str, torch.Tensor]], None],
+    patience: int,
+) -> dict[str, Any]:
+    """One epoch is one shuffled pass. Stop when the holdout stops improving."""
+    curve: list[dict[str, Any]] = []
+    if n_train <= 0 or epochs <= 0:
+        return {"curve": curve, "stopped_early": False, "best_epoch": None}
+    best_loss = math.inf
+    best_epoch: int | None = None
+    best_state: dict[str, torch.Tensor] | None = None
+    wait = 0
+    stopped = False
+    steps = 0
+    tolerated = max(int(patience), 1)
+    for epoch in range(int(epochs)):
+        order = torch.randperm(n_train, generator=generator)
+        total = 0.0
+        seen = 0
+        for start in range(0, n_train, FIT_BATCH_SIZE):
+            index = order[start : start + FIT_BATCH_SIZE]
+            optimizer.zero_grad(set_to_none=True)
+            loss = loss_on(index)
+            loss.backward()
+            optimizer.step()
+            if after_step is not None:
+                after_step()
+            steps += 1
+            batch = int(index.numel())
+            total += float(loss.detach()) * batch
+            seen += batch
+        measured = val_loss()
+        curve.append(
+            {
+                "epoch": epoch + 1,
+                "train_loss": total / seen,
+                "val_loss": measured,
+                "steps": steps,
+            }
+        )
+        if measured is None:
+            best_epoch = epoch + 1
+            continue
+        if measured < best_loss:
+            best_loss = measured
+            best_epoch = epoch + 1
+            best_state = snapshot()
+            wait = 0
+            continue
+        wait += 1
+        if wait >= tolerated:
+            stopped = True
+            break
+    if best_state is not None:
+        restore(best_state)
+    return {"curve": curve, "stopped_early": stopped, "best_epoch": best_epoch}
 
 
 class _EmptyRollout:
-    def step(self, granted: list[float]) -> list[tuple[float, float, float]]:
+    def step(self, granted: list[float]) -> list[tuple[float, tuple[float, ...], float]]:
         return []
 
 
@@ -230,7 +377,7 @@ class _Predictor(nn.Module):
 class _Probe(nn.Module):
     def __init__(self, embed_dim: int) -> None:
         super().__init__()
-        self.head = nn.Linear(embed_dim, 3)
+        self.head = nn.Linear(embed_dim, target_dim())
 
     def forward(self, embedding: torch.Tensor) -> torch.Tensor:
         return self.head(embedding)
@@ -242,7 +389,7 @@ class _DirectNet(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(in_dim + 1, _EMBED_DIM),
             nn.ReLU(),
-            nn.Linear(_EMBED_DIM, 3),
+            nn.Linear(_EMBED_DIM, target_dim()),
         )
 
     def forward(self, features: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
@@ -256,8 +403,8 @@ class _ScaledDynamics(nn.Module):
         dim = feature_dim()
         self.register_buffer("x_mean", torch.zeros(dim))
         self.register_buffer("x_std", torch.ones(dim))
-        self.register_buffer("y_mean", torch.zeros(3))
-        self.register_buffer("y_std", torch.ones(3))
+        self.register_buffer("y_mean", torch.zeros(target_dim()))
+        self.register_buffer("y_std", torch.ones(target_dim()))
         self.register_buffer("a_mean", torch.zeros(1))
         self.register_buffer("a_std", torch.ones(1))
 
@@ -286,9 +433,19 @@ class _ScaledDynamics(nn.Module):
     def _denorm_y(self, targets: torch.Tensor) -> torch.Tensor:
         return targets * self.y_std + self.y_mean
 
-    def _as_quantities(self, normalized: torch.Tensor) -> list[tuple[float, float, float]]:
+    def _norm_y(self, targets: torch.Tensor) -> torch.Tensor:
+        return (targets - self.y_mean) / self.y_std
+
+    def _as_quantities(
+        self, normalized: torch.Tensor
+    ) -> list[tuple[float, tuple[float, ...], float]]:
+        """On-hand, the arrival-age profile, and sales. The planner sums the profile."""
         decoded = self._denorm_y(normalized)
-        return [tuple(float(value) for value in row) for row in decoded]
+        rows: list[tuple[float, tuple[float, ...], float]] = []
+        for row in decoded:
+            values = [float(value) for value in row]
+            rows.append((values[0], tuple(values[1:-1]), values[-1]))
+        return rows
 
     def open_rollout(self, features: list[list[float]]) -> Any:
         """Start an open-loop unroll from the decision-time observation.
@@ -317,42 +474,151 @@ class LatentDynamics(_ScaledDynamics):
         for parameter in self.target_encoder.parameters():
             parameter.requires_grad_(False)
 
-    def fit(self, frame: pd.DataFrame, *, epochs: int, seed: int, lr: float = 1e-3) -> None:
+    def fit(
+        self,
+        frame: pd.DataFrame,
+        *,
+        epochs: int,
+        seed: int,
+        lr: float = 1e-3,
+        artifact_dir: str | Path | None = None,
+        patience: int = EARLY_STOP_PATIENCE,
+    ) -> None:
         torch.manual_seed(seed)
-        observations, actions = self._windows(frame)
-        _probe_x, probe_y = self._probe_pairs(frame)
-        feature_rows = self._all_features(frame)
-        self._set_stats(feature_rows, actions.reshape(-1), probe_y)
-        self._fit_latent(observations, actions, epochs=epochs, lr=lr)
-        self.fit_probes(frame, epochs=epochs, lr=lr)
+        if epochs <= 0 or frame.empty:
+            return
+        generator = _generator(seed)
+        train_ids, val_ids = _holdout_episodes(frame["episode_seed"].tolist(), generator)
+        train_frame = _by_episode(frame, train_ids)
+        val_frame = _by_episode(frame, val_ids)
+        observations, actions = self._windows(train_frame)
+        val_observations, val_actions = self._windows(val_frame)
+        _probe_x, probe_y = self._probe_pairs(train_frame)
+        self._set_stats(self._all_features(train_frame), actions.reshape(-1), probe_y)
+        trained, decay = self._fit_latent(
+            observations,
+            actions,
+            val_observations,
+            val_actions,
+            epochs=epochs,
+            lr=lr,
+            generator=generator,
+            patience=patience,
+        )
+        _write_fit_artifact(
+            artifact_dir,
+            "latent.json",
+            _fit_record(train_ids, val_ids, trained, patience=int(patience), ema_tau=decay),
+        )
+        self.fit_probes(
+            frame,
+            epochs=epochs,
+            lr=lr,
+            seed=seed,
+            artifact_dir=artifact_dir,
+            patience=patience,
+        )
 
-    def fit_probes(self, frame: pd.DataFrame, *, epochs: int, lr: float = 1e-3) -> None:
-        """Regress the three quantities from a stopped target embedding.
+    def fit_probes(
+        self,
+        frame: pd.DataFrame,
+        *,
+        epochs: int,
+        lr: float = 1e-3,
+        seed: int = 0,
+        artifact_dir: str | Path | None = None,
+        patience: int = EARLY_STOP_PATIENCE,
+    ) -> None:
+        """Regress the quantity head from a stopped target embedding.
 
         The encoder is not in the optimizer and the embedding is
         detached, so this step cannot change encoder parameters.
         """
-        features, targets = self._probe_pairs(frame)
-        if features.numel() == 0 or epochs <= 0:
+        if epochs <= 0 or frame.empty:
             return
+        generator = _generator(seed)
+        train_ids, val_ids = _holdout_episodes(frame["episode_seed"].tolist(), generator)
+        train_x, train_y = self._probe_pairs(_by_episode(frame, train_ids))
+        val_x, val_y = self._probe_pairs(_by_episode(frame, val_ids))
+        trained = self._fit_probe_passes(
+            train_x,
+            train_y,
+            val_x,
+            val_y,
+            epochs=epochs,
+            lr=lr,
+            generator=generator,
+            patience=patience,
+        )
+        _write_fit_artifact(
+            artifact_dir,
+            "probes.json",
+            _fit_record(train_ids, val_ids, trained, patience=int(patience)),
+        )
+
+    def _fit_probe_passes(
+        self,
+        features: torch.Tensor,
+        targets: torch.Tensor,
+        val_features: torch.Tensor,
+        val_targets: torch.Tensor,
+        *,
+        epochs: int,
+        lr: float,
+        generator: torch.Generator,
+        patience: int,
+    ) -> dict[str, Any]:
+        n_train = int(features.shape[0])
+        if n_train <= 0 or epochs <= 0:
+            return {"curve": [], "stopped_early": False, "best_epoch": None}
+        features_n = self._norm_x(features)
+        targets_n = self._norm_y(targets)
+        if val_features.numel():
+            val_features_n = self._norm_x(val_features)
+            val_targets_n = self._norm_y(val_targets)
+        else:
+            val_features_n = val_features
+            val_targets_n = val_targets
         optimizer = torch.optim.Adam(self.probes.parameters(), lr=lr)
         self.encoder.eval()
         self.target_encoder.eval()
         self.probes.train()
-        for _ in range(epochs):
-            optimizer.zero_grad(set_to_none=True)
+
+        def loss_on(index: torch.Tensor) -> torch.Tensor:
             with torch.no_grad():
-                embedding = self.target_encoder(self._norm_x(features))
-            loss = nn.functional.mse_loss(self.probes(embedding), self._norm_y(targets))
-            loss.backward()
-            optimizer.step()
+                embedding = self.target_encoder(features_n[index])
+            return nn.functional.mse_loss(self.probes(embedding), targets_n[index])
+
+        def measured() -> float | None:
+            if val_features_n.numel() == 0:
+                return None
+            self.probes.eval()
+            with torch.no_grad():
+                embedding = self.target_encoder(val_features_n)
+                loss = float(nn.functional.mse_loss(self.probes(embedding), val_targets_n))
+            self.probes.train()
+            return loss
+
+        return _train_passes(
+            n_train=n_train,
+            epochs=epochs,
+            generator=generator,
+            optimizer=optimizer,
+            loss_on=loss_on,
+            val_loss=measured,
+            after_step=None,
+            snapshot=lambda: _snapshot(self),
+            restore=self.load_state_dict,
+            patience=patience,
+        )
 
     @torch.no_grad()
     def predict_next(
         self,
         features: list[list[float]],
         granted: list[float],
-    ) -> list[tuple[float, float, float]]:
+    ) -> list[tuple[float, tuple[float, ...], float]]:
+        """On-hand, the next arrival-age profile, and sales over the step."""
         if not features:
             return []
         self.encoder.eval()
@@ -372,33 +638,61 @@ class LatentDynamics(_ScaledDynamics):
         self,
         observations: torch.Tensor,
         actions: torch.Tensor,
+        val_observations: torch.Tensor,
+        val_actions: torch.Tensor,
         *,
         epochs: int,
         lr: float,
-    ) -> None:
-        if epochs <= 0 or observations.numel() == 0:
-            return
+        generator: torch.Generator,
+        patience: int,
+    ) -> tuple[dict[str, Any], float]:
+        n_train = int(observations.shape[0])
+        # One pass, not the epoch budget. Early stopping keeps an earlier
+        # epoch, and that epoch has to have walked the target off its init.
+        decay = _ema_decay(_batch_count(n_train))
+        self._ema_decay = decay
+        if epochs <= 0 or n_train == 0:
+            return {"curve": [], "stopped_early": False, "best_epoch": None}, decay
+        observations_n = self._norm_x(observations)
+        actions_n = self._norm_a(actions)
+        if val_observations.numel():
+            val_obs_n = self._norm_x(val_observations)
+            val_act_n = self._norm_a(val_actions)
+        else:
+            val_obs_n = val_observations
+            val_act_n = val_actions
         optimizer = torch.optim.Adam(
             list(self.encoder.parameters()) + list(self.predictor.parameters()),
             lr=lr,
         )
-        observations_n = self._norm_x(observations)
-        actions_n = self._norm_a(actions)
         self.encoder.train()
         self.predictor.train()
-        for _ in range(epochs):
-            optimizer.zero_grad(set_to_none=True)
-            loss = self._open_loop_loss(observations_n, actions_n)
-            loss.backward()
-            optimizer.step()
-            self._ema()
 
-    def _open_loop_loss(self, observations: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        """Unroll the predictor for ``H`` steps without feeding true states back.
+        def loss_on(index: torch.Tensor) -> torch.Tensor:
+            return self._open_loop_loss(observations_n[index], actions_n[index])
 
-        ``observations`` is ``[batch, H + 1, features]`` and already
-        normalized. The target at each step is the stopped target encoder.
-        """
+        def measured() -> float | None:
+            if val_obs_n.numel() == 0:
+                return None
+            with torch.no_grad():
+                return float(self._rollout_mse(val_obs_n, val_act_n))
+
+        trained = _train_passes(
+            n_train=n_train,
+            epochs=epochs,
+            generator=generator,
+            optimizer=optimizer,
+            loss_on=loss_on,
+            val_loss=measured,
+            after_step=self._ema,
+            snapshot=lambda: _snapshot(self),
+            restore=self.load_state_dict,
+            patience=patience,
+        )
+        return trained, decay
+
+    def _rollout_mse(self, observations: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Open-loop distance to the stopped target encoder. ``observations`` are normalized."""
         horizon = actions.shape[1]
         embedding = self.encoder(observations[:, 0])
         loss = observations.new_zeros(())
@@ -406,16 +700,26 @@ class LatentDynamics(_ScaledDynamics):
             embedding = self.predictor(embedding, actions[:, step : step + 1])
             target = self.target_encoder(observations[:, step + 1]).detach()
             loss = loss + nn.functional.mse_loss(embedding, target)
+        return loss
+
+    def _open_loop_loss(self, observations: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Unroll the predictor for ``H`` steps without feeding true states back.
+
+        ``observations`` is ``[batch, H + 1, features]`` and already
+        normalized. The target at each step is the stopped target encoder.
+        """
         flat = observations.reshape(-1, observations.shape[-1])
-        return loss + _anti_collapse(self.encoder(flat))
+        return self._rollout_mse(observations, actions) + _anti_collapse(self.encoder(flat))
 
     def _ema(self) -> None:
+        tau = float(self._ema_decay)
         with torch.no_grad():
             for online, target in zip(
                 self.encoder.parameters(),
                 self.target_encoder.parameters(),
+                strict=True,
             ):
-                target.mul_(_EMA_TAU).add_(online, alpha=1.0 - _EMA_TAU)
+                target.mul_(tau).add_(online, alpha=1.0 - tau)
 
     def _windows(self, frame: pd.DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
         horizon = self.delivery_lag
@@ -453,7 +757,7 @@ class LatentDynamics(_ScaledDynamics):
                 features.append(self._features(rows[index + 1]))
                 targets.append(_targets(rows[index]))
         if not features:
-            return torch.zeros(0, feature_dim()), torch.zeros(0, 3)
+            return torch.zeros(0, feature_dim()), torch.zeros(0, target_dim())
         return torch.tensor(features, dtype=torch.float32), torch.tensor(targets, dtype=torch.float32)
 
     def _all_features(self, frame: pd.DataFrame) -> torch.Tensor:
@@ -466,44 +770,125 @@ class LatentDynamics(_ScaledDynamics):
             return torch.zeros(0, feature_dim())
         return torch.tensor(rows, dtype=torch.float32)
 
-    def _norm_y(self, targets: torch.Tensor) -> torch.Tensor:
-        return (targets - self.y_mean) / self.y_std
-
-
 class DirectDynamics(_ScaledDynamics):
-    """Predict the three quantities from the observation and the granted qty.
+    """Predict on-hand, the arrival-age profile, and sales from the observation.
 
-    No latent target and no EMA encoder. The planner around it is the
-    same shooter and the same ration as the latent arm.
+    No latent target and no EMA encoder. Training is the same minibatch
+    passes, episode holdout, and early stopping as the latent fit. The
+    planner around it is the same shooter and the same ration.
     """
 
     def __init__(self, delivery_lag: int) -> None:
         super().__init__(delivery_lag)
         self.net = _DirectNet(feature_dim())
 
-    def fit(self, frame: pd.DataFrame, *, epochs: int, seed: int, lr: float = 1e-3) -> None:
+    def fit(
+        self,
+        frame: pd.DataFrame,
+        *,
+        epochs: int,
+        seed: int,
+        lr: float = 1e-3,
+        artifact_dir: str | Path | None = None,
+        patience: int = EARLY_STOP_PATIENCE,
+    ) -> None:
         torch.manual_seed(seed)
-        features, actions, targets = self._pairs(frame)
-        self._set_stats(features, actions, targets)
-        if features.numel() == 0 or epochs <= 0:
+        if epochs <= 0 or frame.empty:
             return
-        optimizer = torch.optim.Adam(self.net.parameters(), lr=lr)
+        generator = _generator(seed)
+        train_ids, val_ids = _holdout_episodes(frame["episode_seed"].tolist(), generator)
+        features, actions, targets = self._pairs(_by_episode(frame, train_ids))
+        val_features, val_actions, val_targets = self._pairs(_by_episode(frame, val_ids))
+        self._set_stats(features, actions, targets)
+        trained = self._fit_passes(
+            features,
+            actions,
+            targets,
+            val_features,
+            val_actions,
+            val_targets,
+            epochs=epochs,
+            lr=lr,
+            generator=generator,
+            patience=patience,
+        )
+        _write_fit_artifact(
+            artifact_dir,
+            "direct.json",
+            _fit_record(train_ids, val_ids, trained, patience=int(patience)),
+        )
+
+    def _fit_passes(
+        self,
+        features: torch.Tensor,
+        actions: torch.Tensor,
+        targets: torch.Tensor,
+        val_features: torch.Tensor,
+        val_actions: torch.Tensor,
+        val_targets: torch.Tensor,
+        *,
+        epochs: int,
+        lr: float,
+        generator: torch.Generator,
+        patience: int,
+    ) -> dict[str, Any]:
+        n_train = int(features.shape[0])
+        if n_train <= 0 or epochs <= 0:
+            return {"curve": [], "stopped_early": False, "best_epoch": None}
         features_n = self._norm_x(features)
         actions_n = self._norm_a(actions)
-        targets_n = (targets - self.y_mean) / self.y_std
+        targets_n = self._norm_y(targets)
+        if val_features.numel():
+            val_features_n = self._norm_x(val_features)
+            val_actions_n = self._norm_a(val_actions)
+            val_targets_n = self._norm_y(val_targets)
+        else:
+            val_features_n = val_features
+            val_actions_n = val_actions
+            val_targets_n = val_targets
+        optimizer = torch.optim.Adam(self.net.parameters(), lr=lr)
         self.net.train()
-        for _ in range(epochs):
-            optimizer.zero_grad(set_to_none=True)
-            loss = nn.functional.mse_loss(self.net(features_n, actions_n), targets_n)
-            loss.backward()
-            optimizer.step()
+
+        def loss_on(index: torch.Tensor) -> torch.Tensor:
+            return nn.functional.mse_loss(
+                self.net(features_n[index], actions_n[index]),
+                targets_n[index],
+            )
+
+        def measured() -> float | None:
+            if val_features_n.numel() == 0:
+                return None
+            self.net.eval()
+            with torch.no_grad():
+                loss = float(
+                    nn.functional.mse_loss(
+                        self.net(val_features_n, val_actions_n),
+                        val_targets_n,
+                    )
+                )
+            self.net.train()
+            return loss
+
+        return _train_passes(
+            n_train=n_train,
+            epochs=epochs,
+            generator=generator,
+            optimizer=optimizer,
+            loss_on=loss_on,
+            val_loss=measured,
+            after_step=None,
+            snapshot=lambda: _snapshot(self),
+            restore=self.load_state_dict,
+            patience=patience,
+        )
 
     @torch.no_grad()
     def predict_next(
         self,
         features: list[list[float]],
         granted: list[float],
-    ) -> list[tuple[float, float, float]]:
+    ) -> list[tuple[float, tuple[float, ...], float]]:
+        """On-hand, the next arrival-age profile, and sales over the step."""
         if not features:
             return []
         self.net.eval()
@@ -531,7 +916,7 @@ class DirectDynamics(_ScaledDynamics):
                 targets.append(_targets(current))
         dim = feature_dim()
         if not features:
-            return torch.zeros(0, dim), torch.zeros(0, 1), torch.zeros(0, 3)
+            return torch.zeros(0, dim), torch.zeros(0, 1), torch.zeros(0, target_dim())
         return (
             torch.tensor(features, dtype=torch.float32),
             torch.tensor(actions, dtype=torch.float32).unsqueeze(-1),
@@ -552,7 +937,7 @@ class _LatentRollout:
             self._embedding = dynamics.encoder(observation)
 
     @torch.no_grad()
-    def step(self, granted: list[float]) -> list[tuple[float, float, float]]:
+    def step(self, granted: list[float]) -> list[tuple[float, tuple[float, ...], float]]:
         dynamics = self._dynamics
         action = dynamics._norm_a(torch.tensor(granted, dtype=torch.float32).unsqueeze(-1))
         self._embedding = dynamics.predictor(self._embedding, action)
@@ -564,7 +949,8 @@ class _DirectRollout:
 
     Cash, capacity, and the delivery lead time stay at the decision-time
     observation, so a later holding charge cannot change the next decoded
-    quantities. The probe still emits in-transit as a sum. The next
+    quantities. The decoded in-transit value is an arrival-age profile;
+    this rollout does not write that profile back. The next
     observation keeps ages: this step's grant becomes age 1, older cohorts
     move up one tick, and a cohort whose next age is not below the nominal
     lead drops out.
@@ -575,7 +961,7 @@ class _DirectRollout:
         self._raw = torch.tensor(features, dtype=torch.float32)
 
     @torch.no_grad()
-    def step(self, granted: list[float]) -> list[tuple[float, float, float]]:
+    def step(self, granted: list[float]) -> list[tuple[float, tuple[float, ...], float]]:
         quantities = self._dynamics.predict_next(self._raw.tolist(), granted)
         if self._raw.numel() == 0 or not quantities:
             return quantities

@@ -24,7 +24,8 @@ target. The predictor rolls its embedding forward for the edge lead
 time, open-loop, and the latent loss is the distance to that stopped
 target at each step. An anti-collapse penalty keeps embedding variance
 off the floor and penalizes cross-dimension correlation. Probes decode
-next on-hand, next in-transit, and sales over the step. Probe losses
+next on-hand, the next arrival-age profile, and sales over the step.
+The planner sums that profile for inventory position. Probe losses
 update the probes only. The planner's profit calculation does not
 update the encoder. Imagined profit is revenue minus order cost minus
 holding cost minus order fees, which is the engine's `net_profit`.

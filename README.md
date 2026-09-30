@@ -378,6 +378,10 @@ Fit both predictors (lead time 3, search budget 64) and save the checkpoints:
 uv run python -m src.jepa fit --log runs/jepa-replenishment/log/transitions.parquet --output runs/jepa-replenishment/checkpoints
 ```
 
+`--epochs` (default 20) is one shuffled pass over the training episodes, not one
+gradient step. Episodes are held out whole for early stopping. The loss curve and
+holdout metrics are written to `runs/jepa-replenishment/fit/` and are not committed.
+
 Two 150-trial `OrderUpToPolicy` studies, one at `holding_rate` 0.01 and one at
 0.05. Search and holdout seed counts stay at the tuner defaults (16 and 32).
 The other three textbook policies are not tuned.

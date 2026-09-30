@@ -22,7 +22,7 @@ validation metric and no early stopping, which is why none of this was noticed.
 
 **Blocked by:** 09.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** existing dynamics tests — note that every one of them calls `fit`
 with `epochs=1` or `epochs=2` and asserts only on shapes and determinism, which
@@ -33,17 +33,17 @@ in `CONTEXT.md`; ADR 0029 (probe stop-gradient).
 **Artifact homes:** the loss curve and validation metrics are run artifacts and
 live under `runs/` (gitignored), consumed later by the regenerated paper.
 
-- [ ] `epochs` means a pass over the training data, not a gradient step; the name
+- [x] `epochs` means a pass over the training data, not a gradient step; the name
       matches the behaviour or the parameter is renamed.
-- [ ] Training is minibatched and shuffled.
-- [ ] A validation split is held out at episode granularity, so no episode
+- [x] Training is minibatched and shuffled.
+- [x] A validation split is held out at episode granularity, so no episode
       contributes rows to both sides.
-- [ ] Early stopping runs on the validation metric.
-- [ ] The loss curve and validation metrics are written to a run artifact.
-- [ ] The EMA decay is set against the actual step count so the target encoder
+- [x] Early stopping runs on the validation metric.
+- [x] The loss curve and validation metrics are written to a run artifact.
+- [x] The EMA decay is set against the actual step count so the target encoder
       leaves its initialisation; a test asserts the target has moved materially
       from its initial weights after a real fit.
-- [ ] The direct predictor gets the same training treatment, so latent-versus-
+- [x] The direct predictor gets the same training treatment, so latent-versus-
       direct stays a fair comparison.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the new
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the new
       training contract is updated in this ticket.

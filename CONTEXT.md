@@ -212,8 +212,14 @@ the disruption identity, or the calendar. Feature width does not follow the samp
 one fitted model serves every episode. An
 EMA target encoder supplies the stopped embedding. An action-conditioned predictor unrolls
 open-loop for `H = delivery_lag`. The latent loss matches that target at each step, plus an
-anti-collapse penalty. Probes decode next on-hand, next in-transit, and step sales from a stopped
-embedding and do not train the encoder. `decide` draws 64 cover-and-priority proposals from
+anti-collapse penalty. Probes decode next on-hand, the next arrival-age profile, and step sales
+from a stopped embedding and do not train the encoder. The planner sums that profile when it
+scores inventory position. `fit(epochs=N)` takes N shuffled passes of 256-row minibatches over
+the training episodes. A fifth of the episodes — at least one, when two or more exist — is held
+out whole. Early stopping watches that holdout and restores the best epoch. The loss curve is
+written under `runs/jepa-replenishment/fit/`. The target encoder's EMA decay is set from the
+minibatches in one pass, so the epoch early stopping keeps has already left five percent of
+the initial target. `decide` draws 64 cover-and-priority proposals from
 `policy_rng` (smoke runs use 4), rations each one, and places the grant with the highest imagined
 score over `horizon_multiple * delivery_lag` steps (`horizon_multiple` defaults to 4). Each
 step's imagined profit is revenue minus purchase cost minus `holding_rate × on-hand × unit_cost`
@@ -230,9 +236,10 @@ profit is what the next ration can spend, so a frozen planner can be retargeted 
 uses the textbook fair-share split. See ADR 0024, ADR 0025, ADR 0027, ADR 0029.
 
 **Direct replenishment predictor** (`fit_direct`, `src/jepa/plan.py`)
-The same planner and the same priority ration, trained to emit next on-hand, the summed next
+The same planner and the same priority ration, trained to emit next on-hand, the next
 arrival-age profile, and step sales from the observation window and the quantity Allocation
-filled. No latent target and no EMA encoder. See ADR 0029.
+filled. The same minibatch passes, episode holdout, early stopping, and loss curve as the
+latent fit. No latent target and no EMA encoder. See ADR 0029.
 
 **Synthetic comparison** (`compare_synthetic`, `src/jepa/eval.py`)
 Scores the latent planner, the direct planner, and the latent planner with textbook fair-share
