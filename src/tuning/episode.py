@@ -27,6 +27,12 @@ from random import Random
 from typing import TYPE_CHECKING, Any
 
 from src.sim.episode_sampler import (
+    LIFECYCLE_DEAD_PROB_HIGH,
+    LIFECYCLE_DEAD_PROB_LOW,
+    LIFECYCLE_OTHER_PROB_HIGH,
+    LIFECYCLE_OTHER_PROB_LOW,
+    LIFECYCLE_RATE_SCALE_HIGH,
+    LIFECYCLE_RATE_SCALE_LOW,
     _derive_seed as _sim_derive_seed,
     default_disruption_params,
     default_lifecycle_params,
@@ -587,6 +593,100 @@ def load_catalog_and_market_from_setup(
     return catalog, market
 
 
+def episode_distribution_parameters(
+    config: "TuningConfig",
+    *,
+    market_params: MarketParams | None = None,
+    disruption_params: DisruptionParams | None = None,
+    catalog_size: int | None = None,
+) -> dict[str, Any]:
+    """JSON-ready parameters ``sample_episode`` draws from for this config.
+
+    A demand-relative pool records its log-uniform tightness. A pool with an
+    explicit distribution records that distribution instead, so the artifact
+    describes the episodes that were actually sampled. Market and disruption
+    are the parameter objects the episode builder uses, in full.
+    """
+    from src.sim.distributions import LogUniform
+
+    market = market_params if market_params is not None else default_market_params()
+    disruption = (
+        disruption_params if disruption_params is not None else default_disruption_params()
+    )
+    if config.capacity_dist is None:
+        capacity_pool = "demand_relative"
+        capacity_fields: dict[str, Any] = {
+            "capacity_pool": capacity_pool,
+            "capacity_tightness": LogUniform(
+                _CAPACITY_TIGHTNESS_LOW, _CAPACITY_TIGHTNESS_HIGH
+            ).to_dict(),
+            "cover_horizon_ticks": _COVER_HORIZON_TICKS,
+        }
+    else:
+        capacity_fields = {
+            "capacity_pool": "pinned",
+            "capacity_distribution": config.capacity_dist.to_dict(),
+        }
+    if config.balance_dist is None:
+        cash_fields: dict[str, Any] = {
+            "cash_pool": "demand_relative",
+            "cash_tightness": LogUniform(
+                _CASH_TIGHTNESS_LOW, _CASH_TIGHTNESS_HIGH
+            ).to_dict(),
+        }
+    else:
+        cash_fields = {
+            "cash_pool": "pinned",
+            "cash_distribution": config.balance_dist.to_dict(),
+        }
+    init_stock = config.init_stock_pct_dist
+    return {
+        "holding_rate": config.holding_rate,
+        "order_fee": config.order_fee,
+        "episode_length": config.episode_length,
+        "K_active": config.K_active,
+        "K_min": config.K_min,
+        "K_max_episode": config.K_max_episode,
+        "K_catalog": config.K_catalog,
+        "catalog_size": (
+            config.active_catalog_size() if catalog_size is None else catalog_size
+        ),
+        "delivery_lag": config.delivery_lag,
+        "delivery_lag_sampled": config.delivery_lag is None,
+        "delivery_lag_low": _LAG_MIN,
+        "delivery_lag_high": _LAG_MAX,
+        **capacity_fields,
+        **cash_fields,
+        "suppliers_per_sku": _SUPPLIERS_PER_SKU,
+        "lead_time_offsets": list(_LEAD_OFFSETS),
+        "production_multiple_of_demand": {"low": _PROD_LOW, "high": _PROD_HIGH},
+        "opening_days_of_demand": {"low": _OPEN_LOW, "high": _OPEN_HIGH},
+        "markup_over_unit_cost": {"low": _MARKUP_LOW, "high": _MARKUP_HIGH},
+        "speed_premium": {"low": _PREMIUM_LOW, "high": _PREMIUM_HIGH},
+        "init_stock_pct": None if init_stock is None else init_stock.to_dict(),
+        "item_lifecycle": {
+            "mode": "sampled_per_episode",
+            "dead_stage_change_prob": {
+                "type": "uniform",
+                "low": LIFECYCLE_DEAD_PROB_LOW,
+                "high": LIFECYCLE_DEAD_PROB_HIGH,
+            },
+            "other_stage_change_prob": {
+                "type": "uniform",
+                "low": LIFECYCLE_OTHER_PROB_LOW,
+                "high": LIFECYCLE_OTHER_PROB_HIGH,
+            },
+            "authored_rate_scale": {
+                "type": "uniform",
+                "low": LIFECYCLE_RATE_SCALE_LOW,
+                "high": LIFECYCLE_RATE_SCALE_HIGH,
+            },
+        },
+        "market": market.to_dict(),
+        "disruption": disruption.to_dict(),
+    }
+
+
 def make_synthetic_catalog(n: int | None = None) -> "list[Ware]":
     """Build a synthetic catalog for CI / smoke runs (no LLM).
 
@@ -637,6 +737,7 @@ __all__ = [
     "TuningEpisodeSpec",
     "EpisodeSpec",
     "sample_episode",
+    "episode_distribution_parameters",
     "load_catalog_and_market_from_setup",
     "make_synthetic_catalog",
 ]

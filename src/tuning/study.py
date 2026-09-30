@@ -7,13 +7,15 @@ artifact files to ``{output_dir}/{study_name}/``:
 
   - ``trials.parquet``   — one row per trial, all documented columns.
   - ``per_seed.parquet`` — long format, one row per (trial, seed).
-  - ``study.json``       — self-describing study metadata.
+  - ``study.json``       — self-describing study metadata, including the
+    git SHA and the episode-distribution parameters.
 
 ``confirm_top_k`` re-evaluates the top-K search trials plus the published
 default on a disjoint held-out seed set, and writes:
 
   - ``holdout.parquet``       — one row per (label, seed).
-  - ``holdout_summary.json``  — bootstrap CIs + headline uplift.
+  - ``holdout_summary.json``  — bootstrap CIs + headline uplift, plus the
+    git SHA and episode-distribution parameters.
 
 CRN guarantee
 -------------
@@ -46,7 +48,11 @@ import optuna
 from src.sim.policy import Policy
 from src.sim.scenario import Ware
 from src.tuning.config import TuningConfig
-from src.tuning.episode import TuningEpisodeSpec, sample_episode
+from src.tuning.episode import (
+    TuningEpisodeSpec,
+    episode_distribution_parameters,
+    sample_episode,
+)
 from src.tuning.evaluator import evaluate_policy_normalised
 from src.tuning.search_spaces import (
     order_up_to_space,
@@ -375,6 +381,12 @@ def run_study(
         "finished_at": finished_at,
         "git_sha": _get_git_sha(),
         "policy_class_name": _introspect_policy_class_name(policy_space),
+        "episode_distribution": episode_distribution_parameters(
+            tuning_config,
+            market_params=market_params,
+            disruption_params=disruption_params,
+            catalog_size=len(catalog),
+        ),
     }
 
     with open(os.path.join(study_dir, "study.json"), "w", encoding="utf-8") as fh:
@@ -574,6 +586,13 @@ def confirm_top_k(
         "headline_uplift_ci_low": uplift_ci_low,
         "headline_uplift_ci_high": uplift_ci_high,
         "n_holdout_seeds": tuning_config.n_holdout_seeds,
+        "git_sha": _get_git_sha(),
+        "episode_distribution": episode_distribution_parameters(
+            tuning_config,
+            market_params=market_params,
+            disruption_params=disruption_params,
+            catalog_size=len(catalog),
+        ),
     }
 
     with open(os.path.join(study_dir, "holdout_summary.json"), "w", encoding="utf-8") as fh:

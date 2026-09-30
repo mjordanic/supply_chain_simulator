@@ -103,6 +103,7 @@ _STUDY_JSON_REQUIRED_FIELDS = {
     "finished_at",
     "git_sha",
     "policy_class_name",
+    "episode_distribution",
 }
 
 
@@ -281,6 +282,113 @@ class TestRunStudyCRNAtTrialLevel:
             assert vals_0 == vals_1
 
 
+class TestStudyArtifactsRecordEpisodeDistribution:
+    """study.json and holdout_summary.json name the distribution they were tuned on."""
+
+    def test_artifacts_record_git_sha_and_the_sampler_distribution(self, tmp_path):
+        from dataclasses import replace
+
+        from src.sim.distributions import LogUniform
+        from src.sim.episode_sampler import default_market_params
+        from src.tuning.episode import episode_distribution_parameters
+
+        catalog = _make_catalog(n=3)
+        market = replace(default_market_params(), cycle_amp=0.2)
+        config = TuningConfig(
+            n_trials=1,
+            n_search_seeds=1,
+            n_holdout_seeds=1,
+            episode_length=2,
+            K_active=1,
+            holding_rate=0.02,
+            top_k_for_holdout=1,
+        )
+        study = run_study(
+            _order_up_to_space,
+            catalog=catalog,
+            tuning_config=config,
+            study_name="provenance",
+            output_dir=str(tmp_path),
+            market_params=market,
+        )
+        study_dir = tmp_path / "provenance"
+        meta = json.loads((study_dir / "study.json").read_text(encoding="utf-8"))
+        expected = episode_distribution_parameters(
+            config,
+            market_params=market,
+            catalog_size=len(catalog),
+        )
+        assert meta["episode_distribution"] == expected
+        assert len(meta["git_sha"]) == 40
+
+        assert expected["holding_rate"] == 0.02
+        assert expected["K_active"] == 1
+        assert expected["delivery_lag"] is None
+        assert expected["capacity_pool"] == "demand_relative"
+        assert expected["cash_pool"] == "demand_relative"
+        assert expected["capacity_tightness"] == {
+            "type": "log_uniform",
+            "low": 0.5,
+            "high": 6.0,
+        }
+        assert expected["cash_tightness"] == {
+            "type": "log_uniform",
+            "low": 0.02,
+            "high": 0.8,
+        }
+        assert expected["cover_horizon_ticks"] == 14
+        assert expected["suppliers_per_sku"] == 3
+        assert expected["lead_time_offsets"] == [0, 2, 4]
+        assert expected["market"]["cycle_amp"] == 0.2
+        assert expected["market"]["demand_shock"]["std"] == 0.02
+        assert expected["market"]["trend"]["low"] == 0.997
+        assert expected["market"]["trend"]["high"] == 1.003
+        assert expected["market"]["min_value"] == 0.2
+        assert expected["market"]["max_value"] == 2.0
+
+        published = episode_distribution_parameters(TuningConfig(), catalog_size=750)
+        assert published["K_active"] is None
+        assert published["K_min"] == 1
+        assert published["K_max_episode"] == 30
+        assert published["holding_rate"] == 0.01
+        assert published["market"]["cycle_amp"] == 0.3
+        assert published["delivery_lag_low"] == 2
+        assert published["delivery_lag_high"] == 6
+        assert published["production_multiple_of_demand"] == {"low": 0.15, "high": 1.25}
+        assert published["opening_days_of_demand"] == {"low": 0.0, "high": 4.0}
+        assert published["markup_over_unit_cost"] == {"low": 0.05, "high": 0.25}
+        assert published["speed_premium"] == {"low": 0.10, "high": 0.35}
+
+        pinned = episode_distribution_parameters(
+            TuningConfig(
+                capacity_dist=LogUniform(10, 20),
+                balance_dist=LogUniform(100, 200),
+            )
+        )
+        assert pinned["capacity_pool"] == "pinned"
+        assert pinned["cash_pool"] == "pinned"
+        assert "capacity_tightness" not in pinned
+        assert pinned["capacity_distribution"] == {
+            "type": "log_uniform",
+            "low": 10,
+            "high": 20,
+        }
+
+        summary = confirm_top_k(
+            study,
+            _order_up_to_space,
+            catalog=catalog,
+            tuning_config=config,
+            study_dir=str(study_dir),
+            market_params=market,
+        )
+        on_disk = json.loads((study_dir / "holdout_summary.json").read_text(encoding="utf-8"))
+        assert summary["git_sha"] == meta["git_sha"]
+        assert summary["episode_distribution"] == expected
+        assert on_disk["git_sha"] == meta["git_sha"]
+        assert on_disk["episode_distribution"] == expected
+
+
 class TestRunStudyWritesGitSha:
     """study.json['git_sha'] is either a 40-char hex string or empty."""
 
@@ -337,6 +445,8 @@ _HOLDOUT_SUMMARY_REQUIRED_FIELDS = {
     "headline_uplift_ci_low",
     "headline_uplift_ci_high",
     "n_holdout_seeds",
+    "git_sha",
+    "episode_distribution",
 }
 
 

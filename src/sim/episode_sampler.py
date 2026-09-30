@@ -193,6 +193,16 @@ def _mix_seed(seed: int, product_id: str, salt: int) -> int:
     return (seed * 0x9E37_79B1 + acc) & _MASK_32
 
 
+# Bounds for the per-episode lifecycle table. ``dead`` is rarer than the
+# other stages. Authored per-SKU tables are scaled by one episode draw.
+LIFECYCLE_DEAD_PROB_LOW = 0.0
+LIFECYCLE_DEAD_PROB_HIGH = 0.008
+LIFECYCLE_OTHER_PROB_LOW = 0.008
+LIFECYCLE_OTHER_PROB_HIGH = 0.03
+LIFECYCLE_RATE_SCALE_LOW = 0.5
+LIFECYCLE_RATE_SCALE_HIGH = 1.5
+
+
 def sample_episode_lifecycle(catalog: list, episode_seed: int):
     """Draw this episode's lifecycle table and per-SKU initial stages.
 
@@ -216,10 +226,10 @@ def sample_episode_lifecycle(catalog: list, episode_seed: int):
     table: dict[str, float] = {}
     for stage in stages:
         if stage == "dead":
-            table[stage] = rng.uniform(0.0, 0.008)
+            table[stage] = rng.uniform(LIFECYCLE_DEAD_PROB_LOW, LIFECYCLE_DEAD_PROB_HIGH)
         else:
-            table[stage] = rng.uniform(0.008, 0.03)
-    scale = rng.uniform(0.5, 1.5)
+            table[stage] = rng.uniform(LIFECYCLE_OTHER_PROB_LOW, LIFECYCLE_OTHER_PROB_HIGH)
+    scale = rng.uniform(LIFECYCLE_RATE_SCALE_LOW, LIFECYCLE_RATE_SCALE_HIGH)
     params = ItemLifecycleParams(
         stages=stages,
         init_stage="maturity",

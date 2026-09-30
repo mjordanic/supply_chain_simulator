@@ -11,10 +11,10 @@ Seams, from the issue acceptance criteria:
 3. Missing artifacts. When that directory is absent, the results notebook
    prints the published command that fills it and does not raise.
 4. Root README. Exact commands for the published log (base count 64, with
-   over-order weighted higher), the fit, the two 150-trial ``OrderUpToPolicy`` studies
-   (``holding_rate`` 0.01 and 0.05), and the synthetic eval on the tuner
-   holdout. Raw outputs stay under ``runs/jepa-replenishment/`` and are
-   not committed.
+   over-order weighted higher), the fit, the 150-trial ``OrderUpToPolicy``
+   studies at each holding rate the transfer sweep uses (0.005, 0.01, 0.02,
+   0.05, 0.1), and the synthetic eval on the tuner holdout. Raw outputs stay
+   under ``runs/jepa-replenishment/`` and are not committed.
 5. Package README. ``src/jepa/README.md`` points at that root section.
 
 Assumption: the results notebook reads ``JEPA_SYNTHETIC_DIR`` when set,
@@ -149,20 +149,14 @@ def test_root_readme_publishes_the_commands_and_leaves_runs_uncommitted():
         EVAL_COMMAND,
         FIT_COMMAND,
         M5_COMMAND,
-        TUNE_HOLDING_001_COMMAND,
-        TUNE_HOLDING_005_COMMAND,
+        SWEEP_HOLDING_RATES,
+        TUNE_COMMANDS,
     )
 
     readme = Path("README.md").read_text()
     section = readme.split("## Latent replenishment", 1)[1].split("\n## ", 1)[0]
-    for command in (
-        COLLECT_COMMAND,
-        FIT_COMMAND,
-        TUNE_HOLDING_001_COMMAND,
-        TUNE_HOLDING_005_COMMAND,
-        EVAL_COMMAND,
-        M5_COMMAND,
-    ):
+    assert SWEEP_HOLDING_RATES == (0.005, 0.01, 0.02, 0.05, 0.1)
+    for command in (COLLECT_COMMAND, FIT_COMMAND, EVAL_COMMAND, M5_COMMAND, *TUNE_COMMANDS):
         assert command in section
     assert "Over-order" in section
     assert "contributes 512" in section
@@ -249,6 +243,18 @@ def test_smoke_commands_write_tables_the_results_notebook_reads(tmp_path, monkey
     assert output.index(IN_DISTRIBUTION_RULE) < output.index(RETARGET_RULE)
     assert "in_distribution_passes" in output
     assert "retarget_passes" in output
+
+
+def test_sweep_study_names_keep_the_published_directories():
+    from src.jepa.commands import SWEEP_HOLDING_RATES, order_up_to_study_name
+
+    assert [order_up_to_study_name(rate) for rate in SWEEP_HOLDING_RATES] == [
+        "order_up_to_holding_0_005",
+        "order_up_to_holding_0_01",
+        "order_up_to_holding_0_02",
+        "order_up_to_holding_0_05",
+        "order_up_to_holding_0_1",
+    ]
 
 
 def test_tune_command_writes_an_order_up_to_study_at_the_requested_rate(tmp_path):

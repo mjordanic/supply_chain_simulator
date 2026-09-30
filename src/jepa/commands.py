@@ -22,19 +22,31 @@ FIT_COMMAND = (
     "--output runs/jepa-replenishment/checkpoints"
 )
 
-TUNE_HOLDING_001_COMMAND = (
-    "uv run python -m src.jepa tune "
-    "--holding-rate 0.01 "
-    "--trials 150 "
-    "--output-dir runs/jepa-replenishment/tuning"
-)
+# Rates the holding-rate transfer sweep compares. One tuned OrderUpToPolicy each.
+SWEEP_HOLDING_RATES = (0.005, 0.01, 0.02, 0.05, 0.1)
 
-TUNE_HOLDING_005_COMMAND = (
-    "uv run python -m src.jepa tune "
-    "--holding-rate 0.05 "
-    "--trials 150 "
-    "--output-dir runs/jepa-replenishment/tuning"
-)
+
+def order_up_to_study_name(holding_rate: float) -> str:
+    """Directory name for one holding rate.
+
+    Three decimal places, then trailing zeros stripped, so ``0.005`` does
+    not collapse into ``0.01`` and the published ``0_01`` / ``0_05`` names stay.
+    """
+    text = f"{holding_rate:.3f}".rstrip("0").rstrip(".")
+    return "order_up_to_holding_" + text.replace(".", "_")
+
+
+def tune_command(holding_rate: float) -> str:
+    """Published 150-trial command for one holding rate."""
+    return (
+        "uv run python -m src.jepa tune "
+        f"--holding-rate {holding_rate:g} "
+        "--trials 150 "
+        "--output-dir runs/jepa-replenishment/tuning"
+    )
+
+
+TUNE_COMMANDS = tuple(tune_command(rate) for rate in SWEEP_HOLDING_RATES)
 
 EVAL_COMMAND = (
     "uv run python -m src.jepa eval "
@@ -197,7 +209,7 @@ def _tune(args: argparse.Namespace) -> None:
         ),
     )
     catalog = make_synthetic_catalog(config.active_catalog_size())
-    name = f"order_up_to_holding_{config.holding_rate:.2f}".replace(".", "_")
+    name = order_up_to_study_name(config.holding_rate)
     output_dir = str(args.output_dir)
     study = run_study(
         order_up_to_space,

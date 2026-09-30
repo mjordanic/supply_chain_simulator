@@ -256,8 +256,14 @@ when that frozen planner beats the `OrderUpToPolicy` from the 0.01 anchor, left 
 `OrderUpToPolicy` factory for `holding_rate` 0.05 is the ceiling and is not a pass bar. Smoke
 runs shorten the episode and the seed count. `python -m src.jepa eval` writes
 `in_distribution.parquet` and `retarget.parquet` under
-`runs/jepa-replenishment/synthetic/`. The log, the fit, the two 150-trial
-`OrderUpToPolicy` studies, and that eval are the commands in the root README.
+`runs/jepa-replenishment/synthetic/`. The log, the fit, the 150-trial
+`OrderUpToPolicy` studies at holding rates 0.005, 0.01, 0.02, 0.05, and 0.1,
+and that eval are the commands in the root README. On that corrected episode
+distribution the tuned anchor beats the published default. At `holding_rate`
+0.01 the holdout paired net-profit uplift is 4954.71, bootstrap interval
+1881.31 to 8413.30. The interval also lies above zero at 0.005 (4373.88,
+1279.91 to 7879.11), 0.02 (9132.35, 5782.29 to 12996.46), 0.05 (21274.00,
+14303.78 to 29111.90), and 0.1 (34357.48, 20066.11 to 51034.26).
 Walkthroughs: `notebooks/09-jepa-train-and-plan.ipynb` and
 `notebooks/10-jepa-synthetic-eval.ipynb`. See ADR 0009, ADR 0027.
 
@@ -376,7 +382,9 @@ cheapest-first and a zero floor, the same settings as the replenishment planner.
 `opening_budget_pct` is pinned at 0.50, the shared cold-start fraction. Per-trial CRN
 tuple expanded to include the `allocation` sub-seed for bit-identical paired comparisons on the
 graph engine. The objective remains mean `net_profit / initial_cash`. Artifacts land at
-`runs/tuning/<study_name>/` as `trials.parquet` + `per_seed.parquet` + `study.json`. See ADR 0009.
+`runs/tuning/<study_name>/` as `trials.parquet` + `per_seed.parquet` + `study.json`.
+`study.json` and `holdout_summary.json` record the git SHA and the episode-distribution
+parameters the study was tuned against. See ADR 0009.
 
 **Run model — "policies attached to nodes"**
 Each Node has its own Policy (or `None`). A run binds a list of `NodeInstance(node, init_seed,

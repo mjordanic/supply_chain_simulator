@@ -15,7 +15,7 @@ discriminative before anything downstream depends on it.
 
 **Blocked by:** 04, 07.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** the `Policy tuning study` and `CRN-paired eval` entries in
 `CONTEXT.md`; ADR 0009 (policy hyperparameter tuning tool). The existing study
@@ -25,14 +25,14 @@ outputs to reproduce.
 **Artifact homes:** study outputs are run artifacts under `runs/` (gitignored).
 The headroom finding is quoted in the regenerated paper in `docs/`.
 
-- [ ] The tuning studies are re-run on the corrected world and corrected
+- [x] The tuning studies are re-run on the corrected world and corrected
       episode distribution.
-- [ ] The tuned anchor beats the published default by a margin whose interval
+- [x] The tuned anchor beats the published default by a margin whose interval
       excludes zero — if it does not, the benchmark still lacks headroom and that
       is a blocking finding, reported rather than worked around.
-- [ ] Studies are run at each holding rate the transfer sweep will need, so
+- [x] Studies are run at each holding rate the transfer sweep will need, so
       ticket 17 has a tuned ceiling at every point.
-- [ ] Study artifacts record the git SHA and the episode-distribution parameters
+- [x] Study artifacts record the git SHA and the episode-distribution parameters
       they were tuned against.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the new
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the new
       study values is updated in this ticket.

@@ -83,8 +83,10 @@ runs/tuning/<study-name>/
   trials.parquet         one row per trial: kpis + sampled params
   per_seed.parquet       long format: one row per (trial, seed) with per-seed KPIs
   study.json             study metadata + search-space spec + best trial + git SHA
+                         + episode-distribution parameters
   holdout.parquet        top-K winners + published default re-evaluated on holdout seeds
   holdout_summary.json   bootstrap CIs + headline paired uplift (tuned − default)
+                         + git SHA + episode-distribution parameters
 ```
 
 `trials.parquet` columns: `trial_id`, `state`, `datetime_start`, `datetime_complete`,

@@ -382,18 +382,24 @@ uv run python -m src.jepa fit --log runs/jepa-replenishment/log/transitions.parq
 gradient step. Episodes are held out whole for early stopping. The loss curve and
 holdout metrics are written to `runs/jepa-replenishment/fit/` and are not committed.
 
-Two 150-trial `OrderUpToPolicy` studies, one at `holding_rate` 0.01 and one at
-0.05. Search and holdout seed counts stay at the tuner defaults (16 and 32).
-The other three textbook policies are not tuned.
+Five 150-trial `OrderUpToPolicy` studies, one at each holding rate the transfer
+sweep uses: 0.005, 0.01, 0.02, 0.05, and 0.1. Search and holdout seed counts
+stay at the tuner defaults (16 and 32). The other three textbook policies are
+not tuned. Each `study.json` records the git SHA and the episode-distribution
+parameters that study was tuned against.
 
 ```bash
+uv run python -m src.jepa tune --holding-rate 0.005 --trials 150 --output-dir runs/jepa-replenishment/tuning
 uv run python -m src.jepa tune --holding-rate 0.01 --trials 150 --output-dir runs/jepa-replenishment/tuning
+uv run python -m src.jepa tune --holding-rate 0.02 --trials 150 --output-dir runs/jepa-replenishment/tuning
 uv run python -m src.jepa tune --holding-rate 0.05 --trials 150 --output-dir runs/jepa-replenishment/tuning
+uv run python -m src.jepa tune --holding-rate 0.1 --trials 150 --output-dir runs/jepa-replenishment/tuning
 ```
 
-Synthetic eval on the tuner holdout (32 seeds from `13_000_000`). Studies land
-in `order_up_to_holding_0_01` and `order_up_to_holding_0_05` under the tuning
-directory above.
+Synthetic eval on the tuner holdout (32 seeds from `13_000_000`). The
+in-distribution anchor is `order_up_to_holding_0_01` and the retarget ceiling
+is `order_up_to_holding_0_05`, both under the tuning directory above. The other
+three directories are the ceilings for the remaining sweep rates.
 
 ```bash
 uv run python -m src.jepa eval --checkpoints runs/jepa-replenishment/checkpoints --anchor runs/jepa-replenishment/tuning/order_up_to_holding_0_01 --ceiling runs/jepa-replenishment/tuning/order_up_to_holding_0_05 --output runs/jepa-replenishment/synthetic

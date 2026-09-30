@@ -107,24 +107,51 @@ delivery_lag 3
 budget 64
 fit_holding_rate 0.010000
 order_fee 50.000000
+study order_up_to_holding_0_005 n_trials 150
+study order_up_to_holding_0_005 n_search_seeds 16
+study order_up_to_holding_0_005 n_holdout_seeds 32
+study order_up_to_holding_0_005 episode_length 365
+study order_up_to_holding_0_005 seed_offset 12000000
+study order_up_to_holding_0_005 holdout_seed_offset 13000000
+study order_up_to_holding_0_005 best_value 1.9102880646287577
+study order_up_to_holding_0_005 git_sha 6fda2d43ce638d5e8f3788d299eb3816d2e6371b
+study order_up_to_holding_0_005 best_params {"cover_horizon_ticks": 12, "safety_lead_pct_of_lag": 0.05025909338623214, "stockout_safety_bonus_pct_of_lag": 0.19108043943834024}
 study order_up_to_holding_0_01 n_trials 150
 study order_up_to_holding_0_01 n_search_seeds 16
 study order_up_to_holding_0_01 n_holdout_seeds 32
 study order_up_to_holding_0_01 episode_length 365
 study order_up_to_holding_0_01 seed_offset 12000000
 study order_up_to_holding_0_01 holdout_seed_offset 13000000
-study order_up_to_holding_0_01 best_value 4.337974790210991
-study order_up_to_holding_0_01 git_sha 990c7b9bef4da6a0c4e078f0a1dc075d6d0b542a
-study order_up_to_holding_0_01 best_params {"cover_horizon_ticks": 9, "per_supplier_min_order_floor": 4, "routing_strategy": "cheapest_first", "safety_lead_pct_of_lag": 0.7244790933863735, "stockout_safety_bonus_pct_of_lag": 0.991627453293751}
+study order_up_to_holding_0_01 best_value 1.0641955949975148
+study order_up_to_holding_0_01 git_sha 6fda2d43ce638d5e8f3788d299eb3816d2e6371b
+study order_up_to_holding_0_01 best_params {"cover_horizon_ticks": 12, "safety_lead_pct_of_lag": 0.16993287200409285, "stockout_safety_bonus_pct_of_lag": 0.09706576917593086}
+study order_up_to_holding_0_02 n_trials 150
+study order_up_to_holding_0_02 n_search_seeds 16
+study order_up_to_holding_0_02 n_holdout_seeds 32
+study order_up_to_holding_0_02 episode_length 365
+study order_up_to_holding_0_02 seed_offset 12000000
+study order_up_to_holding_0_02 holdout_seed_offset 13000000
+study order_up_to_holding_0_02 best_value -0.5221367401283703
+study order_up_to_holding_0_02 git_sha 6fda2d43ce638d5e8f3788d299eb3816d2e6371b
+study order_up_to_holding_0_02 best_params {"cover_horizon_ticks": 7, "safety_lead_pct_of_lag": 0.12627988145408958, "stockout_safety_bonus_pct_of_lag": 0.06893640026208986}
 study order_up_to_holding_0_05 n_trials 150
 study order_up_to_holding_0_05 n_search_seeds 16
 study order_up_to_holding_0_05 n_holdout_seeds 32
 study order_up_to_holding_0_05 episode_length 365
 study order_up_to_holding_0_05 seed_offset 12000000
 study order_up_to_holding_0_05 holdout_seed_offset 13000000
-study order_up_to_holding_0_05 best_value 2.6117548591579554
-study order_up_to_holding_0_05 git_sha 990c7b9bef4da6a0c4e078f0a1dc075d6d0b542a
-study order_up_to_holding_0_05 best_params {"cover_horizon_ticks": 4, "per_supplier_min_order_floor": 10, "routing_strategy": "cheapest_first", "safety_lead_pct_of_lag": 0.5751791240143264, "stockout_safety_bonus_pct_of_lag": 1.3403691549452286}
+study order_up_to_holding_0_05 best_value -4.994853343225005
+study order_up_to_holding_0_05 git_sha 6fda2d43ce638d5e8f3788d299eb3816d2e6371b
+study order_up_to_holding_0_05 best_params {"cover_horizon_ticks": 3, "safety_lead_pct_of_lag": 0.217201280660895, "stockout_safety_bonus_pct_of_lag": 0.24606803342018368}
+study order_up_to_holding_0_1 n_trials 150
+study order_up_to_holding_0_1 n_search_seeds 16
+study order_up_to_holding_0_1 n_holdout_seeds 32
+study order_up_to_holding_0_1 episode_length 365
+study order_up_to_holding_0_1 seed_offset 12000000
+study order_up_to_holding_0_1 holdout_seed_offset 13000000
+study order_up_to_holding_0_1 best_value -12.513578848373466
+study order_up_to_holding_0_1 git_sha 6fda2d43ce638d5e8f3788d299eb3816d2e6371b
+study order_up_to_holding_0_1 best_params {"cover_horizon_ticks": 3, "safety_lead_pct_of_lag": 0.21533775713818853, "stockout_safety_bonus_pct_of_lag": 0.23836659081391773}
 in_distribution_seeds 32
 in_distribution_seed_min 13000000
 in_distribution_seed_max 13000031
