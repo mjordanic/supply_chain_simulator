@@ -1,12 +1,13 @@
-"""In-distribution, unseen-SKU, unseen-disruption, and holding-rate retarget.
+"""In-distribution, unseen-SKU, unseen-disruption, and holding-rate sweep.
 
 Reports paired ``net_profit / initial_cash`` for each protocol, with
 order volume, service level, stockout rate, and realised fill rate on
 every arm. The three generalisation protocols are separate tables.
 The in-distribution rule passes when the learned arm beats
 the tuned anchor and the bootstrap interval of that difference excludes
-zero. The retarget rule passes when the frozen planner beats the frozen
-textbook policy on that paired profit.
+zero. The holding-rate sweep scores the frozen planner against the
+textbook policy tuned at each rate, and refuses the curve when that
+planner's order sequence does not change.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import json
 import math
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -39,8 +40,10 @@ from src.sim.policy import (
 )
 from src.sim.scenario import DisruptionParams, Ware
 from src.tuning.config import TuningConfig
+from src.jepa.commands import SWEEP_HOLDING_RATES
 from src.tuning.episode import TuningEpisodeSpec, make_synthetic_catalog, partition_catalog, sample_episode
 from src.tuning.evaluator import evaluate_policy_normalised
+from src.tuning.rollout import run_policy_episode
 
 _TUNER = TuningConfig()
 N_HOLDOUT_SEEDS = _TUNER.n_holdout_seeds
@@ -48,7 +51,6 @@ HOLDOUT_SEED_OFFSET = _TUNER.holdout_seed_offset
 UNSEEN_SKU_SEED_OFFSET = 15_000_000
 UNSEEN_DISRUPTION_SEED_OFFSET = 16_000_000
 IN_DISTRIBUTION_HOLDING_RATE = 0.01
-RETARGET_HOLDING_RATE = 0.05
 COLLINEAR_THRESHOLD = 0.99
 
 IN_DISTRIBUTION_RULE = (
@@ -61,6 +63,13 @@ RETARGET_RULE = (
     "the frozen planner beats the frozen OrderUpToPolicy from the 0.01 study "
     "on paired net_profit / initial_cash. The OrderUpToPolicy tuned at 0.05 "
     "is a ceiling and is not a pass bar."
+)
+HOLDING_RATE_SWEEP_RULE = (
+    "Holding-rate sweep (0.005, 0.01, 0.02, 0.05, 0.1; same weights, no new "
+    "log): at each rate the frozen planner is scored against the "
+    "OrderUpToPolicy tuned at that rate. The run reports no curve when the "
+    "frozen planner's order sequence is identical across those rates on the "
+    "tuner holdout."
 )
 
 _IN_DISTRIBUTION_TEXTBOOK: dict[str, Callable[[], IntermediatePolicy]] = {
@@ -116,6 +125,32 @@ def retarget_passes(latent: Sequence[float], frozen: Sequence[float]) -> bool:
     return sum(diffs) / len(diffs) > 0.0
 
 
+class UnfalsifiableTransfer(RuntimeError):
+    """The frozen planner placed the same orders at every holding rate.
+
+    The sweep then has no profit number to report. The world's holding
+    charge on an unchanged order sequence is not evidence of transfer.
+    """
+
+
+def assert_order_sequences_differ(sequences: Mapping[float, Sequence[object]]) -> None:
+    """Refuse the transfer curve when every rate placed the same orders.
+
+    One differing rate is enough. The check compares the order sequence,
+    not the profit the world charges for it.
+    """
+    if len(sequences) < 2:
+        raise UnfalsifiableTransfer(
+            "holding-rate sweep needs two rates before it can report a curve"
+        )
+    ordered = [sequences[rate] for rate in sequences]
+    if all(seq == ordered[0] for seq in ordered[1:]):
+        raise UnfalsifiableTransfer(
+            "frozen planner order sequence is identical across holding rates; "
+            "refusing to report the transfer curve"
+        )
+
+
 # Reference rows stay when a learned arm is not distinct from them.
 # Among learned arms, the earlier name is the one that stays in the file.
 ARM_PREFERENCE: tuple[str, ...] = (
@@ -148,7 +183,12 @@ METRIC_SUFFIXES: tuple[str, ...] = (
 
 def is_profit_column(name: str) -> bool:
     """True for an arm's paired profit, not a per-seed field or operational column."""
-    if name == "seed" or name in ROW_FIELDS or name.startswith("rollout_r2_"):
+    if (
+        name in {"seed", "holding_rate"}
+        or name in ROW_FIELDS
+        or name.startswith("rollout_r2_")
+        or name.startswith("latent_minus_")
+    ):
         return False
     return not name.endswith(METRIC_SUFFIXES)
 
@@ -228,16 +268,16 @@ class ComparisonTable:
     paired_interval: tuple[float, float] = (float("nan"), float("nan"))
     collinear_warnings: tuple[str, ...] = ()
     dropped_arms: tuple[str, ...] = ()
+    baseline: str = "anchor"
 
 
 @dataclass(frozen=True)
 class SyntheticComparison:
-    """In-distribution, unseen-SKU, unseen-disruption, and retarget tables."""
+    """In-distribution, unseen-SKU, unseen-disruption, and the holding-rate sweep."""
 
     in_distribution: ComparisonTable
-    retarget: ComparisonTable
+    holding_rate_sweep: tuple[ComparisonTable, ...]
     in_distribution_passes: bool
-    retarget_passes: bool
     in_distribution_paired_interval: tuple[float, float]
     unseen_sku: ComparisonTable
     unseen_disruption: ComparisonTable
@@ -403,33 +443,21 @@ def _planner_factory(
     return factory
 
 
-def _comparison_table(
+def _table_from_scored(
     *,
     holding_rate: float,
     seeds: tuple[int, ...],
     specs: list[TuningEpisodeSpec],
-    arms: dict[str, Callable[[], IntermediatePolicy]],
-    alias: tuple[str, str] | None = None,
+    scored: dict[str, dict[str, tuple[float, ...]]],
+    baseline: str,
 ) -> ComparisonTable:
-    scored = {name: _score_arm(factory, specs) for name, factory in arms.items()}
     profits = {name: values["profit"] for name, values in scored.items()}
-    order_volume = {name: values["order_volume"] for name, values in scored.items()}
-    service_level = {name: values["service_level"] for name, values in scored.items()}
-    stockout_rate = {name: values["stockout_rate"] for name, values in scored.items()}
-    fill_rate = {name: values["fill_rate"] for name, values in scored.items()}
-    if alias is not None:
-        dest, source = alias
-        profits[dest] = profits[source]
-        order_volume[dest] = order_volume[source]
-        service_level[dest] = service_level[source]
-        stockout_rate[dest] = stockout_rate[source]
-        fill_rate[dest] = fill_rate[source]
     warnings, dropped = collinear_report(profits)
     tightness, cash_tightness = _tightness(specs)
-    low, high = paired_interval(profits["latent"], profits["anchor"])
+    low, high = paired_interval(profits["latent"], profits[baseline])
     difference = tuple(
         float(left) - float(right)
-        for left, right in zip(profits["latent"], profits["anchor"], strict=True)
+        for left, right in zip(profits["latent"], profits[baseline], strict=True)
     )
     return ComparisonTable(
         holding_rate=holding_rate,
@@ -437,15 +465,148 @@ def _comparison_table(
         per_seed=profits,
         tightness=tightness,
         cash_tightness=cash_tightness,
-        order_volume=order_volume,
-        service_level=service_level,
-        stockout_rate=stockout_rate,
-        fill_rate=fill_rate,
+        order_volume={name: values["order_volume"] for name, values in scored.items()},
+        service_level={name: values["service_level"] for name, values in scored.items()},
+        stockout_rate={name: values["stockout_rate"] for name, values in scored.items()},
+        fill_rate={name: values["fill_rate"] for name, values in scored.items()},
         paired_difference=difference,
         paired_interval=(low, high),
         collinear_warnings=warnings,
         dropped_arms=dropped,
+        baseline=baseline,
     )
+
+
+def _comparison_table(
+    *,
+    holding_rate: float,
+    seeds: tuple[int, ...],
+    specs: list[TuningEpisodeSpec],
+    arms: dict[str, Callable[[], IntermediatePolicy]],
+    alias: tuple[str, str] | None = None,
+    baseline: str = "anchor",
+) -> ComparisonTable:
+    scored = {name: _score_arm(factory, specs) for name, factory in arms.items()}
+    if alias is not None:
+        dest, source = alias
+        scored[dest] = scored[source]
+    return _table_from_scored(
+        holding_rate=holding_rate,
+        seeds=seeds,
+        specs=specs,
+        scored=scored,
+        baseline=baseline,
+    )
+
+
+def _sweep_must_check_orders(config: TuningConfig, assert_orders: bool | None) -> bool:
+    """The published episode distribution is the real holdout.
+
+    A caller-supplied cash or capacity pin, or a shortened episode, is
+    not that holdout. ``publish_synthetic_comparison`` forces the check.
+    """
+    if assert_orders is not None:
+        return assert_orders
+    published = TuningConfig()
+    return (
+        config.episode_length == published.episode_length
+        and config.K_active is None
+        and config.K_catalog == published.K_catalog
+        and config.capacity_dist is None
+        and config.balance_dist is None
+        and config.delivery_lag is None
+        and config.order_fee == published.order_fee
+    )
+
+
+def _roll_frozen_planner(
+    planner: ReplenishmentPlanner,
+    holding_rate: float,
+    specs: list[TuningEpisodeSpec],
+    order_fee: float,
+) -> tuple[dict[str, tuple[float, ...]], tuple[tuple[tuple[tuple[str, int], ...], ...], ...]]:
+    """One fresh buyer per seed. Returns the arm score and each seed's orders."""
+    profits: list[float] = []
+    volumes: list[float] = []
+    service: list[float] = []
+    stockout: list[float] = []
+    fill: list[float] = []
+    sequences: list[tuple[tuple[tuple[str, int], ...], ...]] = []
+    for spec in specs:
+        buyer = planner.retarget(holding_rate, order_fee=order_fee)
+        metrics = run_policy_episode(buyer, spec, include_orders=True)
+        profits.append(float(metrics["net_profit"]) / max(1e-9, float(spec.balance)))
+        volumes.append(float(metrics["order_volume"]))
+        service.append(float(metrics["service_level"]))
+        stockout.append(float(metrics["stockout_rate"]))
+        fill.append(float(metrics["fill_rate"]))
+        sequences.append(metrics["order_sequence"])  # type: ignore[arg-type]
+    scored = {
+        "profit": tuple(profits),
+        "order_volume": tuple(volumes),
+        "service_level": tuple(service),
+        "stockout_rate": tuple(stockout),
+        "fill_rate": tuple(fill),
+    }
+    return scored, tuple(sequences)
+
+
+def holding_rate_sweep(
+    planner: ReplenishmentPlanner,
+    ceiling_factories: Mapping[float, Callable[[], IntermediatePolicy]] | None = None,
+    *,
+    n_seeds: int = N_HOLDOUT_SEEDS,
+    seed_offset: int = HOLDOUT_SEED_OFFSET,
+    config: TuningConfig | None = None,
+    assert_orders: bool = True,
+) -> tuple[ComparisonTable, ...]:
+    """Score the frozen planner against the textbook policy tuned at each rate.
+
+    Episodes are the tuner holdout on ``config`` (the published episode
+    distribution when ``config`` is omitted). The planner is retargeted.
+    Its weights are not refit and no transition log is collected. When
+    ``assert_orders`` is set, identical order sequences raise
+    ``UnfalsifiableTransfer`` before any table is returned.
+
+    ``ceiling_factories`` maps each sweep rate to the ``OrderUpToPolicy``
+    tuned at that rate. Omitted factories use the published default.
+    A partial map is an error. This does not run a tuning study.
+    """
+    if ceiling_factories is not None:
+        missing = [rate for rate in SWEEP_HOLDING_RATES if rate not in ceiling_factories]
+        if missing:
+            raise KeyError(f"textbook factory missing for holding rates {missing}")
+    base = config if config is not None else TuningConfig()
+    training, _evaluation = partition_catalog(make_synthetic_catalog(base.K_catalog))
+    order_fee = float(base.order_fee)
+    specs_by_rate = {
+        rate: _specs(replace(base, holding_rate=rate), n_seeds, seed_offset, training)
+        for rate in SWEEP_HOLDING_RATES
+    }
+    latent_scored: dict[float, dict[str, tuple[float, ...]]] = {}
+    sequences: dict[float, tuple] = {}
+    for rate, specs in specs_by_rate.items():
+        scored, sequence = _roll_frozen_planner(planner, rate, specs, order_fee)
+        latent_scored[rate] = scored
+        sequences[rate] = sequence
+    if assert_orders:
+        assert_order_sequences_differ(sequences)
+    tables: list[ComparisonTable] = []
+    for rate, specs in specs_by_rate.items():
+        factory = OrderUpToPolicy if ceiling_factories is None else ceiling_factories[rate]
+        tables.append(
+            _table_from_scored(
+                holding_rate=rate,
+                seeds=tuple(seed_offset + index for index in range(n_seeds)),
+                specs=specs,
+                scored={
+                    "latent": latent_scored[rate],
+                    "ceiling": _score_arm(factory, specs),
+                },
+                baseline="ceiling",
+            )
+        )
+    return tuple(tables)
 
 
 def compare_synthetic(
@@ -453,28 +614,35 @@ def compare_synthetic(
     direct: ReplenishmentPlanner,
     *,
     anchor_factory: Callable[[], IntermediatePolicy] | None = None,
-    ceiling_factory: Callable[[], IntermediatePolicy] | None = None,
+    ceiling_factories: Mapping[float, Callable[[], IntermediatePolicy]] | None = None,
     n_seeds: int = N_HOLDOUT_SEEDS,
     seed_offset: int = HOLDOUT_SEED_OFFSET,
     config: TuningConfig | None = None,
     frame: pd.DataFrame | None = None,
+    assert_orders: bool | None = None,
 ) -> SyntheticComparison:
-    """Score the generalisation protocols and the holding-rate retarget.
+    """Score the generalisation protocols and the holding-rate sweep.
 
     In-distribution uses the training SKUs and, by default, 32 seeds from
     ``13_000_000``. Unseen-SKU uses the evaluation partition and seeds from
     ``15_000_000``. Unseen-disruption uses the training SKUs, seeds from
     ``16_000_000``, and ``harsh_disruption_params``. Those three tables are
     separate. ``n_seeds`` shortens every protocol. ``seed_offset`` moves
-    only the in-distribution block and the retarget, which rescores that
-    same block at holding rate 0.05. ``config`` supplies the episode
-    shape; smoke tests pass a short one. ``anchor_factory`` is the
-    ``OrderUpToPolicy`` scored at 0.01 on the three generalisation tables
-    and again, unchanged, at 0.05. When it is omitted the anchor is
-    published-default ``OrderUpToPolicy``. ``ceiling_factory`` is scored
-    only on the retarget and is not a pass bar. Each seed builds a new
-    planner on the fitted dynamics, so the weights are not refit. This
-    does not run a tuning study.
+    only the in-distribution block and the sweep, which rescores that same
+    block at each rate in ``SWEEP_HOLDING_RATES``. ``config`` supplies the
+    episode shape; smoke tests pass a short one. ``anchor_factory`` is the
+    ``OrderUpToPolicy`` scored at 0.01 on the three generalisation tables.
+    When it is omitted the anchor is published-default ``OrderUpToPolicy``.
+    ``ceiling_factories`` maps each sweep rate to the textbook policy tuned
+    at that rate. When it is omitted every rate uses the published default.
+    Each seed builds a new planner on the fitted dynamics, so the weights
+    are not refit and no new log is collected. This does not run a tuning
+    study.
+
+    On the published episode distribution the sweep refuses to return when
+    the frozen planner's order sequence is identical across rates.
+    ``assert_orders=False`` skips that check for a shortened smoke world.
+    ``publish_synthetic_comparison`` always checks.
 
     ``frame`` is the transition log. The least-squares floor is fit on
     the latent model's training episodes from that log. Without a log the
@@ -482,9 +650,6 @@ def compare_synthetic(
     """
     base = config if config is not None else TuningConfig()
     episodes = protocol_episodes(base, n_seeds, seed_offset=seed_offset)
-    training, _evaluation = partition_catalog(make_synthetic_catalog(base.K_catalog))
-    retarget_config = replace(base, holding_rate=RETARGET_HOLDING_RATE)
-    retarget_specs = _specs(retarget_config, n_seeds, seed_offset, training)
     seeds = {
         "in_distribution": tuple(seed_offset + i for i in range(n_seeds)),
         "unseen_sku": tuple(UNSEEN_SKU_SEED_OFFSET + i for i in range(n_seeds)),
@@ -557,27 +722,20 @@ def compare_synthetic(
         )
         for name in ("in_distribution", "unseen_sku", "unseen_disruption")
     }
-    retarget_arms = _shared(RETARGET_HOLDING_RATE)
-    retarget_arms["anchor"] = anchor
-    if ceiling_factory is not None:
-        retarget_arms["ceiling"] = ceiling_factory
-    retarget_table = _comparison_table(
-        holding_rate=RETARGET_HOLDING_RATE,
-        seeds=seeds["in_distribution"],
-        specs=retarget_specs,
-        arms=retarget_arms,
-    )
     in_table = generalisation["in_distribution"]
     return SyntheticComparison(
         in_distribution=in_table,
-        retarget=retarget_table,
+        holding_rate_sweep=holding_rate_sweep(
+            latent,
+            ceiling_factories,
+            n_seeds=n_seeds,
+            seed_offset=seed_offset,
+            config=base,
+            assert_orders=_sweep_must_check_orders(base, assert_orders),
+        ),
         in_distribution_passes=in_distribution_passes(
             in_table.per_seed["latent"],
             in_table.per_seed["anchor"],
-        ),
-        retarget_passes=retarget_passes(
-            retarget_table.per_seed["latent"],
-            retarget_table.per_seed["anchor"],
         ),
         in_distribution_paired_interval=in_table.paired_interval,
         unseen_sku=generalisation["unseen_sku"],
@@ -625,7 +783,7 @@ def _comparison_frame(
                 if values:
                     row[f"{name}_{suffix}"] = float(values[index])
         if table.paired_difference:
-            row["latent_minus_anchor"] = float(table.paired_difference[index])
+            row[f"latent_minus_{table.baseline}"] = float(table.paired_difference[index])
         if accuracy is not None:
             row["rollout_r2_latent"] = _mean_score(accuracy.latent)
             row["rollout_r2_direct"] = _mean_score(accuracy.direct)
@@ -643,11 +801,28 @@ def write_synthetic_comparison(result: SyntheticComparison, directory: str | Pat
         "in_distribution": result.in_distribution,
         "unseen_sku": result.unseen_sku,
         "unseen_disruption": result.unseen_disruption,
-        "retarget": result.retarget,
     }
     for name, table in tables.items():
         _comparison_frame(table, accuracy).to_parquet(destination / f"{name}.parquet", index=False)
+    if result.holding_rate_sweep:
+        frames = []
+        for table in result.holding_rate_sweep:
+            frame = _comparison_frame(table, accuracy)
+            frame.insert(0, "holding_rate", table.holding_rate)
+            frames.append(frame)
+        pd.concat(frames, ignore_index=True).to_parquet(
+            destination / "holding_rate_sweep.parquet",
+            index=False,
+        )
+    stale = destination / "retarget.parquet"
+    if stale.exists():
+        stale.unlink()
     warnings = {name: list(table.collinear_warnings) for name, table in tables.items()}
+    warnings["holding_rate_sweep"] = [
+        f"holding_rate {table.holding_rate:g}: {line}"
+        for table in result.holding_rate_sweep
+        for line in table.collinear_warnings
+    ]
     (destination / "comparison_warnings.json").write_text(
         json.dumps(warnings, indent=2) + "\n",
         encoding="utf-8",
@@ -685,6 +860,7 @@ _PROFIT_ARTIFACTS = (
     "in_distribution.parquet",
     "unseen_sku.parquet",
     "unseen_disruption.parquet",
+    "holding_rate_sweep.parquet",
     "retarget.parquet",
     "comparison_warnings.json",
 )
@@ -746,9 +922,12 @@ def publish_synthetic_comparison(
     directory: str | Path,
     **compare_kwargs: object,
 ) -> SyntheticComparison:
-    """Score rollout accuracy, then the profit table if the gate opens.
+    """Score rollout accuracy, then the profit tables if the gate opens.
 
-    A refusal writes ``profit_table_refused.json`` and no protocol parquet.
+    A rollout refusal writes ``profit_table_refused.json`` and no protocol
+    parquet. The order-sequence check runs only after that gate opens. If
+    the frozen planner's orders do not differ across holding rates, the
+    sweep raises and any profit table already in the directory is removed.
     """
     accuracy = held_out_rollout_accuracy(latent.dynamics, direct.dynamics, frame)
     destination = Path(directory)
@@ -758,7 +937,12 @@ def publish_synthetic_comparison(
         _remove_profit_tables(destination)
         _record_profit_refusal(destination)
         raise RolloutGateError(accuracy)
-    result = compare_synthetic(latent, direct, frame=frame, **compare_kwargs)
+    compare_kwargs["assert_orders"] = True
+    try:
+        result = compare_synthetic(latent, direct, frame=frame, **compare_kwargs)
+    except UnfalsifiableTransfer:
+        _remove_profit_tables(destination)
+        raise
     result = replace(result, rollout_accuracy=accuracy)
     _clear_profit_refusal(destination)
     write_synthetic_comparison(result, destination)

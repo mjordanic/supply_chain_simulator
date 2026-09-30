@@ -4,32 +4,32 @@ Seams, from the issue acceptance criteria:
 
 1. Pass rules. The in-distribution rule passes when the learned arm beats
    the tuned anchor and the bootstrap interval of that paired difference
-   excludes zero. A tie fails. The retarget rule passes when the frozen
-   latent planner beats the frozen textbook policy on that paired profit.
-   Smoke runs check that the booleans match these rules. They do not
-   require the published thresholds to pass.
+   excludes zero. A tie fails. Smoke runs check that boolean. They do not
+   require the published threshold to pass. The holding-rate sweep has no
+   profit pass bar; identical order sequences raise.
 2. Arms. A smoke run returns a finite paired ``net_profit / initial_cash``
    for the latent planner, the direct planner, permutation priority,
    textbook fair-share, the never-order, random-cover, and least-squares
    floors, the oracle ceiling, published-default ``OrderUpToPolicy``, and
-   the other three textbook policies at published defaults. Both protocols
-   carry the floors, the oracle, and the learned arms.
+   the other three textbook policies at published defaults. The sweep
+   tables carry the frozen planner and the rate-matched ceiling.
 3. Columns. Order volume, service level, stockout rate, and realised fill
    rate sit on every arm. Tightness is a per-seed column. The paired
    comparison is the per-seed difference. Arms correlating above 0.99 are
    a warning and are omitted from the written table.
 4. Rates. The in-distribution smoke uses ``holding_rate = 0.01``. The
-   retarget smoke scores the same weights at ``holding_rate = 0.05`` and
-   includes the textbook policy from the ``0.01`` anchor, left frozen.
+   sweep scores the same weights at 0.005, 0.01, 0.02, 0.05, and 0.1.
+   Each rate's ceiling is the textbook factory for that rate. With no
+   factories, the ceiling is the published default.
 5. Factories. An ``OrderUpToPolicy`` factory is the ``0.01`` anchor on
-   both protocols. A second factory is the ``0.05`` ceiling and is not a
-   pass bar. With no anchor factory, the anchor is the published default.
-   Anchor and planner share routing, the minimum-order floor, and the
-   supplier's unit cost. No tuning study runs.
+   the generalisation tables. The sweep factories are scored and no
+   tuning study runs. Anchor and planner share routing, the
+   minimum-order floor, and the supplier's unit cost. Identical order
+   sequences on the real holdout raise instead of returning a curve.
 6. Holdout defaults. The in-distribution seed count is 32 and the offset
    is ``13_000_000``. Unseen-SKU starts at ``15_000_000`` and
    unseen-disruption at ``16_000_000``. Smoke tests override the seed count.
-   The three blocks stay disjoint. Retarget reuses the in-distribution seeds.
+   The three blocks stay disjoint. The sweep reuses the in-distribution seeds.
 7. The RL stack is not imported. The publish gate is unchanged.
 """
 
@@ -42,6 +42,8 @@ import subprocess
 import sys
 from dataclasses import replace
 from unittest.mock import patch
+
+import pytest
 
 import pandas as pd
 import torch
@@ -154,13 +156,15 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
     assert set(result.in_distribution.per_seed) == learned | floors | textbooks
     assert set(result.unseen_sku.per_seed) == learned | floors | textbooks
     assert set(result.unseen_disruption.per_seed) == learned | floors | textbooks
-    assert set(result.retarget.per_seed) == learned | floors | {"anchor"}
+    from src.jepa.commands import SWEEP_HOLDING_RATES
+
+    assert tuple(table.holding_rate for table in result.holding_rate_sweep) == SWEEP_HOLDING_RATES
+    assert all(set(table.per_seed) == {"latent", "ceiling"} for table in result.holding_rate_sweep)
     assert result.in_distribution.holding_rate == 0.01
     assert result.unseen_sku.holding_rate == 0.01
     assert result.unseen_disruption.holding_rate == 0.01
-    assert result.retarget.holding_rate == 0.05
     assert result.in_distribution.seeds == (offset, offset + 1)
-    assert result.retarget.seeds == (offset, offset + 1)
+    assert all(table.seeds == (offset, offset + 1) for table in result.holding_rate_sweep)
     assert result.unseen_sku.seeds == (UNSEEN_SKU_SEED_OFFSET, UNSEEN_SKU_SEED_OFFSET + 1)
     assert result.unseen_disruption.seeds == (
         UNSEEN_DISRUPTION_SEED_OFFSET,
@@ -170,18 +174,16 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
     assert set(result.in_distribution.seeds).isdisjoint(result.unseen_disruption.seeds)
     assert set(result.unseen_sku.seeds).isdisjoint(result.unseen_disruption.seeds)
 
-    for table in (
-        result.in_distribution,
-        result.unseen_sku,
-        result.unseen_disruption,
-        result.retarget,
-    ):
+    def _columns(table, baseline: str) -> None:
         assert table.collinear_warnings == collinear_report(table.per_seed)[0]
         assert len(table.tightness) == len(table.cash_tightness) == 2
         assert len(table.paired_difference) == 2
+        assert table.baseline == baseline
         assert table.paired_difference == tuple(
             left - right
-            for left, right in zip(table.per_seed["latent"], table.per_seed["anchor"], strict=True)
+            for left, right in zip(
+                table.per_seed["latent"], table.per_seed[baseline], strict=True
+            )
         )
         for name, series in table.per_seed.items():
             assert len(series) == 2
@@ -197,7 +199,12 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
             assert all(math.isfinite(value) for value in table.order_volume[name])
             assert all(math.isfinite(value) for value in table.service_level[name])
             assert all(math.isfinite(value) for value in table.stockout_rate[name])
+
+    for table in (result.in_distribution, result.unseen_sku, result.unseen_disruption):
+        _columns(table, "anchor")
         assert table.order_volume["never_order"] == (0.0, 0.0)
+    for table in result.holding_rate_sweep:
+        _columns(table, "ceiling")
 
     assert result.in_distribution.per_seed["anchor"] == result.in_distribution.per_seed["order_up_to"]
 
@@ -237,8 +244,10 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
     assert result.unseen_disruption.per_seed["order_up_to"] == _series(
         OrderUpToPolicy, shocked
     )
+    by_rate = {table.holding_rate: table for table in result.holding_rate_sweep}
     frozen = _series(OrderUpToPolicy, at_five)
-    assert result.retarget.per_seed["anchor"] == frozen
+    assert by_rate[0.05].per_seed["ceiling"] == frozen
+    assert by_rate[0.01].per_seed["latent"] == result.in_distribution.per_seed["latent"]
     assert all(
         left < right
         for left, right in zip(frozen, result.in_distribution.per_seed["order_up_to"], strict=True)
@@ -253,12 +262,7 @@ def test_smoke_comparison_returns_paired_profit_for_every_arm():
         result.in_distribution.per_seed["latent"],
         result.in_distribution.per_seed["anchor"],
     )
-    assert result.retarget_passes == retarget_passes(
-        result.retarget.per_seed["latent"],
-        result.retarget.per_seed["anchor"],
-    )
     assert isinstance(result.in_distribution_passes, bool)
-    assert isinstance(result.retarget_passes, bool)
 
     for key, value in latent_weights.items():
         assert torch.equal(latent.dynamics.state_dict()[key], value)
@@ -313,21 +317,22 @@ def test_anchor_and_ceiling_factories_are_scored_without_a_study():
     at_one = [
         sample_episode(training, replace(config, holding_rate=0.01), offset + i) for i in range(2)
     ]
-    at_five = [
-        sample_episode(training, replace(config, holding_rate=0.05), offset + i) for i in range(2)
-    ]
+
+    from src.jepa.commands import SWEEP_HOLDING_RATES
 
     def anchor() -> _FixedOrder:
         return _FixedOrder(5)
 
-    def ceiling() -> _FixedOrder:
-        return _FixedOrder(40)
+    factories = {
+        rate: (lambda qty=qty: _FixedOrder(qty))
+        for qty, rate in enumerate(SWEEP_HOLDING_RATES, start=1)
+    }
 
     result = compare_synthetic(
         latent,
         direct,
         anchor_factory=anchor,
-        ceiling_factory=ceiling,
+        ceiling_factories=factories,
         n_seeds=2,
         seed_offset=offset,
         config=config,
@@ -335,15 +340,17 @@ def test_anchor_and_ceiling_factories_are_scored_without_a_study():
     )
 
     assert result.in_distribution.per_seed["anchor"] == _series(anchor, at_one)
-    assert result.retarget.per_seed["anchor"] == _series(anchor, at_five)
     assert result.in_distribution.per_seed["anchor"] != result.in_distribution.per_seed["order_up_to"]
     assert "ceiling" not in result.in_distribution.per_seed
-    assert result.retarget.per_seed["ceiling"] == _series(ceiling, at_five)
-    assert result.retarget.per_seed["ceiling"] != result.retarget.per_seed["anchor"]
-    assert result.retarget_passes == retarget_passes(
-        result.retarget.per_seed["latent"],
-        result.retarget.per_seed["anchor"],
-    )
+    by_rate = {table.holding_rate: table for table in result.holding_rate_sweep}
+    training, _evaluation = partition_catalog(make_synthetic_catalog(config.K_catalog))
+    for rate, factory in factories.items():
+        specs = [
+            sample_episode(training, replace(config, holding_rate=rate), offset + i)
+            for i in range(2)
+        ]
+        assert by_rate[rate].per_seed["ceiling"] == _series(factory, specs)
+        assert by_rate[rate].baseline == "ceiling"
 
 
 def test_published_defaults_are_the_tuner_holdout():
@@ -414,9 +421,8 @@ def test_collinear_arms_are_a_warning_and_omitted_from_the_written_table(tmp_pat
 
     result = SyntheticComparison(
         in_distribution=table,
-        retarget=retarget,
+        holding_rate_sweep=(retarget,),
         in_distribution_passes=False,
-        retarget_passes=True,
         in_distribution_paired_interval=(0.1, 0.2),
         unseen_sku=ComparisonTable(
             holding_rate=0.01,
@@ -584,7 +590,7 @@ def test_learned_arms_beat_the_never_order_floor_and_a_duplicate_is_a_warning():
         )
     assert learned_beats_never_order(result.in_distribution)
     assert learned_beats_never_order(result.unseen_sku)
-    assert learned_beats_never_order(result.retarget)
+    assert learned_beats_never_order(result.unseen_disruption)
     for name in LEARNED_ARMS:
         assert name in result.in_distribution.per_seed
     assert "permutation" in result.in_distribution.dropped_arms
@@ -603,3 +609,113 @@ def test_comparison_does_not_import_the_rl_stack():
         "assert not bad, bad\n"
     )
     subprocess.check_call([sys.executable, "-c", script])
+
+
+def test_forced_order_check_refuses_a_rate_blind_buyer():
+    """``assert_orders`` refuses a buyer that ignores the rate, before any curve."""
+    from src.jepa.dynamics import OracleDynamics
+    from src.jepa.eval import UnfalsifiableTransfer, holding_rate_sweep
+    from src.jepa.plan import ReplenishmentPlanner
+
+    class _RateBlind(ReplenishmentPlanner):
+        def decide(self, obs_intermediate, central_table):
+            inventory = obs_intermediate.get("inventory") or {}
+            prices = obs_intermediate.get("base_prices") or {}
+            pids = sorted(inventory)
+            return {
+                "order": {},
+                "list_price": {pid: float(prices.get(pid, 0.0)) for pid in pids},
+                "min_order_imposed": {pid: 0 for pid in pids},
+                "promotions": {},
+            }
+
+    planner = _RateBlind(
+        OracleDynamics(2),
+        policy_seed=0,
+        delivery_lag=2,
+        budget=1,
+        holding_rate=0.01,
+    )
+    config = TuningConfig(
+        episode_length=3,
+        K_active=1,
+        K_catalog=8,
+        delivery_lag=2,
+        capacity_dist=Constant(100),
+        balance_dist=Constant(1_000.0),
+        init_stock_pct_dist=Constant(0.0),
+    )
+    with pytest.raises(UnfalsifiableTransfer, match="identical"):
+        holding_rate_sweep(planner, n_seeds=1, config=config, assert_orders=True)
+
+
+def test_real_holdout_refuses_a_noop_and_accepts_a_planner_that_changes_orders():
+    """The order check runs on the tuner holdout, not on a till-empty fixture.
+
+    A buyer that ignores the holding rate raises and returns no curve.
+    The same holdout with the planner's own ration returns one table per
+    sweep rate, against the textbook factory for that rate.
+    """
+    from src.jepa.commands import SWEEP_HOLDING_RATES
+    from src.jepa.dynamics import OracleDynamics
+    from src.jepa.eval import (
+        HOLDOUT_SEED_OFFSET,
+        UnfalsifiableTransfer,
+        holding_rate_sweep,
+    )
+    from src.jepa.plan import ReplenishmentPlanner
+
+    class _RateBlind(ReplenishmentPlanner):
+        def decide(self, obs_intermediate, central_table):
+            inventory = obs_intermediate.get("inventory") or {}
+            prices = obs_intermediate.get("base_prices") or obs_intermediate.get("list_prices") or {}
+            pids = sorted(inventory)
+            return {
+                "order": {},
+                "list_price": {pid: float(prices.get(pid, 0.0)) for pid in pids},
+                "min_order_imposed": {pid: 0 for pid in pids},
+                "promotions": {},
+            }
+
+    blind = _RateBlind(
+        OracleDynamics(4),
+        policy_seed=0,
+        delivery_lag=4,
+        budget=1,
+        holding_rate=0.01,
+        order_fee=TuningConfig().order_fee,
+    )
+    with pytest.raises(UnfalsifiableTransfer):
+        holding_rate_sweep(blind, n_seeds=1)
+
+    planner = ReplenishmentPlanner(
+        OracleDynamics(4),
+        policy_seed=0,
+        delivery_lag=4,
+        budget=4,
+        holding_rate=0.01,
+        order_fee=TuningConfig().order_fee,
+    )
+    model = planner.dynamics
+    tables = holding_rate_sweep(planner, n_seeds=1)
+    assert planner.dynamics is model
+    assert tuple(table.holding_rate for table in tables) == SWEEP_HOLDING_RATES
+    assert all(table.seeds == (HOLDOUT_SEED_OFFSET,) for table in tables)
+    volumes = []
+    for table in tables:
+        assert set(table.per_seed) == {"latent", "ceiling"}
+        assert all(math.isfinite(value) for value in table.cash_tightness)
+        assert all(math.isfinite(value) for value in table.per_seed["latent"])
+        assert all(math.isfinite(value) for value in table.per_seed["ceiling"])
+        volumes.append(table.order_volume["latent"])
+    assert len(set(volumes)) > 1
+
+
+def test_identical_order_sequences_refuse_the_transfer_curve():
+    """A sweep that places the same orders at every rate must not report a number."""
+    from src.jepa.eval import UnfalsifiableTransfer, assert_order_sequences_differ
+
+    same = (((("A", 4),),),)
+    with pytest.raises(UnfalsifiableTransfer):
+        assert_order_sequences_differ({0.01: same, 0.05: same, 0.1: same})
+    assert_order_sequences_differ({0.01: same, 0.05: (((("A", 0),),),)})

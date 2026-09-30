@@ -31,7 +31,12 @@ from src.sim.policy import Policy
 # ---------------------------------------------------------------------------
 
 
-def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, float]:
+def run_policy_episode(
+    policy: Policy,
+    spec: TuningEpisodeSpec,
+    *,
+    include_orders: bool = False,
+) -> dict[str, float | tuple]:
     """Roll out ``policy`` on the graph-mode scenario in ``spec``.
 
     ``spec.scenario`` is a graph-mode Scenario built by ``episode.sample_episode``:
@@ -103,13 +108,18 @@ def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, flo
     revenue = float(s_pd["revenue"].iloc[0]) if not s_pd.empty else 0.0
 
     order_volume = 0.0
+    steps: list[tuple[tuple[str, int], ...]] = []
     for tick_log in run_log["ticks"]:
         requested = (tick_log.get("node_orders") or {}).get("S") or {}
         order_volume += float(sum(int(qty) for qty in requested.values()))
+        if include_orders:
+            steps.append(
+                tuple(sorted((str(pid), int(qty)) for pid, qty in requested.items()))
+            )
     raw_fill = run_log["global"]["supplier_fill_rate"]
     fill_rate = float("nan") if raw_fill is None else float(raw_fill)
 
-    return {
+    metrics: dict[str, float | tuple] = {
         "service_level": service_level,
         "stockout_rate": stockout_rate,
         "inventory_turnover": inventory_turnover,
@@ -119,6 +129,9 @@ def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, flo
         "order_volume": order_volume,
         "fill_rate": fill_rate,
     }
+    if include_orders:
+        metrics["order_sequence"] = tuple(steps)
+    return metrics
 
 
 __all__ = ["run_policy_episode"]

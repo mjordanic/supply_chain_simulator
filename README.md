@@ -432,19 +432,20 @@ uv run python -m src.jepa tune --holding-rate 0.05 --trials 150 --output-dir run
 uv run python -m src.jepa tune --holding-rate 0.1 --trials 150 --output-dir runs/jepa-replenishment/tuning
 ```
 
-Synthetic eval writes three generalisation tables and the holding-rate retarget,
+Synthetic eval writes three generalisation tables and the holding-rate sweep,
 as separate files. In-distribution uses the training SKUs and the tuner holdout
 (32 seeds from `13_000_000`) at the default disruption. Unseen-SKU uses the
 held-out SKUs and 32 seeds from `15_000_000`. Unseen-disruption uses the training
 SKUs, 32 seeds from `16_000_000`, and a harsher disruption regime the log never
 samples. Those seed ranges are disjoint and are recorded in the log manifest.
-The retarget rescores the in-distribution seeds at `holding_rate` 0.05. The
-in-distribution anchor is `order_up_to_holding_0_01` and the retarget ceiling
-is `order_up_to_holding_0_05`, both under the tuning directory above. The other
-three directories are the ceilings for the remaining sweep rates.
+The sweep rescores the in-distribution seeds at each rate above, with the
+weights from the 0.01 fit and no new log. At each rate the frozen planner is
+compared with the `OrderUpToPolicy` tuned at that same rate, loaded from the
+study directories above. The run writes no sweep table when that planner's
+order sequence is identical across the rates.
 
 ```bash
-uv run python -m src.jepa eval --checkpoints runs/jepa-replenishment/checkpoints --log runs/jepa-replenishment/log/transitions.parquet --anchor runs/jepa-replenishment/tuning/order_up_to_holding_0_01 --ceiling runs/jepa-replenishment/tuning/order_up_to_holding_0_05 --output runs/jepa-replenishment/synthetic
+uv run python -m src.jepa eval --checkpoints runs/jepa-replenishment/checkpoints --log runs/jepa-replenishment/log/transitions.parquet --tuning-dir runs/jepa-replenishment/tuning --output runs/jepa-replenishment/synthetic
 ```
 
 M5 walkthrough. When `data/m5/` is absent the notebook skips and prints the

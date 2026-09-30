@@ -36,6 +36,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import nbformat
+import pytest
 
 TRAINING = Path("notebooks/09-jepa-train-and-plan.ipynb")
 RESULTS = Path("notebooks/10-jepa-synthetic-eval.ipynb")
@@ -90,6 +91,7 @@ def test_training_notebook_shows_one_decision_on_smoke_settings():
 
 def test_results_notebook_prints_the_published_command_when_tables_are_absent(tmp_path, monkeypatch):
     from src.jepa.commands import EVAL_COMMAND
+    from src.jepa.eval import HOLDING_RATE_SWEEP_RULE
 
     missing = tmp_path / "no-such-synthetic"
     empty = tmp_path / "empty-synthetic"
@@ -100,36 +102,35 @@ def test_results_notebook_prints_the_published_command_when_tables_are_absent(tm
         assert EVAL_COMMAND in output
         assert "in_distribution_passes" not in output
         assert "retarget_passes" not in output
+        assert HOLDING_RATE_SWEEP_RULE not in output
 
 
 def test_results_notebook_states_the_rules_beside_the_loaded_tables(tmp_path, monkeypatch):
     import pandas as pd
 
     from src.jepa.eval import (
+        HOLDING_RATE_SWEEP_RULE,
         IN_DISTRIBUTION_RULE,
-        RETARGET_RULE,
         in_distribution_passes,
-        retarget_passes,
     )
 
     in_latent = [0.123, 0.123]
     in_anchor = [0.812, 0.812]
-    retarget_latent = [-0.456, -0.456]
-    retarget_anchor = [-0.901, -0.901]
+    sweep_latent = [-0.456, -0.456]
+    sweep_ceiling = [-0.901, -0.901]
     in_dist = pd.DataFrame({
         "seed": [13_000_000, 13_000_001],
         "latent": in_latent,
         "direct": [0.111, 0.111],
         "anchor": in_anchor,
     })
-    retarget = pd.DataFrame({
-        "seed": [13_000_000, 13_000_001],
-        "latent": retarget_latent,
-        "anchor": retarget_anchor,
-        "ceiling": [0.222, 0.222],
-    })
     in_dist.to_parquet(tmp_path / "in_distribution.parquet", index=False)
-    retarget.to_parquet(tmp_path / "retarget.parquet", index=False)
+    pd.DataFrame({
+        "holding_rate": [0.01, 0.01, 0.05, 0.05],
+        "seed": [13_000_000, 13_000_001, 13_000_000, 13_000_001],
+        "latent": sweep_latent + sweep_latent,
+        "ceiling": sweep_ceiling + sweep_ceiling,
+    }).to_parquet(tmp_path / "holding_rate_sweep.parquet", index=False)
     pd.DataFrame({
         "seed": [15_000_000, 15_000_001],
         "latent": [0.201, 0.201],
@@ -145,14 +146,15 @@ def test_results_notebook_states_the_rules_beside_the_loaded_tables(tmp_path, mo
     output = _run_notebook(RESULTS)
     in_at = output.index(IN_DISTRIBUTION_RULE)
     loaded_in = output.index("0.123")
-    retarget_at = output.index(RETARGET_RULE)
+    sweep_at = output.index(HOLDING_RATE_SWEEP_RULE)
     loaded_out = output.index("-0.456")
-    assert in_at < loaded_in < retarget_at < loaded_out
-    assert loaded_in < output.index("protocol unseen_sku") < output.index("protocol unseen_disruption") < retarget_at
+    assert in_at < loaded_in < sweep_at < loaded_out
+    assert loaded_in < output.index("protocol unseen_sku") < output.index("protocol unseen_disruption") < sweep_at
     assert "0.201" in output and "0.202" in output
     assert "9.876" not in output
     assert f"in_distribution_passes {in_distribution_passes(in_latent, in_anchor)}" in output
-    assert f"retarget_passes {retarget_passes(retarget_latent, retarget_anchor)}" in output
+    assert "sweep_rates (0.01, 0.05)" in output
+    assert "retarget_passes" not in output
 
 
 def test_root_readme_publishes_the_commands_and_leaves_runs_uncommitted():
@@ -198,16 +200,22 @@ def _study_dir(directory: Path) -> None:
 
 def test_smoke_eval_does_not_publish_an_undertrained_profit_table(tmp_path, monkeypatch):
     """Smoke fit is one epoch on a short log. The rollout gate withholds the table."""
-    from src.jepa.commands import main
+    import json
+
+    from src.jepa.commands import SWEEP_HOLDING_RATES, main, order_up_to_study_name
     from src.jepa.eval import RolloutGateError
 
     log = tmp_path / "transitions.parquet"
     checkpoints = tmp_path / "checkpoints"
-    anchor = tmp_path / "order_up_to_holding_0_01"
-    ceiling = tmp_path / "order_up_to_holding_0_05"
+    tuning = tmp_path / "tuning"
     out = tmp_path / "synthetic"
-    _study_dir(anchor)
-    _study_dir(ceiling)
+    for rate in SWEEP_HOLDING_RATES:
+        directory = tuning / order_up_to_study_name(rate)
+        _study_dir(directory)
+        path = directory / "study.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta["episode_distribution"] = {"holding_rate": rate}
+        path.write_text(json.dumps(meta), encoding="utf-8")
     main([
         "collect",
         "--episodes-each", "1",
@@ -229,8 +237,7 @@ def test_smoke_eval_does_not_publish_an_undertrained_profit_table(tmp_path, monk
             "eval",
             "--checkpoints", str(checkpoints),
             "--log", str(log),
-            "--anchor", str(anchor),
-            "--ceiling", str(ceiling),
+            "--tuning-dir", str(tuning),
             "--output", str(out),
             "--n-seeds", "1",
             "--episode-length", "4",
@@ -245,6 +252,7 @@ def test_smoke_eval_does_not_publish_an_undertrained_profit_table(tmp_path, monk
     assert not (out / "in_distribution.parquet").exists()
     assert not (out / "unseen_sku.parquet").exists()
     assert not (out / "unseen_disruption.parquet").exists()
+    assert not (out / "holding_rate_sweep.parquet").exists()
     assert not (out / "retarget.parquet").exists()
     assert (out / "rollout_accuracy.json").is_file()
     assert (out / "profit_table_refused.json").is_file()
@@ -252,6 +260,40 @@ def test_smoke_eval_does_not_publish_an_undertrained_profit_table(tmp_path, monk
     output = _run_notebook(RESULTS)
     assert "in_distribution_passes" not in output
     assert "retarget_passes" not in output
+
+
+def test_sweep_loader_rejects_a_study_that_does_not_record_its_rate(tmp_path):
+    import json
+
+    from src.jepa.commands import order_up_to_study_name, sweep_factories
+
+    for rate in (0.005, 0.01, 0.02, 0.05, 0.1):
+        directory = tmp_path / order_up_to_study_name(rate)
+        _study_dir(directory)
+        if rate == 0.05:
+            continue
+        path = directory / "study.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta["episode_distribution"] = {"holding_rate": rate}
+        path.write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ValueError, match="does not record"):
+        sweep_factories(tmp_path)
+
+
+def test_sweep_loader_rejects_a_study_tuned_at_another_rate(tmp_path):
+    import json
+
+    from src.jepa.commands import order_up_to_study_name, sweep_factories
+
+    for rate in (0.005, 0.01, 0.02, 0.05, 0.1):
+        directory = tmp_path / order_up_to_study_name(rate)
+        _study_dir(directory)
+        path = directory / "study.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta["episode_distribution"] = {"holding_rate": 0.01 if rate == 0.05 else rate}
+        path.write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ValueError, match="0.05"):
+        sweep_factories(tmp_path)
 
 
 def test_sweep_study_names_keep_the_published_directories():

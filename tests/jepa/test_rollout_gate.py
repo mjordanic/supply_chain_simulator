@@ -184,6 +184,7 @@ def test_undertrained_model_does_not_publish_a_profit_table(tmp_path: Path):
     assert not (tmp_path / "out" / "in_distribution.parquet").exists()
     assert not (tmp_path / "out" / "unseen_sku.parquet").exists()
     assert not (tmp_path / "out" / "unseen_disruption.parquet").exists()
+    assert not (tmp_path / "out" / "holding_rate_sweep.parquet").exists()
     assert not (tmp_path / "out" / "retarget.parquet").exists()
     assert (tmp_path / "out" / "rollout_accuracy.json").is_file()
     refused = json.loads(
@@ -262,13 +263,15 @@ def test_passing_rollout_accuracy_writes_the_profit_table(tmp_path: Path):
             seeds=(1,),
             per_seed={"latent": (0.2,), "anchor": (0.1,)},
         ),
-        retarget=ComparisonTable(
-            holding_rate=0.05,
-            seeds=(1,),
-            per_seed={"latent": (0.2,), "anchor": (0.0,)},
+        holding_rate_sweep=(
+            ComparisonTable(
+                holding_rate=0.05,
+                seeds=(1,),
+                per_seed={"latent": (0.2,), "ceiling": (0.0,)},
+                baseline="ceiling",
+            ),
         ),
         in_distribution_passes=True,
-        retarget_passes=True,
         in_distribution_paired_interval=(0.0, 0.0),
         unseen_sku=ComparisonTable(
             holding_rate=0.01,
@@ -285,7 +288,8 @@ def test_passing_rollout_accuracy_writes_the_profit_table(tmp_path: Path):
     assert (tmp_path / "in_distribution.parquet").is_file()
     assert (tmp_path / "unseen_sku.parquet").is_file()
     assert (tmp_path / "unseen_disruption.parquet").is_file()
-    assert (tmp_path / "retarget.parquet").is_file()
+    assert (tmp_path / "holding_rate_sweep.parquet").is_file()
+    assert not (tmp_path / "retarget.parquet").exists()
 
 
 def test_a_refused_rerun_removes_a_stale_profit_table(tmp_path: Path):
@@ -293,6 +297,7 @@ def test_a_refused_rerun_removes_a_stale_profit_table(tmp_path: Path):
         "in_distribution.parquet",
         "unseen_sku.parquet",
         "unseen_disruption.parquet",
+        "holding_rate_sweep.parquet",
         "retarget.parquet",
         "comparison_warnings.json",
     ):
@@ -310,9 +315,8 @@ def test_a_refused_rerun_removes_a_stale_profit_table(tmp_path: Path):
     )
     result = SyntheticComparison(
         in_distribution=bare,
-        retarget=bare,
+        holding_rate_sweep=(bare,),
         in_distribution_passes=False,
-        retarget_passes=False,
         in_distribution_paired_interval=(0.0, 0.0),
         unseen_sku=bare,
         unseen_disruption=bare,
@@ -323,6 +327,7 @@ def test_a_refused_rerun_removes_a_stale_profit_table(tmp_path: Path):
         "in_distribution.parquet",
         "unseen_sku.parquet",
         "unseen_disruption.parquet",
+        "holding_rate_sweep.parquet",
         "retarget.parquet",
         "comparison_warnings.json",
     ):

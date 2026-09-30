@@ -21,23 +21,23 @@ changes the optimum.
 
 **Blocked by:** 15.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** existing synthetic comparison tests; the `Synthetic comparison`
 and `Holding cost` entries in `CONTEXT.md`; ADR 0027 (frozen holding-rate
 retarget), which this ticket amends.
 
-- [ ] The transfer claim is evaluated as a sweep across several holding rates
+- [x] The transfer claim is evaluated as a sweep across several holding rates
       rather than a single pair.
-- [ ] At each rate the frozen planner is compared against a textbook policy tuned
+- [x] At each rate the frozen planner is compared against a textbook policy tuned
       at that same rate, so the ceiling is known at every point.
-- [ ] A hard assertion verifies the frozen planner's *order sequence* differs
+- [x] A hard assertion verifies the frozen planner's *order sequence* differs
       across rates on the real holdout — not on a fixture. A no-op protocol must
       fail loudly rather than report a number.
-- [ ] The model weights are not refit and no new log is collected, so the claim
+- [x] The model weights are not refit and no new log is collected, so the claim
       stays zero-shot.
-- [ ] ADR 0027 is amended to record that the original protocol was unfalsifiable
+- [x] ADR 0027 is amended to record that the original protocol was unfalsifiable
       under the old episode distribution, and what the corrected protocol
       requires.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the sweep
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the sweep
       is updated in this ticket.

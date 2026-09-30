@@ -179,15 +179,20 @@ class ReplenishmentPlanner(IntermediatePolicy):
         self.sales_log: dict[str, list[int]] = {}
         self.proposals: list[dict[str, Any]] = []
 
-    def retarget(self, holding_rate: float) -> ReplenishmentPlanner:
+    def retarget(
+        self,
+        holding_rate: float,
+        *,
+        order_fee: float | None = None,
+    ) -> ReplenishmentPlanner:
         """Same weights and ``policy_seed``, new holding rate. Does not fit."""
-        return ReplenishmentPlanner(
+        return self.__class__(
             self.dynamics,
             policy_seed=self.policy_seed,
             delivery_lag=self.delivery_lag,
             budget=self.budget,
             holding_rate=holding_rate,
-            order_fee=self.order_fee,
+            order_fee=self.order_fee if order_fee is None else float(order_fee),
             ration=self.ration,
             horizon_multiple=self.horizon_multiple,
             search=self.search,

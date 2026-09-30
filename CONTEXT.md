@@ -252,8 +252,8 @@ Ending inventory position (on-hand plus in-transit) is credited at unit cost, so
 is not confiscated at the window boundary. That credit is not cash the next ration can spend.
 There is no stockout penalty and no learned reward head.
 Each ration spends what is left after that step's holding charge, and the cash after imagined
-profit is what the next ration can spend, so a frozen planner can be retargeted from
-`holding_rate` 0.01 to 0.05 without a new fit. `ration="fair_share"` keeps the same cover
+profit is what the next ration can spend, so a frozen planner can be rescored
+across the holding-rate sweep without a new fit. `ration="fair_share"` keeps the same cover
 search and uses the textbook fair-share split. See ADR 0024, ADR 0025, ADR 0027, ADR 0029.
 
 **Direct replenishment predictor** (`fit_direct`, `src/jepa/plan.py`)
@@ -279,10 +279,12 @@ training SKUs, the default disruption regime, and the tuner holdout (32 seeds fr
 `13_000_000`). Unseen-SKU uses the evaluation partition, the same default regime, and
 32 seeds from `15_000_000`. Unseen-disruption uses the training SKUs, 32 seeds from
 `16_000_000`, and `harsh_disruption_params`, which training episodes never use. The
-holding-rate retarget rescores the in-distribution seeds; it is not pooled with those
-three. Every table also carries a
+holding-rate sweep rescores the in-distribution seeds at 0.005, 0.01, 0.02,
+0.05, and 0.1; it is not pooled with those three. Each generalisation table
+carries a
 never-order floor, a random-cover floor (`ExploratoryPolicy`), a least-squares model inside
-the same planner, and an oracle model inside the same planner. The oracle is the inventory
+the same planner, and an oracle model inside the same planner. The sweep table
+carries the frozen planner and the `OrderUpToPolicy` tuned at that rate. The oracle is the inventory
 recursion: arrivals follow the arrival-age profile, and sales are capped by the mean of the
 most recent lead-time of sales, frozen when the rollout opens. Its fill rate is 1. The least-squares model is fit on the transition
 log's training episodes, the same inputs as the publish gate. The headline number is paired
@@ -294,12 +296,14 @@ on every profit row when a table is published, beside `rollout_accuracy.json`. T
 per-seed profit correlates above 0.99 are named in `comparison_warnings.json` and the later
 arm is omitted from the parquet when the earlier arm stays; the in-memory series are kept. In-distribution uses
 `holding_rate` 0.01 and passes when the learned arm beats the tuned anchor and the bootstrap
-interval of latent minus that anchor excludes zero. The retarget rescores the same weights at
-`holding_rate` 0.05 and passes when that frozen planner beats the `OrderUpToPolicy` from the
-0.01 anchor, left frozen. An `OrderUpToPolicy` factory for `holding_rate` 0.05 is reported
-as `ceiling` and is not a pass bar. Smoke runs shorten the episode and the seed count.
+interval of latent minus that anchor excludes zero. The holding-rate sweep
+rescores the same weights at 0.005, 0.01, 0.02, 0.05, and 0.1. At each rate the
+frozen planner is compared with the `OrderUpToPolicy` tuned at that rate. The
+sweep reports no curve when that planner's order sequence is identical across
+the rates on the tuner holdout. Smoke runs shorten the episode and the seed count
+and do not stand in for that holdout check.
 `python -m src.jepa eval` writes `in_distribution.parquet`, `unseen_sku.parquet`,
-`unseen_disruption.parquet`, and `retarget.parquet` under
+`unseen_disruption.parquet`, and `holding_rate_sweep.parquet` under
 `runs/jepa-replenishment/synthetic/` only when the latent model's held-out per-step rollout
 R² beats an ordinary-least-squares baseline on the same inputs. The 112-episode measurement
 (latent mean R² 0.124 versus least squares 0.358) does not clear that gate, so that fit does
@@ -644,7 +648,7 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0024](docs/adr/0024-ordering-only-learned-policy.md) — Learned replenishment policy orders only; list price matches the textbook arm. Pricing policies are a later action space. The encoder may see on-hand, the arrival-age profile, a sales window longer than the lead time, cash, capacity, and the delivery lead time. It may not see the Market multiplier, the disruption identity, or the calendar. Routing stays outside the learned action. **Accepted.**
 - [ADR 0025](docs/adr/0025-priority-ration.md) — Learned policy rations capacity and cash by priority. Engine Allocation is unchanged. A joint multi-SKU dynamics model is deferred. **Accepted.**
 - [ADR 0026](docs/adr/0026-replay-window-adaptation.md) — M5 replay stays an exam for the headline number. A separate row may fit a reward-free predictor on an earlier window and test it on a later one. **Accepted.** Widens ADR 0020.
-- [ADR 0027](docs/adr/0027-frozen-holding-rate-retarget.md) — Holding-rate retarget re-scores a frozen predictor; imagined cash uses the new rate and feeds the ration. **Accepted.**
+- [ADR 0027](docs/adr/0027-frozen-holding-rate-retarget.md) — Holding-rate sweep re-scores a frozen predictor against the textbook policy tuned at each rate. The original single-rate protocol was unfalsifiable. **Accepted, amended.**
 - [ADR 0028](docs/adr/0028-m5-slice.md) — M5 arm is `shop-CA_1`, one factory at lead time 3, five FOODS items chosen on 2015 only. Test window is 2016-01-01 through 2016-04-24. **Accepted.**
 - [ADR 0029](docs/adr/0029-probe-stop-gradient.md) — Probe losses update the probes only. The encoder is trained by the latent loss and the anti-collapse penalty. **Accepted.**
 - [ADR 0030](docs/adr/0030-market-seasonal-cycle-read-time.md) — Seasonal cycle is a read-time multiplier on the demand level; `abs(cycle_amp) < 1`. Supersedes CRN baselines that depended on the integrated cycle. **Accepted.**

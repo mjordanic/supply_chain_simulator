@@ -5,7 +5,7 @@ and the tuner. It does not import the reinforcement-learning stack.
 
 The published commands — the behaviour mixture at `--episodes-each 64`, the fit, the
 150-trial `OrderUpToPolicy` studies at holding rates 0.005, 0.01, 0.02, 0.05, and 0.1, the
-synthetic eval on the three generalisation protocols and the holding-rate retarget, and the M5 exam — are in the root
+synthetic eval on the three generalisation protocols and the holding-rate sweep, and the M5 exam — are in the root
 [Latent replenishment](../../README.md#latent-replenishment) section.
 
 [`notebooks/09-jepa-train-and-plan.ipynb`](../../notebooks/09-jepa-train-and-plan.ipynb)
