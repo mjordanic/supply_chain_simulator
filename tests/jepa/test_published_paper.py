@@ -7,9 +7,8 @@ Seams, from the issue acceptance criteria:
    The pass words are ``in_distribution_passes`` and ``retarget_passes``.
    A false boolean is the word ``fail``. A sentinel that is not in those
    tables is absent.
-2. In-distribution claim. That section states the ticket-03 rule (the
-   paired interval covers zero, or the latent mean is at least 95% of the
-   anchor mean). It does not call that claim "beats the tuned anchor."
+2. In-distribution claim. That section states the win rule: the learned
+   arm beats the tuned anchor and the bootstrap interval excludes zero.
 3. Method, caveats, and future work. The draft states ordering-only
    covers, the censored-sales rate, a per-SKU latent predictor, frozen
    weights from the 0.01 fit, the censored-sales caveat, the ``unit_cost``
@@ -84,8 +83,8 @@ def test_paper_reports_a_passing_boolean_when_the_rules_hold(tmp_path):
     pd.DataFrame(
         {
             "seed": [13_000_000, 13_000_001],
-            "latent": [0.5, 0.5],
-            "anchor": [0.5, 0.5],
+            "latent": [0.8, 0.8],
+            "anchor": [0.2, 0.2],
         }
     ).to_parquet(synthetic / "in_distribution.parquet", index=False)
     pd.DataFrame(
@@ -103,7 +102,35 @@ def test_paper_reports_a_passing_boolean_when_the_rules_hold(tmp_path):
     assert "retarget_passes pass" in text
 
 
-def test_in_distribution_claim_is_the_interval_rule_not_a_win(tmp_path):
+def test_paper_means_skip_operational_columns(tmp_path):
+    from src.jepa.paper import render_paper
+
+    synthetic = tmp_path / "synthetic"
+    synthetic.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "seed": [1, 2],
+            "latent": [0.5, 0.5],
+            "anchor": [0.2, 0.2],
+            "latent_order_volume": [94.0, 94.0],
+            "tightness": [1.0, 1.0],
+            "latent_minus_anchor": [0.3, 0.3],
+            "rollout_r2_latent": [0.2, 0.2],
+        }
+    ).to_parquet(synthetic / "in_distribution.parquet", index=False)
+    pd.DataFrame(
+        {"seed": [1, 2], "latent": [0.4, 0.4], "anchor": [0.1, 0.1]}
+    ).to_parquet(synthetic / "retarget.parquet", index=False)
+    text = render_paper(tmp_path)
+    section = text.split("## In-distribution", 1)[1].split("## Retarget", 1)[0]
+    assert "| latent | 0.500000 |" in section
+    assert "94.000000" not in section
+    assert "| tightness |" not in section
+    assert "| rollout_r2_latent |" not in section
+    assert "| latent_minus_anchor |" not in section
+
+
+def test_in_distribution_claim_requires_a_win_whose_interval_excludes_zero(tmp_path):
     from src.jepa.eval import IN_DISTRIBUTION_RULE
     from src.jepa.paper import render_paper
 
@@ -111,7 +138,8 @@ def test_in_distribution_claim_is_the_interval_rule_not_a_win(tmp_path):
     text = render_paper(tmp_path)
     section = text.split("## In-distribution", 1)[1].split("## Retarget", 1)[0]
     assert IN_DISTRIBUTION_RULE in section
-    assert "beats the tuned anchor" not in section
+    assert "excludes zero" in section
+    assert "95%" not in section
 
 
 def test_paper_states_method_caveats_rules_and_future_work(tmp_path):
@@ -279,7 +307,8 @@ def test_tracked_paper_matches_the_renderer_and_keeps_a_failing_result():
         assert paper == render_paper(run)
     section = paper.split("## In-distribution", 1)[1].split("## Retarget", 1)[0]
     assert IN_DISTRIBUTION_RULE in section
-    assert "beats the tuned anchor" not in section
+    assert "excludes zero" in section
+    assert "95% of the anchor" not in section
     assert "in_distribution_passes fail" in section
     assert RETARGET_RULE in paper
     assert "retarget_passes fail" in paper

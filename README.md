@@ -402,8 +402,15 @@ uv run python -m src.jepa scale --log runs/jepa-replenishment/log/transitions.pa
 The loss curve and holdout metrics are
 written to `runs/jepa-replenishment/fit/` and are not committed. `eval` writes
 a profit table only when the latent model's held-out per-step rollout R² beats
-an ordinary-least-squares baseline on the same inputs. The curve is
-`rollout_accuracy.json` next to that table. `fit_latent`'s own default stays
+an ordinary-least-squares baseline on the same inputs. The 112-episode
+measurement, latent mean R² 0.124 against least squares at 0.358, does not
+clear that gate, so it does not publish a profit table. The curve is
+`rollout_accuracy.json` next to that table. When the gate opens, each table
+carries a never-order floor, a random-cover floor, a least-squares model in
+the planner, and an oracle model in the planner, plus the permutation-priority
+arm beside fair-share. Order volume, service level, stockout rate, and
+realised fill rate sit beside profit, and the held-out rollout means are on
+those same rows. `fit_latent`'s own default stays
 the reduced width the publish gate trains; the fit command passes the
 published width.
 

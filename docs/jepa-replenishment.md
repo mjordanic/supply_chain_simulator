@@ -74,7 +74,7 @@ under `flat_world`.
 
 ## Success rules
 
-In-distribution rule (holding_rate 0.01, tuner holdout): pass if the paired interval of latent minus the anchor covers zero, or the latent mean is at least 95% of the anchor mean.
+In-distribution rule (holding_rate 0.01, tuner holdout): pass if the learned arm beats the tuned anchor on paired net_profit / initial_cash and the bootstrap interval of latent minus that anchor excludes zero.
 
 Retarget rule (holding_rate 0.05, same weights, no new log): pass if the frozen planner beats the frozen OrderUpToPolicy from the 0.01 study on paired net_profit / initial_cash. The OrderUpToPolicy tuned at 0.05 is a ceiling and is not a pass bar.
 
@@ -164,7 +164,7 @@ Means and the paired interval below are printed to 6 decimal places.
 
 ## In-distribution
 
-In-distribution rule (holding_rate 0.01, tuner holdout): pass if the paired interval of latent minus the anchor covers zero, or the latent mean is at least 95% of the anchor mean.
+In-distribution rule (holding_rate 0.01, tuner holdout): pass if the learned arm beats the tuned anchor on paired net_profit / initial_cash and the bootstrap interval of latent minus that anchor excludes zero.
 
 The in-distribution claim is that rule.
 

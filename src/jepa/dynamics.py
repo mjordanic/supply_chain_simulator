@@ -1303,6 +1303,163 @@ def _ols_rollout(
     return torch.stack(steps, dim=1)
 
 
+def _shift_pipeline(profile: list[float], granted: float, lead: int) -> tuple[list[float], float]:
+    """Age the arrival profile one tick. Units that leave it have arrived.
+
+    Matches the observation advance: the grant is age 1, older cohorts
+    move up while their next age is still below the nominal lead, and
+    age 0 (empty at decision time) drops out.
+    """
+    slots = len(profile)
+    shifted = [0.0] * slots
+    if slots > 1:
+        shifted[1] = float(granted)
+    for age in range(1, max(0, slots - 1)):
+        dest = age + 1
+        if dest < slots and lead > dest:
+            shifted[dest] = float(profile[age])
+    arriving = sum(profile) + float(granted) - sum(shifted)
+    return shifted, arriving
+
+
+def _oracle_state(feat: list[float], fallback_lag: int) -> tuple[float, list[float], float, int]:
+    on_hand = float(feat[0]) if feat else 0.0
+    profile = [float(value) for value in feat[1 : 1 + ARRIVAL_AGE_SLOTS]]
+    start = 1 + ARRIVAL_AGE_SLOTS
+    window = [float(value) for value in feat[start : start + SALES_WINDOW]]
+    lead = int(fallback_lag)
+    if feat:
+        parsed = int(round(float(feat[-1])))
+        if parsed >= 1:
+            lead = parsed
+    recent = window[-max(1, lead) :] if window else []
+    rate = sum(recent) / len(recent) if recent else 0.0
+    return on_hand, profile, rate, lead
+
+
+class OracleDynamics:
+    """Inventory recursion used as the planner's ceiling.
+
+    Arrivals follow the arrival-age profile and the nominal lead time.
+    Sales are stock after those arrivals, capped by the mean of the most
+    recent lead-time of sales. ``fill_rate`` is 1, so the grant the
+    planner feeds in is the arrival. Demand is fixed when the rollout
+    opens; later imagined sales do not revise it.
+    """
+
+    def __init__(self, delivery_lag: int) -> None:
+        self.delivery_lag = int(delivery_lag)
+        self.fill_rate = 1.0
+
+    def open_rollout(self, features: list[list[float]]) -> Any:
+        if not features:
+            return _EmptyRollout()
+        return _OracleRollout(features, self.delivery_lag)
+
+
+class _OracleRollout:
+    def __init__(self, features: list[list[float]], fallback_lag: int) -> None:
+        self.rows = [_oracle_state(feat, fallback_lag) for feat in features]
+
+    def step(self, granted: list[float]) -> list[tuple[float, tuple[float, ...], float]]:
+        predicted: list[tuple[float, tuple[float, ...], float]] = []
+        for index, qty in enumerate(granted):
+            on_hand, profile, rate, lead = self.rows[index]
+            shifted, arriving = _shift_pipeline(profile, float(qty), lead)
+            stock = on_hand + arriving
+            sales = min(max(stock, 0.0), max(rate, 0.0))
+            next_on_hand = stock - sales
+            self.rows[index] = (next_on_hand, shifted, rate, lead)
+            predicted.append((next_on_hand, tuple(shifted), sales))
+        return predicted
+
+
+class LeastSquaresDynamics:
+    """One-step least squares rolled forward like the direct predictor.
+
+    Fit on the encoder inputs and the filled quantity. ``fill_rate`` is
+    the log's realised fill, the same fraction the learned planner uses.
+    """
+
+    def __init__(
+        self,
+        solution: torch.Tensor,
+        keep: torch.Tensor,
+        *,
+        delivery_lag: int,
+        fill_rate: float,
+    ) -> None:
+        self.solution = solution
+        self.keep = keep
+        self.delivery_lag = int(delivery_lag)
+        self.fill_rate = float(fill_rate)
+
+    def open_rollout(self, features: list[list[float]]) -> Any:
+        if not features:
+            return _EmptyRollout()
+        return _LeastSquaresRollout(self, features)
+
+
+class _LeastSquaresRollout:
+    def __init__(self, dynamics: LeastSquaresDynamics, features: list[list[float]]) -> None:
+        self._dynamics = dynamics
+        self._raw = torch.tensor(features, dtype=torch.float32)
+
+    @torch.no_grad()
+    def step(self, granted: list[float]) -> list[tuple[float, tuple[float, ...], float]]:
+        dynamics = self._dynamics
+        action = torch.tensor(granted, dtype=torch.float32)
+        ones = torch.ones(self._raw.shape[0], 1)
+        design = torch.cat([self._raw[:, dynamics.keep], action.unsqueeze(-1), ones], dim=1)
+        pred = design @ dynamics.solution
+        _advance_observation(self._raw, pred[:, 0], pred[:, -1], action)
+        rows: list[tuple[float, tuple[float, ...], float]] = []
+        for row in pred:
+            values = [float(value) for value in row]
+            rows.append((values[0], tuple(values[1:-1]), values[-1]))
+        return rows
+
+
+def fit_least_squares_dynamics(
+    frame: pd.DataFrame,
+    *,
+    delivery_lag: int,
+    train_episodes: set[int] | None = None,
+) -> LeastSquaresDynamics:
+    """Least squares on the same inputs the rollout gate uses.
+
+    ``train_episodes`` is the latent fit's training split when the caller
+    has one. An empty frame, or a split with no one-step pairs, predicts
+    zeros so the planner still has a model to score.
+    """
+    feature_of = lambda row: log_row_features(row, delivery_lag=int(delivery_lag))
+    if train_episodes is None and not frame.empty and "episode_seed" in frame.columns:
+        episodes: set[int] | None = {int(seed) for seed in frame["episode_seed"].tolist()}
+    else:
+        episodes = train_episodes
+    pairs = _one_step_pairs(frame, episodes, feature_of) if episodes else None
+    fill_rate = _fill_ratio(frame)
+    if pairs is None:
+        width = feature_dim()
+        keep = torch.zeros(width, dtype=torch.bool)
+        keep[0] = True
+        solution = torch.zeros(int(keep.sum()) + 2, target_dim())
+        return LeastSquaresDynamics(
+            solution,
+            keep,
+            delivery_lag=delivery_lag,
+            fill_rate=fill_rate,
+        )
+    features, actions, targets = pairs
+    solution, keep = _fit_ols(features, actions, targets)
+    return LeastSquaresDynamics(
+        solution.detach(),
+        keep.detach(),
+        delivery_lag=delivery_lag,
+        fill_rate=fill_rate,
+    )
+
+
 @torch.no_grad()
 def _latent_rollout_quantities(
     model: LatentDynamics,

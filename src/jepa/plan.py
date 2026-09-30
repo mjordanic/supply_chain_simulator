@@ -146,7 +146,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
 
     def __init__(
         self,
-        dynamics: LatentDynamics | DirectDynamics,
+        dynamics: Any,
         *,
         policy_seed: int | None = None,
         delivery_lag: int | None = None,

@@ -33,6 +33,7 @@ Design notes
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable
 
 from src.sim.policy import Policy
@@ -73,6 +74,8 @@ def evaluate_policy_normalised(
     per_seed_inventory_turnover: list[float] = []
     per_seed_revenue: list[float] = []
     per_seed_mean_price_pct_of_msrp: list[float] = []
+    per_seed_order_volume: list[float] = []
+    per_seed_fill_rate: list[float] = []
 
     for spec in eval_specs:
         policy = policy_factory()
@@ -95,9 +98,17 @@ def evaluate_policy_normalised(
         per_seed_inventory_turnover.append(metrics["inventory_turnover"])
         per_seed_revenue.append(metrics["revenue"])
         per_seed_mean_price_pct_of_msrp.append(metrics["mean_price_pct_of_msrp"])
+        per_seed_order_volume.append(float(metrics["order_volume"]))
+        per_seed_fill_rate.append(float(metrics["fill_rate"]))
 
     def _mean(vals: list[float]) -> float:
         return sum(vals) / max(1, len(vals))
+
+    def _mean_finite(vals: list[float]) -> float:
+        finite = [value for value in vals if not math.isnan(value)]
+        if not finite:
+            return float("nan")
+        return sum(finite) / len(finite)
 
     per_seed_normalised_return = [
         p / max(1e-9, c)
@@ -117,6 +128,8 @@ def evaluate_policy_normalised(
         "per_seed_inventory_turnover": per_seed_inventory_turnover,
         "per_seed_revenue": per_seed_revenue,
         "per_seed_mean_price_pct_of_msrp": per_seed_mean_price_pct_of_msrp,
+        "per_seed_order_volume": per_seed_order_volume,
+        "per_seed_fill_rate": per_seed_fill_rate,
         "mean_net_profit": _mean(per_seed_net_profit),
         "mean_initial_cash": _mean(per_seed_initial_cash),
         "mean_capacity": _mean(per_seed_capacity),
@@ -125,6 +138,8 @@ def evaluate_policy_normalised(
         "mean_inventory_turnover": _mean(per_seed_inventory_turnover),
         "mean_revenue": _mean(per_seed_revenue),
         "mean_mean_price_pct_of_msrp": _mean(per_seed_mean_price_pct_of_msrp),
+        "mean_order_volume": _mean(per_seed_order_volume),
+        "mean_fill_rate": _mean_finite(per_seed_fill_rate),
     }
 
 

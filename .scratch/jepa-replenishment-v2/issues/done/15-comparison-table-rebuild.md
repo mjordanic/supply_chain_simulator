@@ -18,7 +18,7 @@ means that attribution is always available.
 
 **Blocked by:** 11, 12, 13, 14.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** existing synthetic comparison tests; the `Synthetic comparison`,
 `Business metrics` and `CRN-paired eval` entries in `CONTEXT.md`. The evaluator
@@ -28,22 +28,22 @@ than recomputing.
 **Artifact homes:** per-seed tables are run artifacts under `runs/` (gitignored);
 the rendered table lands in the regenerated paper in `docs/`.
 
-- [ ] Every table carries a never-order floor, a random-cover floor and a
+- [x] Every table carries a never-order floor, a random-cover floor and a
       least-squares-model-in-planner floor.
-- [ ] Every table carries an oracle-model-in-planner ceiling.
-- [ ] Order volume, service level, stockout rate and realised fill rate appear on
+- [x] Every table carries an oracle-model-in-planner ceiling.
+- [x] Order volume, service level, stockout rate and realised fill rate appear on
       every row alongside profit.
-- [ ] Any two arms whose per-seed results correlate above 0.99 are reported as a
+- [x] Any two arms whose per-seed results correlate above 0.99 are reported as a
       warning rather than tabled as a distinct comparison.
-- [ ] A test asserts every learned arm beats the never-order floor.
-- [ ] Parity assertions: anchor and planner share routing strategy,
+- [x] A test asserts every learned arm beats the never-order floor.
+- [x] Parity assertions: anchor and planner share routing strategy,
       minimum-order floor and unit costs.
-- [ ] The paired comparison is expressed as per-seed differences with a bootstrap
+- [x] The paired comparison is expressed as per-seed differences with a bootstrap
       interval; tightness is a per-seed column so results can be read against how
       binding the episode was.
-- [ ] The success rule requires the learned arm to beat the tuned anchor with an
+- [x] The success rule requires the learned arm to beat the tuned anchor with an
       interval excluding zero.
-- [ ] Held-out rollout accuracy is recorded alongside every profit number, so the
+- [x] Held-out rollout accuracy is recorded alongside every profit number, so the
       two are never read apart.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the new
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the new
       table shape is updated in this ticket.

@@ -271,21 +271,34 @@ No latent target and no EMA
 encoder. See ADR 0029.
 
 **Synthetic comparison** (`compare_synthetic`, `src/jepa/eval.py`)
-Scores the latent planner, the direct planner, and the latent planner with textbook fair-share
-on the tuner holdout (32 seeds from `13_000_000`), beside published-default `OrderUpToPolicy`,
-an optional tuned `OrderUpToPolicy`, and the other three textbook policies at published defaults.
-The number is paired `net_profit / initial_cash`. In-distribution uses `holding_rate` 0.01 and
-passes when the paired interval against the anchor covers zero, or the latent mean is at least
-95% of the anchor mean. The retarget rescores the same weights at `holding_rate` 0.05 and passes
-when that frozen planner beats the `OrderUpToPolicy` from the 0.01 anchor, left frozen. An
-`OrderUpToPolicy` factory for `holding_rate` 0.05 is the ceiling and is not a pass bar. Smoke
-runs shorten the episode and the seed count. `python -m src.jepa eval` writes
-`in_distribution.parquet` and `retarget.parquet` under
-`runs/jepa-replenishment/synthetic/` only when the latent model's held-out
-per-step rollout R² beats an ordinary-least-squares baseline on the same
-inputs. The per-step curve for the latent model, the direct predictor, and
-that baseline is `rollout_accuracy.json` in the same directory, written
-whether or not the profit table is. The log, the fit, the 150-trial
+Scores the latent planner, the direct planner, the latent planner with a random-permutation
+priority, and the latent planner with textbook fair-share on the tuner holdout (32 seeds from
+`13_000_000`), beside published-default `OrderUpToPolicy`, an optional tuned `OrderUpToPolicy`,
+and the other three textbook policies at published defaults. Every table also carries a
+never-order floor, a random-cover floor (`ExploratoryPolicy`), a least-squares model inside
+the same planner, and an oracle model inside the same planner. The oracle is the inventory
+recursion: arrivals follow the arrival-age profile, and sales are capped by the mean of the
+most recent lead-time of sales, frozen when the rollout opens. Its fill rate is 1. The least-squares model is fit on the transition
+log's training episodes, the same inputs as the publish gate. The headline number is paired
+`net_profit / initial_cash`, stored as the per-seed difference with a bootstrap interval.
+Tightness and cash tightness are per-seed columns. Order volume (units the buyer requested),
+service level, stockout rate, and realised supplier fill rate sit on every arm. Held-out
+rollout R² for the latent model, the direct predictor, and ordinary least squares is written
+on every profit row when a table is published, beside `rollout_accuracy.json`. Two arms whose
+per-seed profit correlates above 0.99 are named in `comparison_warnings.json` and the later
+arm is omitted from the parquet when the earlier arm stays; the in-memory series are kept. In-distribution uses
+`holding_rate` 0.01 and passes when the learned arm beats the tuned anchor and the bootstrap
+interval of latent minus that anchor excludes zero. The retarget rescores the same weights at
+`holding_rate` 0.05 and passes when that frozen planner beats the `OrderUpToPolicy` from the
+0.01 anchor, left frozen. An `OrderUpToPolicy` factory for `holding_rate` 0.05 is reported
+as `ceiling` and is not a pass bar. Smoke runs shorten the episode and the seed count.
+`python -m src.jepa eval` writes `in_distribution.parquet` and `retarget.parquet` under
+`runs/jepa-replenishment/synthetic/` only when the latent model's held-out per-step rollout
+R² beats an ordinary-least-squares baseline on the same inputs. The 112-episode measurement
+(latent mean R² 0.124 versus least squares 0.358) does not clear that gate, so that fit does
+not publish a profit table. The per-step curve for the latent model, the direct predictor,
+and that baseline is `rollout_accuracy.json` in the same directory, written whether or not
+the profit table is. The log, the fit, the 150-trial
 `OrderUpToPolicy` studies at holding rates 0.005, 0.01, 0.02, 0.05, and 0.1,
 and that eval are the commands in the root README. On that corrected episode
 distribution the tuned anchor beats the published default. At `holding_rate`

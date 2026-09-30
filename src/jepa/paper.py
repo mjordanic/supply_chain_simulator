@@ -17,6 +17,7 @@ from src.jepa.eval import (
     IN_DISTRIBUTION_RULE,
     RETARGET_RULE,
     in_distribution_passes,
+    is_profit_column,
     paired_interval,
     retarget_passes,
 )
@@ -46,7 +47,7 @@ def _means(frame: pd.DataFrame) -> list[str]:
         "| --- | --- |",
     ]
     for column in frame.columns:
-        if column == "seed":
+        if not is_profit_column(str(column)):
             continue
         lines.append(f"| {column} | {_format_decimal(frame[column].mean())} |")
     return lines
