@@ -23,6 +23,9 @@ rate; the emitted order stays the full grant.
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from random import Random
 from typing import Any, Mapping
@@ -33,9 +36,16 @@ import torch
 from src.jepa.dynamics import (
     ARRIVAL_AGE_SLOTS,
     PLANNING_HORIZON_MULTIPLE,
+    REDUCED_DEPTH,
+    REDUCED_DIRECT_HIDDEN,
+    REDUCED_EMBED_DIM,
     DirectDynamics,
     LatentDynamics,
+    RolloutAccuracy,
     arrival_age_profile,
+    direct_hidden_matching,
+    held_out_rollout_accuracy,
+    parameter_count,
     sku_features,
 )
 from src.jepa.policy import COVERS, _flatten_pending, _priority_ration, _suppliers_and_costs
@@ -621,12 +631,25 @@ def fit_latent(
     lr: float = 1e-3,
     artifact_dir: str | Path | None = None,
     model_unroll_steps: int | None = None,
+    embed_dim: int = REDUCED_EMBED_DIM,
+    depth: int = REDUCED_DEPTH,
     **planner_kwargs: Any,
 ) -> ReplenishmentPlanner:
-    """Fit the latent predictor on a transition log and wrap it as a Policy."""
+    """Fit the latent predictor on a transition log and wrap it as a Policy.
+
+    The default width and depth are the reduced model. The published fit
+    command passes the published capacity instead. ``seed`` fixes the
+    initial weights and the shuffled passes.
+    """
+    torch.manual_seed(seed)
     multiple = int(planner_kwargs.pop("horizon_multiple", DEFAULT_HORIZON_MULTIPLE))
     steps = _unroll_steps(delivery_lag, model_unroll_steps, multiple)
-    dynamics = LatentDynamics(delivery_lag=delivery_lag, model_unroll_steps=steps)
+    dynamics = LatentDynamics(
+        delivery_lag=delivery_lag,
+        model_unroll_steps=steps,
+        embed_dim=embed_dim,
+        depth=depth,
+    )
     dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr, artifact_dir=artifact_dir)
     return ReplenishmentPlanner(
         dynamics,
@@ -645,16 +668,27 @@ def fit_direct(
     lr: float = 1e-3,
     artifact_dir: str | Path | None = None,
     model_unroll_steps: int | None = None,
+    hidden_dim: int = REDUCED_DIRECT_HIDDEN,
+    depth: int = REDUCED_DEPTH,
     **planner_kwargs: Any,
 ) -> ReplenishmentPlanner:
     """Fit the direct predictor on a transition log and wrap it as a Policy.
 
     Training stays one-step. ``model_unroll_steps`` is the horizon the
     rollout report scores, the same planning horizon as the latent fit.
+    The default width is the reduced predictor. The published fit passes
+    the hidden width matched to the published latent model. ``seed`` fixes
+    the initial weights and the shuffled passes.
     """
+    torch.manual_seed(seed)
     multiple = int(planner_kwargs.pop("horizon_multiple", DEFAULT_HORIZON_MULTIPLE))
     steps = _unroll_steps(delivery_lag, model_unroll_steps, multiple)
-    dynamics = DirectDynamics(delivery_lag=delivery_lag, model_unroll_steps=steps)
+    dynamics = DirectDynamics(
+        delivery_lag=delivery_lag,
+        model_unroll_steps=steps,
+        hidden_dim=hidden_dim,
+        depth=depth,
+    )
     dynamics.fit(frame, epochs=epochs, seed=seed, lr=lr, artifact_dir=artifact_dir)
     return ReplenishmentPlanner(
         dynamics,
@@ -662,6 +696,252 @@ def fit_direct(
         horizon_multiple=multiple,
         **planner_kwargs,
     )
+
+
+@dataclass(frozen=True)
+class CapacityPoint:
+    """One width and depth on the model-capacity curve.
+
+    ``accuracy`` is the held-out per-step rollout from the planning-horizon
+    harness. ``parameters`` counts the latent model, including the frozen
+    EMA encoder. The direct predictor at this point uses ``direct_hidden``.
+    """
+
+    embed_dim: int
+    depth: int
+    parameters: int
+    direct_hidden: int
+    direct_parameters: int
+    accuracy: RolloutAccuracy
+
+
+@dataclass(frozen=True)
+class DataPoint:
+    """One episode count on the data-scaling curve."""
+
+    episodes: int
+    accuracy: RolloutAccuracy
+
+
+def _episode_prefix(frame: pd.DataFrame, episodes: int) -> pd.DataFrame:
+    """The first ``episodes`` seeds, in seed order. Later counts contain earlier ones."""
+    seeds = sorted(int(seed) for seed in frame["episode_seed"].unique())
+    count = int(episodes)
+    if count < 1:
+        raise ValueError("episode count must be at least 1")
+    if count > len(seeds):
+        raise ValueError(
+            f"episode count {count} exceeds the {len(seeds)} episodes in the log"
+        )
+    keep = set(seeds[:count])
+    return frame.loc[frame["episode_seed"].isin(keep)].reset_index(drop=True)
+
+
+def model_capacity_curve(
+    frame: pd.DataFrame,
+    sizes: Sequence[tuple[int, int]],
+    *,
+    delivery_lag: int,
+    epochs: int,
+    seed: int = 0,
+    model_unroll_steps: int | None = None,
+    artifact_dir: str | Path | None = None,
+    lr: float = 1e-3,
+) -> tuple[CapacityPoint, ...]:
+    """Held-out rollout accuracy at each ``(embed_dim, depth)``.
+
+    The direct predictor at each point is widened to the latent trainable
+    count, at the same depth. Both fits use the planning-horizon harness.
+    """
+    root = None if artifact_dir is None else Path(artifact_dir)
+    points: list[CapacityPoint] = []
+    for embed_dim, depth in sizes:
+        width = int(embed_dim)
+        layers = int(depth)
+        hidden = direct_hidden_matching(width, layers)
+        tag = f"capacity-{width}x{layers}"
+        latent = fit_latent(
+            frame,
+            delivery_lag=delivery_lag,
+            epochs=epochs,
+            seed=seed,
+            lr=lr,
+            artifact_dir=None if root is None else root / tag / "latent",
+            model_unroll_steps=model_unroll_steps,
+            embed_dim=width,
+            depth=layers,
+        )
+        direct = fit_direct(
+            frame,
+            delivery_lag=delivery_lag,
+            epochs=epochs,
+            seed=seed,
+            lr=lr,
+            artifact_dir=None if root is None else root / tag / "direct",
+            model_unroll_steps=model_unroll_steps,
+            hidden_dim=hidden,
+            depth=layers,
+        )
+        accuracy = held_out_rollout_accuracy(latent.dynamics, direct.dynamics, frame)
+        point = CapacityPoint(
+            embed_dim=width,
+            depth=layers,
+            parameters=parameter_count(latent.dynamics),
+            direct_hidden=hidden,
+            direct_parameters=parameter_count(direct.dynamics),
+            accuracy=accuracy,
+        )
+        points.append(point)
+        print(
+            f"capacity {width}x{layers} parameters={point.parameters} "
+            f"latent_mean={_mean_r2(accuracy.latent)} "
+            f"direct_mean={_mean_r2(accuracy.direct)} "
+            f"ols_mean={_mean_r2(accuracy.ols)}",
+            flush=True,
+        )
+    return tuple(points)
+
+
+def data_scaling_curve(
+    frame: pd.DataFrame,
+    episode_counts: Sequence[int],
+    *,
+    embed_dim: int,
+    depth: int,
+    delivery_lag: int,
+    epochs: int,
+    seed: int = 0,
+    model_unroll_steps: int | None = None,
+    artifact_dir: str | Path | None = None,
+    lr: float = 1e-3,
+    hidden_dim: int | None = None,
+) -> tuple[DataPoint, ...]:
+    """Held-out rollout accuracy at each nested episode count.
+
+    Each count refits on the prefix of episode seeds. The direct predictor
+    uses ``hidden_dim`` when given, otherwise the width matched to this
+    latent size.
+    """
+    width = int(embed_dim)
+    layers = int(depth)
+    hidden = direct_hidden_matching(width, layers) if hidden_dim is None else int(hidden_dim)
+    root = None if artifact_dir is None else Path(artifact_dir)
+    points: list[DataPoint] = []
+    for episodes in episode_counts:
+        count = int(episodes)
+        subset = _episode_prefix(frame, count)
+        tag = f"data-{count}"
+        latent = fit_latent(
+            subset,
+            delivery_lag=delivery_lag,
+            epochs=epochs,
+            seed=seed,
+            lr=lr,
+            artifact_dir=None if root is None else root / tag / "latent",
+            model_unroll_steps=model_unroll_steps,
+            embed_dim=width,
+            depth=layers,
+        )
+        direct = fit_direct(
+            subset,
+            delivery_lag=delivery_lag,
+            epochs=epochs,
+            seed=seed,
+            lr=lr,
+            artifact_dir=None if root is None else root / tag / "direct",
+            model_unroll_steps=model_unroll_steps,
+            hidden_dim=hidden,
+            depth=layers,
+        )
+        accuracy = held_out_rollout_accuracy(latent.dynamics, direct.dynamics, subset)
+        points.append(DataPoint(episodes=count, accuracy=accuracy))
+        print(
+            f"data episodes={count} latent_mean={_mean_r2(accuracy.latent)} "
+            f"direct_mean={_mean_r2(accuracy.direct)} ols_mean={_mean_r2(accuracy.ols)}",
+            flush=True,
+        )
+    return tuple(points)
+
+
+def _json_number(value: float) -> float | None:
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return float(value)
+
+
+def _mean_r2(values: tuple[float, ...]) -> float | None:
+    if not values or any(math.isnan(value) or math.isinf(value) for value in values):
+        return None
+    return float(sum(values) / len(values))
+
+
+def _accuracy_payload(accuracy: RolloutAccuracy) -> dict[str, Any]:
+    return {
+        "steps": list(accuracy.steps),
+        "latent": [_json_number(value) for value in accuracy.latent],
+        "direct": [_json_number(value) for value in accuracy.direct],
+        "ols": [_json_number(value) for value in accuracy.ols],
+        "latent_mean": _mean_r2(accuracy.latent),
+        "direct_mean": _mean_r2(accuracy.direct),
+        "ols_mean": _mean_r2(accuracy.ols),
+    }
+
+
+def write_capacity_curve(
+    points: Sequence[CapacityPoint],
+    path: str | Path,
+    **meta: Any,
+) -> Path:
+    """Write the capacity curve. The directory is a run artifact, not a commit."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        **meta,
+        "points": [
+            {
+                "embed_dim": point.embed_dim,
+                "depth": point.depth,
+                "parameters": point.parameters,
+                "direct_hidden": point.direct_hidden,
+                "direct_depth": point.depth,
+                "direct_parameters": point.direct_parameters,
+                **_accuracy_payload(point.accuracy),
+            }
+            for point in points
+        ]
+    }
+    destination.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return destination
+
+
+def write_data_curve(
+    points: Sequence[DataPoint],
+    path: str | Path,
+    *,
+    embed_dim: int,
+    depth: int,
+    parameters: int,
+    direct_hidden: int,
+    direct_parameters: int,
+    **meta: Any,
+) -> Path:
+    """Write the data-scaling curve for one model size."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        **meta,
+        "embed_dim": int(embed_dim),
+        "depth": int(depth),
+        "parameters": int(parameters),
+        "direct_hidden": int(direct_hidden),
+        "direct_parameters": int(direct_parameters),
+        "points": [
+            {"episodes": point.episodes, **_accuracy_payload(point.accuracy)}
+            for point in points
+        ],
+    }
+    destination.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return destination
 
 
 def save_planners(
@@ -685,6 +965,12 @@ def save_planners(
         "val_episodes": sorted(int(episode) for episode in latent.dynamics.val_episodes),
         "latent_policy_seed": latent.policy_seed,
         "direct_policy_seed": direct.policy_seed,
+        "embed_dim": int(latent.dynamics.embed_dim),
+        "depth": int(latent.dynamics.depth),
+        "direct_hidden": int(direct.dynamics.hidden_dim),
+        "direct_depth": int(direct.dynamics.depth),
+        "latent_parameters": parameter_count(latent.dynamics),
+        "direct_parameters": parameter_count(direct.dynamics),
     }
     (destination / "planner.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return destination
@@ -705,13 +991,25 @@ def load_planners(directory: str | Path) -> tuple[ReplenishmentPlanner, Replenis
     steps = meta.get("model_unroll_steps")
     if steps is None:
         steps = int(shared["horizon_multiple"]) * lag
-    latent_dynamics = LatentDynamics(delivery_lag=lag, model_unroll_steps=int(steps))
+    embed_dim = int(meta.get("embed_dim", REDUCED_EMBED_DIM))
+    depth = int(meta.get("depth", REDUCED_DEPTH))
+    latent_dynamics = LatentDynamics(
+        delivery_lag=lag,
+        model_unroll_steps=int(steps),
+        embed_dim=embed_dim,
+        depth=depth,
+    )
     latent_dynamics.load_state_dict(
         torch.load(destination / "latent.pt", weights_only=True)
     )
     latent_dynamics.train_episodes = {int(episode) for episode in meta.get("train_episodes", [])}
     latent_dynamics.val_episodes = {int(episode) for episode in meta.get("val_episodes", [])}
-    direct_dynamics = DirectDynamics(delivery_lag=lag, model_unroll_steps=int(steps))
+    direct_dynamics = DirectDynamics(
+        delivery_lag=lag,
+        model_unroll_steps=int(steps),
+        hidden_dim=int(meta.get("direct_hidden", REDUCED_DIRECT_HIDDEN)),
+        depth=int(meta.get("direct_depth", depth)),
+    )
     direct_dynamics.load_state_dict(
         torch.load(destination / "direct.pt", weights_only=True)
     )

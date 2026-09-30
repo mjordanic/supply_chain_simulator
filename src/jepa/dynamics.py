@@ -35,7 +35,21 @@ import pandas as pd
 import torch
 from torch import nn
 
-_EMBED_DIM = 32
+# The publish-gate's reduced run. Width 32 and two linear layers are the
+# model that still loses to least squares at that budget. The published
+# fit uses the wider, deeper constants below.
+REDUCED_EMBED_DIM = 32
+REDUCED_DEPTH = 2
+REDUCED_DIRECT_HIDDEN = 32
+
+# Chosen from the capacity curve at learning rate 1e-4. Width 256 and
+# depth 4 is the peak held-out latent rollout inside the half-million to
+# two-million band; wider models on that curve scored lower. 1e-3 stops
+# at the first epoch on this log, so the published fit does not use it.
+PUBLISHED_EMBED_DIM = 256
+PUBLISHED_DEPTH = 4
+PUBLISHED_LR = 1e-4
+
 FIT_BATCH_SIZE = 256
 VAL_EPISODE_FRACTION = 0.2
 EARLY_STOP_PATIENCE = 5
@@ -376,27 +390,46 @@ def _anti_collapse(embedding: torch.Tensor) -> torch.Tensor:
     return variance + off_diagonal.pow(2).mean()
 
 
+def _mlp(in_dim: int, hidden: int, out_dim: int, depth: int) -> nn.Sequential:
+    """``depth`` linear layers. ReLU sits between them, not after the last."""
+    if depth < 1:
+        raise ValueError("depth must be at least 1")
+    layers: list[nn.Module] = []
+    fan_in = in_dim
+    for index in range(depth):
+        fan_out = out_dim if index == depth - 1 else hidden
+        layers.append(nn.Linear(fan_in, fan_out))
+        if index != depth - 1:
+            layers.append(nn.ReLU())
+        fan_in = fan_out
+    return nn.Sequential(*layers)
+
+
+def parameter_count(module: nn.Module) -> int:
+    """Every parameter, including a frozen EMA encoder."""
+    return sum(parameter.numel() for parameter in module.parameters())
+
+
+def trainable_parameter_count(module: nn.Module) -> int:
+    """Parameters the optimizer is allowed to step."""
+    return sum(
+        parameter.numel() for parameter in module.parameters() if parameter.requires_grad
+    )
+
+
 class _Encoder(nn.Module):
-    def __init__(self, in_dim: int, embed_dim: int) -> None:
+    def __init__(self, in_dim: int, embed_dim: int, depth: int) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, embed_dim),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
+        self.net = _mlp(in_dim, embed_dim, embed_dim, depth)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.net(features)
 
 
 class _Predictor(nn.Module):
-    def __init__(self, embed_dim: int) -> None:
+    def __init__(self, embed_dim: int, depth: int) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(embed_dim + 1, embed_dim),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
+        self.net = _mlp(embed_dim + 1, embed_dim, embed_dim, depth)
 
     def forward(self, embedding: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         return self.net(torch.cat([embedding, action], dim=-1))
@@ -412,13 +445,9 @@ class _Probe(nn.Module):
 
 
 class _DirectNet(nn.Module):
-    def __init__(self, in_dim: int) -> None:
+    def __init__(self, in_dim: int, hidden_dim: int, depth: int) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim + 1, _EMBED_DIM),
-            nn.ReLU(),
-            nn.Linear(_EMBED_DIM, target_dim()),
-        )
+        self.net = _mlp(in_dim + 1, hidden_dim, target_dim(), depth)
 
     def forward(self, features: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         return self.net(torch.cat([features, action], dim=-1))
@@ -503,12 +532,25 @@ class _ScaledDynamics(nn.Module):
 class LatentDynamics(_ScaledDynamics):
     """Encoder, EMA target, open-loop predictor, and stopped probes."""
 
-    def __init__(self, delivery_lag: int, model_unroll_steps: int | None = None) -> None:
+    def __init__(
+        self,
+        delivery_lag: int,
+        model_unroll_steps: int | None = None,
+        *,
+        embed_dim: int = REDUCED_EMBED_DIM,
+        depth: int = REDUCED_DEPTH,
+    ) -> None:
         super().__init__(delivery_lag, model_unroll_steps)
+        if int(embed_dim) < 1:
+            raise ValueError("embed_dim must be at least 1")
+        if int(depth) < 1:
+            raise ValueError("depth must be at least 1")
+        self.embed_dim = int(embed_dim)
+        self.depth = int(depth)
         dim = feature_dim()
-        self.encoder = _Encoder(dim, _EMBED_DIM)
-        self.predictor = _Predictor(_EMBED_DIM)
-        self.probes = _Probe(_EMBED_DIM)
+        self.encoder = _Encoder(dim, self.embed_dim, self.depth)
+        self.predictor = _Predictor(self.embed_dim, self.depth)
+        self.probes = _Probe(self.embed_dim)
         self.target_encoder = copy.deepcopy(self.encoder)
         for parameter in self.target_encoder.parameters():
             parameter.requires_grad_(False)
@@ -831,9 +873,22 @@ class DirectDynamics(_ScaledDynamics):
     planner around it is the same search and the same ration.
     """
 
-    def __init__(self, delivery_lag: int, model_unroll_steps: int | None = None) -> None:
+    def __init__(
+        self,
+        delivery_lag: int,
+        model_unroll_steps: int | None = None,
+        *,
+        hidden_dim: int = REDUCED_DIRECT_HIDDEN,
+        depth: int = REDUCED_DEPTH,
+    ) -> None:
         super().__init__(delivery_lag, model_unroll_steps)
-        self.net = _DirectNet(feature_dim())
+        if int(hidden_dim) < 1:
+            raise ValueError("hidden_dim must be at least 1")
+        if int(depth) < 1:
+            raise ValueError("depth must be at least 1")
+        self.hidden_dim = int(hidden_dim)
+        self.depth = int(depth)
+        self.net = _DirectNet(feature_dim(), self.hidden_dim, self.depth)
 
     def fit(
         self,
@@ -984,6 +1039,43 @@ class DirectDynamics(_ScaledDynamics):
             torch.tensor(actions, dtype=torch.float32).unsqueeze(-1),
             torch.tensor(targets, dtype=torch.float32),
         )
+
+
+def direct_hidden_matching(embed_dim: int, depth: int) -> int:
+    """Hidden width whose parameter count is closest to the latent trainable count.
+
+    Same depth as the latent model. The EMA copy is not extra capacity, so
+    the direct net is matched to the parameters the latent optimizer steps.
+    """
+    target = trainable_parameter_count(
+        LatentDynamics(delivery_lag=1, embed_dim=int(embed_dim), depth=int(depth))
+    )
+
+    def count_at(width: int) -> int:
+        return parameter_count(
+            DirectDynamics(delivery_lag=1, hidden_dim=width, depth=int(depth))
+        )
+
+    hi = 1
+    while count_at(hi) < target and hi < 8192:
+        hi *= 2
+    left, right = 1, hi
+    while left < right:
+        mid = (left + right) // 2
+        if count_at(mid) < target:
+            left = mid + 1
+        else:
+            right = mid
+    if left == 1:
+        return 1
+    under = left - 1
+    if abs(count_at(under) - target) <= abs(count_at(left) - target):
+        return under
+    return left
+
+
+# Resolved once so the published fit and the curves share one width.
+PUBLISHED_DIRECT_HIDDEN = direct_hidden_matching(PUBLISHED_EMBED_DIM, PUBLISHED_DEPTH)
 
 
 class _LatentRollout:

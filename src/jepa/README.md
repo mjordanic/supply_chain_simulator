@@ -14,5 +14,8 @@ walks through a smoke log, a fit, and one `decide`.
 reads `runs/jepa-replenishment/synthetic/` and prints the eval command when
 those tables are absent. Raw outputs stay under `runs/jepa-replenishment/`
 and are not committed. A fit writes its loss curve and episode holdout under
-`runs/jepa-replenishment/fit/`. Eval writes a profit table only when held-out
-rollout accuracy beats an ordinary-least-squares baseline on the same inputs.
+`runs/jepa-replenishment/fit/`. The published fit uses embedding width 256 and
+depth 4. `python -m src.jepa scale` writes the capacity and data-scaling curves
+under `runs/jepa-replenishment/scaling/`; those files are not committed. Eval
+writes a profit table only when held-out rollout accuracy beats an
+ordinary-least-squares baseline on the same inputs.

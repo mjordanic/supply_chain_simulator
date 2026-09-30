@@ -209,7 +209,22 @@ Per-SKU buyer fit on the transition log. The encoder sees on-hand, the in-transi
 arrival-age profile, a sales window of its own length (28 ticks, well above the delivery
 lead time), cash, capacity, and the nominal delivery lead time — not the Market multiplier,
 the disruption identity, or the calendar. Feature width does not follow the sampled lag, so
-one fitted model serves every episode. An
+one fitted model serves every episode. The published fit (`python -m src.jepa fit`)
+uses embedding width 256 and depth 4: 683,276 parameters, counting the frozen EMA
+encoder, at learning rate 1e-4. `fit_latent` itself still defaults to the reduced
+width 32 and depth 2 (7,404 parameters, learning rate 1e-3) that the publish gate
+trains. On a capacity curve over a 112-episode log (8 of each arm, over-order
+weighted, 48 ticks, 4 active SKUs, delivery lag 3, seed offset `14_000_000`;
+20 epochs, early stopping, learning rate 1e-4, one thread) held-out mean rollout
+R² peaks at this width: -0.009 at 7,404 parameters, 0.003 at 128,268, 0.124 at
+683,276, 0.119 at 1,072,908, and 0.098 at 1,889,292. Ordinary least squares on
+that log scores 0.358, so none of these latent sizes beat it; wider than 256
+does not help, and 256 is the peak inside the half-million to two-million band.
+The same width's data-scaling curve scores -0.148, -0.012, 0.007, and 0.124 at
+28, 56, 84, and 112 episodes, so more episodes still raise latent accuracy at
+the largest count measured. Both curves are
+`runs/jepa-replenishment/scaling/capacity.json` and `data.json`, written by
+`python -m src.jepa scale`, and are not committed. An
 EMA target encoder supplies the stopped embedding. An action-conditioned predictor unrolls
 open-loop for `model_unroll_steps`. That length defaults to the planning horizon
 `horizon_multiple * delivery_lag` (`horizon_multiple` defaults to 4) and is not the
@@ -246,7 +261,13 @@ The same planner and the same priority ration, trained to emit next on-hand, the
 arrival-age profile, and step sales from the observation window and the quantity Allocation
 filled. Training is one step of decoded-state feedback, with the same minibatch passes,
 episode holdout, early stopping, and loss curve as the latent fit. The rollout report
-scores that predictor over the same `model_unroll_steps`. No latent target and no EMA
+scores that predictor over the same `model_unroll_steps`. The published direct
+net uses hidden width 473 and depth 4 (474,904 parameters), the width whose
+count is closest to the latent model's trainable parameters, so the comparison
+is not a larger net against a smaller one. On the capacity curve above, its
+held-out mean rollout R² is 0.654 at that size, against 0.522 beside the
+7,404-parameter latent model and 0.586 beside the 1,889,292-parameter one.
+No latent target and no EMA
 encoder. See ADR 0029.
 
 **Synthetic comparison** (`compare_synthetic`, `src/jepa/eval.py`)

@@ -24,6 +24,9 @@ import pytest
 from src.jepa.dynamics import (
     ARRIVAL_AGE_SLOTS,
     FIT_BATCH_SIZE,
+    REDUCED_DEPTH,
+    REDUCED_DIRECT_HIDDEN,
+    REDUCED_EMBED_DIM,
     LatentDynamics,
     RolloutAccuracy,
     held_out_rollout_accuracy,
@@ -203,6 +206,8 @@ def test_real_budget_on_a_reduced_log_scores_the_planning_horizon(tmp_path: Path
         epochs=epochs,
         seed=0,
         artifact_dir=tmp_path / "latent",
+        embed_dim=REDUCED_EMBED_DIM,
+        depth=REDUCED_DEPTH,
     )
     direct = fit_direct(
         frame,
@@ -210,6 +215,8 @@ def test_real_budget_on_a_reduced_log_scores_the_planning_horizon(tmp_path: Path
         epochs=epochs,
         seed=0,
         artifact_dir=tmp_path / "direct",
+        hidden_dim=REDUCED_DIRECT_HIDDEN,
+        depth=REDUCED_DEPTH,
     )
     assert latent.dynamics.model_unroll_steps == horizon
     assert horizon != lag
@@ -218,9 +225,10 @@ def test_real_budget_on_a_reduced_log_scores_the_planning_horizon(tmp_path: Path
     assert all(math.isfinite(value) for value in (*report.latent, *report.ols))
     curve = json.loads((tmp_path / "latent" / "latent.json").read_text(encoding="utf-8"))
     assert len(curve["curve"]) > 1
-    # This width still loses to least squares on a reduced log. The table stays
-    # withheld; a larger model is a later ticket. The budget is what makes the
-    # refusal a measurement rather than an epochs=1 shape check.
+    # This reduced width still loses to least squares on a reduced log. The
+    # table stays withheld. The published model is a larger configuration and
+    # is not what this budget measures. The budget is what makes the refusal
+    # a measurement rather than an epochs=1 shape check.
     assert not rollout_beats_baseline(report)
     with pytest.raises(RolloutGateError):
         publish_synthetic_comparison(latent, direct, frame, tmp_path / "out")

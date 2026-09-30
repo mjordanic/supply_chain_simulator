@@ -21,7 +21,7 @@ the full-size model rather than a small one.
 
 **Blocked by:** 11.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** the `Latent replenishment planner` and `Direct replenishment
 predictor` entries in `CONTEXT.md`; the rollout-accuracy harness from ticket 11
@@ -30,15 +30,15 @@ is the measurement instrument here.
 **Artifact homes:** the scaling curves are run artifacts under `runs/`
 (gitignored) and are read by the regenerated paper and the results notebook.
 
-- [ ] Embedding width and depth grow so the latent model sits in the range of
+- [x] Embedding width and depth grow so the latent model sits in the range of
       roughly half a million to two million parameters.
-- [ ] The direct predictor is scaled comparably, so latent-versus-direct is not
+- [x] The direct predictor is scaled comparably, so latent-versus-direct is not
       a capacity comparison in disguise.
-- [ ] A model-capacity curve reports held-out rollout accuracy against parameter
+- [x] A model-capacity curve reports held-out rollout accuracy against parameter
       count.
-- [ ] A data-scaling curve reports held-out rollout accuracy against episode
+- [x] A data-scaling curve reports held-out rollout accuracy against episode
       count, so the question of whether more data helps is answered by
       measurement.
-- [ ] The chosen published configuration is justified from those two curves.
-- [ ] Any notebook, README section or `CONTEXT.md` text invalidated by the new
+- [x] The chosen published configuration is justified from those two curves.
+- [x] Any notebook, README section or `CONTEXT.md` text invalidated by the new
       model size is updated in this ticket.

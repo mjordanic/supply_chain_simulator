@@ -48,6 +48,15 @@ def tune_command(holding_rate: float) -> str:
 
 TUNE_COMMANDS = tuple(tune_command(rate) for rate in SWEEP_HOLDING_RATES)
 
+# Reduced width, one size below the published band, then three sizes inside it.
+CAPACITY_GRID = ((32, 2), (128, 3), (256, 4), (384, 3), (512, 3))
+
+SCALE_COMMAND = (
+    "uv run python -m src.jepa scale "
+    "--log runs/jepa-replenishment/log/transitions.parquet "
+    "--output runs/jepa-replenishment/scaling"
+)
+
 EVAL_COMMAND = (
     "uv run python -m src.jepa eval "
     "--checkpoints runs/jepa-replenishment/checkpoints "
@@ -67,6 +76,7 @@ M5_COMMAND = (
 def _parser() -> argparse.ArgumentParser:
     from inspect import signature
 
+    from src.jepa.dynamics import PUBLISHED_LR
     from src.jepa.log import EPISODES_EACH
     from src.jepa.plan import DEFAULT_BUDGET, fit_latent
     from src.tuning.config import TuningConfig
@@ -99,6 +109,7 @@ def _parser() -> argparse.ArgumentParser:
         default=Path("runs/jepa-replenishment/checkpoints"),
     )
     fit.add_argument("--epochs", type=int, default=fit_params["epochs"].default)
+    fit.add_argument("--lr", type=float, default=PUBLISHED_LR)
     fit.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     fit.add_argument("--delivery-lag", type=int, default=fit_params["delivery_lag"].default)
     fit.add_argument("--model-unroll-steps", type=int, default=None)
@@ -138,6 +149,26 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("runs/jepa-replenishment/log/transitions.parquet"),
     )
+
+    scale = sub.add_parser("scale", help="Write the capacity and data-scaling curves.")
+    scale.add_argument(
+        "--log",
+        type=Path,
+        default=Path("runs/jepa-replenishment/log/transitions.parquet"),
+    )
+    scale.add_argument(
+        "--output",
+        type=Path,
+        default=Path("runs/jepa-replenishment/scaling"),
+    )
+    scale.add_argument("--epochs", type=int, default=fit_params["epochs"].default)
+    scale.add_argument("--lr", type=float, default=PUBLISHED_LR)
+    scale.add_argument("--delivery-lag", type=int, default=fit_params["delivery_lag"].default)
+    scale.add_argument("--sizes", type=str, default=None)
+    scale.add_argument("--episodes", type=str, default=None)
+    scale.add_argument("--model-unroll-steps", type=int, default=None)
+    scale.add_argument("--embed-dim", type=int, default=None)
+    scale.add_argument("--depth", type=int, default=None)
     return parser
 
 
@@ -193,13 +224,34 @@ def _fit(args: argparse.Namespace) -> None:
     shared = {
         "delivery_lag": args.delivery_lag,
         "epochs": args.epochs,
+        "lr": args.lr,
         "budget": args.budget,
         "holding_rate": IN_DISTRIBUTION_HOLDING_RATE,
     }
     if args.model_unroll_steps is not None:
         shared["model_unroll_steps"] = args.model_unroll_steps
-    latent = fit_latent(frame, seed=0, policy_seed=0, **shared)
-    direct = fit_direct(frame, seed=0, policy_seed=1, **shared)
+    from src.jepa.dynamics import (
+        PUBLISHED_DEPTH,
+        PUBLISHED_DIRECT_HIDDEN,
+        PUBLISHED_EMBED_DIM,
+    )
+
+    latent = fit_latent(
+        frame,
+        seed=0,
+        policy_seed=0,
+        embed_dim=PUBLISHED_EMBED_DIM,
+        depth=PUBLISHED_DEPTH,
+        **shared,
+    )
+    direct = fit_direct(
+        frame,
+        seed=0,
+        policy_seed=1,
+        hidden_dim=PUBLISHED_DIRECT_HIDDEN,
+        depth=PUBLISHED_DEPTH,
+        **shared,
+    )
     save_planners(latent, direct, args.output)
 
 
@@ -260,6 +312,126 @@ def _eval(args: argparse.Namespace) -> None:
     )
 
 
+def _parse_sizes(text: str | None) -> tuple[tuple[int, int], ...]:
+    if text is None:
+        return CAPACITY_GRID
+    sizes: list[tuple[int, int]] = []
+    for piece in text.split(","):
+        width, layers = piece.split("x")
+        sizes.append((int(width), int(layers)))
+    return tuple(sizes)
+
+
+def _episode_counts(text: str | None, frame) -> tuple[int, ...]:
+    if text is not None:
+        return tuple(int(piece) for piece in text.split(",") if piece)
+    total = int(frame["episode_seed"].nunique())
+    raw = (max(4, total // 4), max(4, total // 2), max(4, (3 * total) // 4), total)
+    counts: list[int] = []
+    for count in raw:
+        if count <= total and count not in counts:
+            counts.append(count)
+    return tuple(counts)
+
+
+def _scale(args: argparse.Namespace) -> None:
+    import torch
+
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        _scale_curves(args)
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def _scale_curves(args: argparse.Namespace) -> None:
+    import pandas as pd
+
+    from src.jepa.dynamics import (
+        PLANNING_HORIZON_MULTIPLE,
+        PUBLISHED_DEPTH,
+        PUBLISHED_DIRECT_HIDDEN,
+        PUBLISHED_EMBED_DIM,
+        DirectDynamics,
+        LatentDynamics,
+        direct_hidden_matching,
+        parameter_count,
+    )
+    from src.jepa.plan import (
+        data_scaling_curve,
+        model_capacity_curve,
+        write_capacity_curve,
+        write_data_curve,
+    )
+
+    frame = pd.read_parquet(args.log)
+    if args.embed_dim is None and args.depth is None:
+        embed_dim = PUBLISHED_EMBED_DIM
+        depth = PUBLISHED_DEPTH
+        hidden = PUBLISHED_DIRECT_HIDDEN
+    else:
+        embed_dim = PUBLISHED_EMBED_DIM if args.embed_dim is None else args.embed_dim
+        depth = PUBLISHED_DEPTH if args.depth is None else args.depth
+        hidden = direct_hidden_matching(embed_dim, depth)
+    unroll_steps = (
+        int(args.model_unroll_steps)
+        if args.model_unroll_steps is not None
+        else PLANNING_HORIZON_MULTIPLE * int(args.delivery_lag)
+    )
+    unroll = {"model_unroll_steps": unroll_steps}
+    output = Path(args.output)
+    meta = {
+        "epochs": int(args.epochs),
+        "delivery_lag": int(args.delivery_lag),
+        "model_unroll_steps": unroll_steps,
+        "log_rows": int(len(frame)),
+        "log_episodes": int(frame["episode_seed"].nunique()),
+        "seed": 0,
+        "lr": float(args.lr),
+    }
+    capacity = model_capacity_curve(
+        frame,
+        _parse_sizes(args.sizes),
+        delivery_lag=args.delivery_lag,
+        epochs=args.epochs,
+        lr=args.lr,
+        artifact_dir=output / "fits",
+        **unroll,
+    )
+    write_capacity_curve(capacity, output / "capacity.json", **meta)
+    data = data_scaling_curve(
+        frame,
+        _episode_counts(args.episodes, frame),
+        embed_dim=embed_dim,
+        depth=depth,
+        hidden_dim=hidden,
+        delivery_lag=args.delivery_lag,
+        epochs=args.epochs,
+        lr=args.lr,
+        artifact_dir=output / "fits",
+        **unroll,
+    )
+    write_data_curve(
+        data,
+        output / "data.json",
+        embed_dim=embed_dim,
+        depth=depth,
+        parameters=parameter_count(
+            LatentDynamics(delivery_lag=args.delivery_lag, embed_dim=embed_dim, depth=depth)
+        ),
+        direct_hidden=hidden,
+        direct_parameters=parameter_count(
+            DirectDynamics(
+                delivery_lag=args.delivery_lag,
+                hidden_dim=hidden,
+                depth=depth,
+            )
+        ),
+        **meta,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run one published subcommand. ``argv`` is the argument list without the program name."""
     args = _parser().parse_args(argv)
@@ -267,6 +439,8 @@ def main(argv: list[str] | None = None) -> None:
         _collect(args)
     elif args.command == "fit":
         _fit(args)
+    elif args.command == "scale":
+        _scale(args)
     elif args.command == "tune":
         _tune(args)
     elif args.command == "eval":

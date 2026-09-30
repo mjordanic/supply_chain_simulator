@@ -381,11 +381,31 @@ uv run python -m src.jepa fit --log runs/jepa-replenishment/log/transitions.parq
 `--epochs` (default 20) is one shuffled pass over the training episodes, not one
 gradient step. The open-loop unroll is `model_unroll_steps`, which defaults to
 the planning horizon `4 * delivery_lag` rather than the lead time. Episodes are
-held out whole for early stopping. The loss curve and holdout metrics are
+held out whole for early stopping. The published fit uses embedding width 256
+and depth 4 (683,276 parameters, including the frozen EMA encoder) and learning
+rate 1e-4. The direct predictor fit beside it uses hidden width 473 and the
+same depth (474,904 parameters), matched to the latent trainable count. Those
+sizes are the peak held-out latent rollout on the capacity curve below, inside
+the half-million to two-million band: mean R² 0.124 at 683,276 parameters,
+0.119 at 1,072,908, and 0.098 at 1,889,292, against 0.358 for ordinary least
+squares on the same log. The data-scaling curve at this width scores -0.148,
+-0.012, 0.007, and 0.124 at 28, 56, 84, and 112 episodes, so more episodes
+still help at the largest count measured. The quoted figures are from that measurement log: 8 episodes of
+each arm (over-order weighted), 48 ticks, 4 active SKUs, delivery lag 3,
+112 episodes in all. They are not the 64-episode published collect. The
+curves are not committed:
+
+```bash
+uv run python -m src.jepa scale --log runs/jepa-replenishment/log/transitions.parquet --output runs/jepa-replenishment/scaling
+```
+
+The loss curve and holdout metrics are
 written to `runs/jepa-replenishment/fit/` and are not committed. `eval` writes
 a profit table only when the latent model's held-out per-step rollout R² beats
 an ordinary-least-squares baseline on the same inputs. The curve is
-`rollout_accuracy.json` next to that table.
+`rollout_accuracy.json` next to that table. `fit_latent`'s own default stays
+the reduced width the publish gate trains; the fit command passes the
+published width.
 
 Five 150-trial `OrderUpToPolicy` studies, one at each holding rate the transfer
 sweep uses: 0.005, 0.01, 0.02, 0.05, and 0.1. Search and holdout seed counts
