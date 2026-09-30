@@ -349,7 +349,7 @@ Full reference: [`src/datasets/README.md`](src/datasets/README.md). End-to-end w
 ## Latent replenishment
 
 A reward-free planner fits a per-SKU predictor on a synthetic transition log,
-then places orders by shooting covers. The training walkthrough
+then places orders by a factored cross-entropy search over per-SKU covers. The training walkthrough
 ([`notebooks/09-jepa-train-and-plan.ipynb`](notebooks/09-jepa-train-and-plan.ipynb))
 runs on smoke settings and shows one `decide`. The results notebook
 ([`notebooks/10-jepa-synthetic-eval.ipynb`](notebooks/10-jepa-synthetic-eval.ipynb))

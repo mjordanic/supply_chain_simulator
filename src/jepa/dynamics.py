@@ -50,6 +50,27 @@ SALES_WINDOW = 28
 ARRIVAL_AGE_SLOTS = 10
 
 
+def _fill_ratio(frame: pd.DataFrame) -> float:
+    """Share of requested units Allocation actually filled.
+
+    A zero request is not a fill. Missing columns, or a log that never
+    ordered, leave the rate at 1 so the planner still imagines a whole arrival.
+    """
+    if frame.empty or "requested_qty" not in frame.columns or "filled_qty" not in frame.columns:
+        return 1.0
+    requested = frame["requested_qty"].to_numpy(dtype=float)
+    filled = frame["filled_qty"].to_numpy(dtype=float)
+    positive = requested > 0
+    if not bool(positive.any()):
+        return 1.0
+    ratio = float(filled[positive].sum() / requested[positive].sum())
+    if ratio < 0.0:
+        return 0.0
+    if ratio > 1.0:
+        return 1.0
+    return ratio
+
+
 def feature_dim(sales_window_length: int = SALES_WINDOW) -> int:
     """Width of one encoder vector. Independent of the sampled lead time."""
     return 1 + ARRIVAL_AGE_SLOTS + max(0, int(sales_window_length)) + 3
@@ -407,6 +428,8 @@ class _ScaledDynamics(nn.Module):
         self.register_buffer("y_std", torch.ones(target_dim()))
         self.register_buffer("a_mean", torch.zeros(1))
         self.register_buffer("a_std", torch.ones(1))
+        # Imagined orders are conditioned on this. 1 means the request arrived whole.
+        self.register_buffer("fill_rate", torch.ones(()))
 
     def _set_stats(
         self,
@@ -485,6 +508,7 @@ class LatentDynamics(_ScaledDynamics):
         patience: int = EARLY_STOP_PATIENCE,
     ) -> None:
         torch.manual_seed(seed)
+        self.fill_rate.fill_(_fill_ratio(frame))
         if epochs <= 0 or frame.empty:
             return
         generator = _generator(seed)
@@ -775,7 +799,7 @@ class DirectDynamics(_ScaledDynamics):
 
     No latent target and no EMA encoder. Training is the same minibatch
     passes, episode holdout, and early stopping as the latent fit. The
-    planner around it is the same shooter and the same ration.
+    planner around it is the same search and the same ration.
     """
 
     def __init__(self, delivery_lag: int) -> None:
@@ -793,6 +817,7 @@ class DirectDynamics(_ScaledDynamics):
         patience: int = EARLY_STOP_PATIENCE,
     ) -> None:
         torch.manual_seed(seed)
+        self.fill_rate.fill_(_fill_ratio(frame))
         if epochs <= 0 or frame.empty:
             return
         generator = _generator(seed)

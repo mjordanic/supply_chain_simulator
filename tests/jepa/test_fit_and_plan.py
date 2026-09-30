@@ -19,11 +19,12 @@ Seams, from the issue acceptance criteria:
 5. Retarget. On a fixture where every proposal still fits at
    ``holding_rate = 0.01`` and the till empties at ``0.05``, a frozen
    Policy places a different order at the higher rate, without a refit.
-6. Search. The published budget is 64 proposals from ``policy_rng``.
-   Smoke tests use 4. The same ``policy_seed`` repeats the same orders.
-   Changing only the world seed does not change the proposal sequence.
+6. Search. The published budget is 64 scored proposals. Smoke tests
+   use 4. The same ``policy_seed`` on the same episode repeats the same
+   orders. The search follows imagined scores, so a different world can
+   change later proposals. ``policy_rng`` is still the only randomness.
 7. Direct predictor. Trained on the same log with no latent target, it is
-   a second Policy with the same shooter and the same priority ration.
+   a second Policy with the same search and the same priority ration.
 8. Fair-share arm. The latent model's covers can be rationed with textbook
    fair-share and still return a valid order dict.
 9. The RL stack is not imported.
@@ -36,14 +37,12 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from random import Random
 
 import torch
 
 from src.jepa.dynamics import sku_features
 from src.jepa.log import collect_transition_log
 from src.jepa.plan import DEFAULT_BUDGET, ReplenishmentPlanner, fit_direct, fit_latent
-from src.jepa.policy import COVERS
 from src.sim.central_table import CentralTable, Offer
 from src.sim.distributions import Constant
 from src.sim.inspect import closing_inventory_frame, flow_frame, purchase_frame
@@ -235,68 +234,67 @@ def test_fitting_probes_does_not_change_the_encoder():
         assert parameter.grad is None
 
 
-def _seed_drawing(cover: int, *, budget: int, pids: list[str], ration: str) -> int:
-    """Find a ``policy_seed`` whose first ``budget`` draws are all ``cover``.
+class _CashOracle:
+    """Granted units arrive after ``delivery_lag`` steps and sell at ``demand``."""
 
-    Mirrors ``decide``: one ``choice`` per SKU, then a priority permutation
-    only for the priority ration. The test still checks the planner's draws.
-    """
-    for seed in range(10_000):
-        rng = Random(seed)
-        matched = True
-        for _ in range(budget):
-            drawn = [int(rng.choice(COVERS)) for _pid in pids]
-            if ration == "priority" and pids:
-                rng.sample(list(pids), len(pids))
-            if drawn != [cover] * len(pids):
-                matched = False
-                break
-        if matched:
-            return seed
-    raise AssertionError(f"no seed drew cover {cover}")
+    def __init__(self) -> None:
+        self.delivery_lag = 2
+        self.demand = 10.0
+
+    def open_rollout(self, features: list[list[float]]) -> "_CashRollout":
+        return _CashRollout(self, features)
+
+
+class _CashRollout:
+    def __init__(self, dynamics: _CashOracle, features: list[list[float]]) -> None:
+        self.demand = dynamics.demand
+        self.rows = [[float(feat[0]), [0.0] * dynamics.delivery_lag] for feat in features]
+
+    def step(self, granted: list[float]) -> list[tuple[float, float, float]]:
+        predicted: list[tuple[float, float, float]] = []
+        for row, qty in zip(self.rows, granted, strict=True):
+            on_hand, profile = row
+            arriving = float(profile.pop(0))
+            profile.append(float(qty))
+            on_hand += arriving
+            sales = min(on_hand, self.demand)
+            row[0] = on_hand - sales
+            predicted.append((row[0], float(sum(profile)), sales))
+        return predicted
 
 
 def test_frozen_policy_orders_less_when_the_higher_holding_rate_empties_the_till():
-    """Position 77, censored rate 10, lead time 2, cover 4 → desired 3.
+    """On-hand 10, unit cost 10, cash 12. The search wants a cover of 4.
 
-    Unit cost 100. Holding on the 77 units is 77 at rate 0.01 and 385 at
-    0.05. Cash 380 covers the 300 purchase after the cheap holding charge
-    and covers none of it after the expensive one. Every draw is cover 4,
-    so the winner is that order at 0.01 and an empty order at 0.05.
+    Holding on those 10 units is 1 at rate 0.01 and 5 at 0.05. After the
+    charge the cheap till buys one unit and the expensive till buys none.
     """
     lag = 2
-    unit_cost = 100.0
-    on_hand = 77
-    cash = 380.0
-    frame = _tiny_log(lag)
-    fitted = fit_latent(frame, delivery_lag=lag, epochs=1, seed=0, budget=4, policy_seed=0)
-    seed = _seed_drawing(4, budget=4, pids=["A"], ration="priority")
     low = ReplenishmentPlanner(
-        fitted.dynamics,
-        policy_seed=seed,
+        _CashOracle(),
+        policy_seed=0,
         delivery_lag=lag,
         budget=4,
         holding_rate=0.01,
-        order_fee=50.0,
+        order_fee=0.0,
     )
     high = low.retarget(0.05)
     assert high.dynamics is low.dynamics
 
     obs = _obs(
-        inventory={"A": on_hand},
+        inventory={"A": 10},
         observed_sales={"A": 10},
         capacity=10_000,
-        cash=cash,
+        cash=12.0,
         base_prices={"A": 30.0},
         list_prices={"A": 1.0},
     )
-    table = _table({"A": ("F_A", unit_cost)})
+    table = _table({"A": ("F_A", 10.0)})
     low_action = low.decide(obs, table)
     high_action = high.decide(obs, table)
 
     assert low.proposals[-1]["draws"] == high.proposals[-1]["draws"]
-    assert all(draw["covers"] == {"A": 4} for draw in low.proposals[-1]["draws"])
-    assert _granted(low_action, "A") == 3
+    assert _granted(low_action, "A") == 1
     assert _granted(high_action, "A") == 0
     assert low_action["list_price"] == {"A": 30.0}
     assert high_action["list_price"] == {"A": 30.0}
@@ -329,7 +327,7 @@ def test_published_budget_is_64_and_the_same_policy_seed_repeats_orders():
             fitted.dynamics,
             policy_seed=policy_seed,
             delivery_lag=lag,
-            budget=4,
+            budget=8,
             holding_rate=0.01,
         )
         log = Runner(scenario, policy_overrides={"S": planner}).run()
@@ -341,9 +339,8 @@ def test_published_budget_is_64_and_the_same_policy_seed_repeats_orders():
     assert orders_a == orders_b
     assert draws_a == draws_b
 
-    _orders_c, draws_c = run(world_seed + 999_983, 7)
-    assert draws_c == draws_a
-
+    # Later waves follow imagined scores, so the world can change the
+    # proposal sequence. A different policy seed still changes the draws.
     _orders_d, draws_d = run(world_seed, 8)
     assert draws_d != draws_a
 

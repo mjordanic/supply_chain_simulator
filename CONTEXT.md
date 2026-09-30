@@ -109,7 +109,7 @@ buyer falls through to the next feasible supplier instead of taking a silent los
 shuffle using the `allocation_rng` stream. See ADR 0012, ADR 0016, and ADR 0018.
 
 **Ration**
-The policy's split of one intermediate's free capacity and cash across its SKUs, before any order is placed. The textbook family rations by equal fair-share (`_allocate_two_pass_fair_share`). The learned replenishment policy rations by priority: a cover and a priority per SKU, then a greedy fill down that order. Engine **Allocation** still runs afterwards and may short the granted quantity. A joint model of every SKU's dynamics at once is deferred.
+The policy's split of one intermediate's free capacity and cash across its SKUs, before any order is placed. The textbook family rations by equal fair-share (`_allocate_two_pass_fair_share`). The learned replenishment policy rations by priority: a cover per SKU, an order equal to marginal imagined profit per unit of shared capacity, then a greedy fill down that order. A random-permutation order is the ablation. Textbook fair-share remains the third arm. Engine **Allocation** still runs afterwards and may short the granted quantity. A joint model of every SKU's dynamics at once is deferred.
 _Avoid_: Allocation, fair-share (fair-share is one ration rule, not the name of the split)
 
 **Rejection log** (run-log `ticks[i]["rejections"]`, ADR 0018)
@@ -219,9 +219,13 @@ the training episodes. A fifth of the episodes — at least one, when two or mor
 out whole. Early stopping watches that holdout and restores the best epoch. The loss curve is
 written under `runs/jepa-replenishment/fit/`. The target encoder's EMA decay is set from the
 minibatches in one pass, so the epoch early stopping keeps has already left five percent of
-the initial target. `decide` draws 64 cover-and-priority proposals from
-`policy_rng` (smoke runs use 4), rations each one, and places the grant with the highest imagined
-score over `horizon_multiple * delivery_lag` steps (`horizon_multiple` defaults to 4). Each
+the initial target. `decide` scores `budget` cover proposals (`budget` defaults to 64;
+smoke runs use 4) with factored cross-entropy over per-SKU covers, rations each one, and
+places the grant with the highest imagined score over `horizon_multiple * delivery_lag` steps
+(`horizon_multiple` defaults to 4). Priority is the marginal imagined profit per unit of shared capacity.
+`ration="permutation"` draws one order from `policy_rng`. Search randomness is `policy_seed`.
+Imagined arrivals and imagined purchase cash follow the fill rate fit from the log
+(`filled_qty` / `requested_qty`); the emitted order is the full grant. Each
 step's imagined profit is revenue minus purchase cost minus `holding_rate × on-hand × unit_cost`
 (the cheapest direct supplier's `list_price`) minus the per-supplier order fee. The opening
 order uses the same cold-start pilot, cheapest-first split, and zero minimum-order floor as
@@ -232,8 +236,8 @@ is not confiscated at the window boundary. That credit is not cash the next rati
 There is no stockout penalty and no learned reward head.
 Each ration spends what is left after that step's holding charge, and the cash after imagined
 profit is what the next ration can spend, so a frozen planner can be retargeted from
-`holding_rate` 0.01 to 0.05 without a new fit. `ration="fair_share"` keeps the same covers and
-uses the textbook fair-share split. See ADR 0024, ADR 0025, ADR 0027, ADR 0029.
+`holding_rate` 0.01 to 0.05 without a new fit. `ration="fair_share"` keeps the same cover
+search and uses the textbook fair-share split. See ADR 0024, ADR 0025, ADR 0027, ADR 0029.
 
 **Direct replenishment predictor** (`fit_direct`, `src/jepa/plan.py`)
 The same planner and the same priority ration, trained to emit next on-hand, the next

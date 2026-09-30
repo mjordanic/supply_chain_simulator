@@ -1,21 +1,30 @@
 """Fit a per-SKU predictor and plan replenishment orders with it.
 
-``decide`` draws a fixed budget of cover-and-priority proposals from
-``policy_rng``, rations each one, and keeps the proposal whose imagined
-score is highest over ``horizon_multiple * delivery_lag`` steps
-(``horizon_multiple`` defaults to 4). Each step's profit is revenue
-minus purchase cost minus holding cost minus the order fee. Ending
-inventory position — on-hand plus in-transit — is then credited at unit
-cost, so unsold stock is not confiscated at the window boundary. There
-is no stockout penalty and no learned reward head. Imagined cash uses
-the holding rate under test and is the cash the next ration sees. The
-terminal credit is not cash.
+``decide`` spends a fixed budget of cover proposals. The published
+search is factored cross-entropy: a categorical over ``COVERS`` for each
+SKU, updated from the elite joint samples. ``search="uniform"`` draws
+that same budget of joint covers independently and is the baseline the
+factored search has to beat. Priority is not part of the draw.
+``ration="priority"`` sorts SKUs by the marginal imagined profit of one
+unit of shared capacity. ``ration="permutation"`` draws one order from
+``policy_rng``. ``ration="fair_share"`` uses the textbook split. The
+winner is the proposal with the highest imagined score over
+``horizon_multiple * delivery_lag`` steps (``horizon_multiple`` defaults
+to 4). Each step's profit is revenue minus purchase cost minus holding
+cost minus the order fee. Ending inventory position — on-hand plus
+in-transit — is then credited at unit cost, so unsold stock is not
+confiscated at the window boundary. There is no stockout penalty and no
+learned reward head. Imagined cash uses the holding rate under test and
+is the cash the next ration sees. The terminal credit is not cash.
+Imagined arrivals and imagined purchase cash follow the predictor's fill
+rate; the emitted order stays the full grant.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from random import Random
 from typing import Any, Mapping
 
 import pandas as pd
@@ -42,6 +51,45 @@ from src.sim.policy import (
 
 DEFAULT_BUDGET = 64
 DEFAULT_HORIZON_MULTIPLE = 4
+_CEM_ELITE_FRACTION = 0.25
+_CEM_SMOOTHING = 0.7
+
+
+def _cem_waves(budget: int, n_covers: int) -> list[int]:
+    """Split a proposal budget into cross-entropy waves.
+
+    A budget too small to try every cover is a single wave. A budget of
+    at least four covers per wave uses four waves; otherwise two.
+    """
+    if budget <= 0:
+        return []
+    if budget <= n_covers:
+        return [budget]
+    n_waves = 4 if budget >= n_covers * 4 else 2
+    base, extra = divmod(budget, n_waves)
+    return [base + (1 if index < extra else 0) for index in range(n_waves)]
+
+
+def _mix_cover_weights(
+    weights: dict[str, list[float]],
+    elites: list[dict[str, int]],
+) -> dict[str, list[float]]:
+    """Pull each SKU's categorical toward the covers in the elite set."""
+    index_of = {cover: index for index, cover in enumerate(COVERS)}
+    n_covers = len(COVERS)
+    updated: dict[str, list[float]] = {}
+    for pid, old in weights.items():
+        counts = [0.0] * n_covers
+        for covers in elites:
+            counts[index_of[int(covers[pid])]] += 1.0
+        total = float(len(elites))
+        mixed = [
+            (1.0 - _CEM_SMOOTHING) * previous + _CEM_SMOOTHING * (count / total)
+            for previous, count in zip(old, counts, strict=True)
+        ]
+        scale = sum(mixed)
+        updated[pid] = [value / scale for value in mixed]
+    return updated
 
 
 def _in_transit_units(value: Any) -> float:
@@ -66,18 +114,23 @@ def _decision_profile(obs: Mapping[str, Any], pid: str, pending_units: int) -> l
 class ReplenishmentPlanner(IntermediatePolicy):
     """Ordering-only buyer that scores proposals with a frozen predictor.
 
-    ``ration="priority"`` is the learned ration. ``ration="fair_share"``
-    shoots covers from the same grid and splits them with the textbook
-    fair-share allocator. ``retarget`` builds another planner on the
-    same weights at a new holding rate and does not fit. Each recorded
-    proposal keeps every draw and ``chosen``, the covers and priority
-    that won. Cold start matches the textbook anchor: a SKU with no
-    history, zero position, and a zero censored-sales rate is ordered
+    ``ration="priority"`` ranks SKUs by marginal imagined profit per unit
+    of free capacity and fills in that order. ``ration="permutation"``
+    draws one priority from ``policy_rng`` and is the ablation.
+    ``ration="fair_share"`` splits with the textbook allocator. All three
+    search covers the same way. ``search="cem"`` is factored
+    cross-entropy. ``search="uniform"`` is joint uniform draws of the
+    same budget. ``retarget`` builds another planner on the same weights
+    at a new holding rate and does not fit. Each recorded proposal keeps
+    every draw and ``chosen``, the covers and priority that won. Cold
+    start matches the textbook anchor: a SKU with no history, zero
+    position, and a zero censored-sales rate is ordered
     ``cold_start_pilot_qty`` at ``OPENING_BUDGET_PCT``. The supplier
     split is cheapest-first with ``MIN_ORDER_FLOOR``. The opening
     order's fee and purchase use those routed lines. Later imagined
     steps still price the cheapest offer, because the offer book is
-    not rolled forward.
+    not rolled forward. The imagined transition is conditioned on the
+    predictor's fill rate.
     """
 
     def __init__(
@@ -91,10 +144,13 @@ class ReplenishmentPlanner(IntermediatePolicy):
         order_fee: float = 50.0,
         ration: str = "priority",
         horizon_multiple: int = DEFAULT_HORIZON_MULTIPLE,
+        search: str = "cem",
     ) -> None:
         super().__init__(policy_seed=policy_seed)
-        if ration not in ("priority", "fair_share"):
+        if ration not in ("priority", "permutation", "fair_share"):
             raise ValueError(f"unknown ration {ration!r}")
+        if search not in ("cem", "uniform"):
+            raise ValueError(f"unknown search {search!r}")
         if int(horizon_multiple) < 1:
             raise ValueError("horizon_multiple must be at least 1")
         self.dynamics = dynamics
@@ -103,6 +159,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
         self.holding_rate = float(holding_rate)
         self.order_fee = float(order_fee)
         self.ration = ration
+        self.search = search
         self.horizon_multiple = int(horizon_multiple)
         self.min_order = 0
         self.per_supplier_min_order_floor = MIN_ORDER_FLOOR
@@ -122,6 +179,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
             order_fee=self.order_fee,
             ration=self.ration,
             horizon_multiple=self.horizon_multiple,
+            search=self.search,
         )
 
     def fit_probes(self, frame: pd.DataFrame, *, epochs: int) -> None:
@@ -167,43 +225,61 @@ class ReplenishmentPlanner(IntermediatePolicy):
         base = obs_intermediate.get("base_prices") or obs_intermediate.get("list_prices") or {}
         prices = {pid: float(base.get(pid, 0.0)) for pid in pids}
 
+        direct = obs_intermediate.get("direct_supplier_ids")
+        delivery_lags = obs_intermediate.get("delivery_lags") or {}
+        priority = self._priority(
+            pids,
+            inventory,
+            pending,
+            cash,
+            capacity,
+            suppliers,
+            unit_costs,
+            prices,
+            cold,
+            direct,
+            central_table,
+            profiles,
+            delivery_lags,
+        )
         draws: list[dict[str, Any]] = []
-        scored: list[tuple[float, dict[str, int], dict[str, list[tuple[str, int]]]]] = []
-        for _ in range(self.budget):
-            covers = {pid: int(self.policy_rng.choice(COVERS)) for pid in pids}
-            if self.ration == "priority" and pids:
-                priority = list(self.policy_rng.sample(pids, len(pids)))
-            else:
-                priority = list(pids)
-            draws.append({"covers": dict(covers), "priority": list(priority)})
-            scored.append(
-                self._score(
-                    pids,
-                    covers,
-                    priority,
-                    inventory,
-                    pending,
-                    cash,
-                    capacity,
-                    suppliers,
-                    unit_costs,
-                    prices,
-                    cold,
-                    obs_intermediate.get("direct_supplier_ids"),
-                    central_table,
-                    profiles,
-                    obs_intermediate.get("delivery_lags") or {},
-                )
-            )
-
+        best_score: float | None = None
         chosen_covers: dict[str, int] = {}
-        chosen_priority: list[str] = []
         opening_order: dict[str, list[tuple[str, int]]] = {}
-        if scored:
-            winner = max(range(len(scored)), key=lambda index: scored[index][0])
-            opening_order = scored[winner][2]
-            chosen_covers = dict(draws[winner]["covers"])
-            chosen_priority = list(draws[winner]["priority"])
+
+        def consider(covers: dict[str, int]) -> float:
+            nonlocal best_score, chosen_covers, opening_order
+            total, _grant, order = self._score(
+                pids,
+                covers,
+                priority,
+                inventory,
+                pending,
+                cash,
+                capacity,
+                suppliers,
+                unit_costs,
+                prices,
+                cold,
+                direct,
+                central_table,
+                profiles,
+                delivery_lags,
+            )
+            draws.append({"covers": dict(covers), "priority": list(priority)})
+            if best_score is None or total > best_score:
+                best_score = total
+                chosen_covers = dict(covers)
+                opening_order = order
+            return total
+
+        if pids and self.budget > 0:
+            if self.search == "uniform":
+                self._uniform_covers(pids, consider)
+            else:
+                self._cem_covers(pids, consider)
+
+        chosen_priority = list(priority)
 
         order = {pid: lines for pid, lines in opening_order.items() if lines}
         action = {
@@ -217,6 +293,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
                 "tick": int(obs_intermediate.get("tick", len(self.proposals))),
                 "draws": draws,
                 "chosen": {"covers": chosen_covers, "priority": chosen_priority},
+                "score": None if best_score is None else float(best_score),
                 "action": action,
             }
         )
@@ -239,6 +316,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
         central_table: Any,
         profiles: Mapping[str, list[int] | int],
         delivery_lags: Mapping[str, float],
+        opening_desired: Mapping[str, int] | None = None,
     ) -> tuple[float, dict[str, int], dict[str, list[tuple[str, int]]]]:
         on_hand = {pid: int(inventory.get(pid, 0)) for pid in pids}
         in_transit = {pid: int(pending.get(pid, 0)) for pid in pids}
@@ -264,6 +342,7 @@ class ReplenishmentPlanner(IntermediatePolicy):
                 for pid in pids
             ]
         )
+        fill_rate = self._fill_rate()
         for _step in range(self.horizon_multiple * self.delivery_lag):
             holding = self.holding_rate * sum(
                 on_hand[pid] * float(unit_costs.get(pid, 0.0)) for pid in pids
@@ -274,28 +353,36 @@ class ReplenishmentPlanner(IntermediatePolicy):
                 {pid: [] for pid in pids},
             )
             free_space = max(0, int(capacity) - sum(on_hand.values()) - sum(in_transit.values()))
-            desired: dict[str, int] = {}
-            for pid in pids:
-                if suppliers.get(pid) is None:
-                    desired[pid] = 0
-                    continue
-                position = on_hand[pid] + in_transit[pid]
-                if _step == 0 and pid in cold:
-                    desired[pid] = cold_start_pilot_qty(
-                        cash,
-                        len(pids),
-                        float(unit_costs.get(pid, 0.0)),
-                        free_space,
-                        self.opening_budget_pct,
+            if opening_desired is not None:
+                # A one-unit probe. Later steps stay quiet so the gap is
+                # the marginal unit, and the ration does not zero it out
+                # before it can be scored.
+                shipped = {
+                    pid: int(opening_desired.get(pid, 0)) if _step == 0 else 0 for pid in pids
+                }
+            else:
+                desired: dict[str, int] = {}
+                for pid in pids:
+                    if suppliers.get(pid) is None:
+                        desired[pid] = 0
+                        continue
+                    position = on_hand[pid] + in_transit[pid]
+                    if _step == 0 and pid in cold:
+                        desired[pid] = cold_start_pilot_qty(
+                            cash,
+                            len(pids),
+                            float(unit_costs.get(pid, 0.0)),
+                            free_space,
+                            self.opening_budget_pct,
+                        )
+                        continue
+                    target = round(
+                        int(covers.get(pid, 0)) * float(rates.get(pid, 0.0)) * self.delivery_lag
                     )
-                    continue
-                target = round(
-                    int(covers.get(pid, 0)) * float(rates.get(pid, 0.0)) * self.delivery_lag
-                )
-                desired[pid] = max(0, int(target) - position)
-            spendable = max(0.0, cash_now - holding)
-            granted = self._ration(desired, priority, free_space, spendable, unit_costs)
-            shipped = {pid: int(granted.get(pid, 0)) for pid in pids}
+                    desired[pid] = max(0, int(target) - position)
+                spendable = max(0.0, cash_now - holding)
+                granted = self._ration(desired, priority, free_space, spendable, unit_costs)
+                shipped = {pid: int(granted.get(pid, 0)) for pid in pids}
             purchase = 0.0
             used: set[str] = set()
             if _step == 0:
@@ -309,16 +396,18 @@ class ReplenishmentPlanner(IntermediatePolicy):
                 }
                 for pid, lines in routed.items():
                     shipped[pid] = sum(qty for _sid, qty, _price in lines)
-                    purchase += sum(qty * price for _sid, qty, price in lines)
-                    used.update(sid for sid, _qty, _price in lines)
+                    # Cash moves with the fill. The request above is what
+                    # the order emits; Allocation is what the log trained on.
+                    purchase += sum(qty * price for _sid, qty, price in lines) * fill_rate
+                    used.update(sid for sid, qty, _price in lines if qty > 0)
             else:
                 for pid in pids:
                     qty = shipped[pid]
-                    purchase += qty * float(unit_costs.get(pid, 0.0))
+                    purchase += qty * float(unit_costs.get(pid, 0.0)) * fill_rate
                     supplier_id = suppliers.get(pid)
                     if qty > 0 and supplier_id is not None:
                         used.add(supplier_id)
-            predicted = rollout.step([float(shipped[pid]) for pid in pids])
+            predicted = rollout.step([float(shipped[pid]) * fill_rate for pid in pids])
             revenue = 0.0
             for pid, (next_on_hand, next_in_transit, next_sales) in zip(pids, predicted, strict=True):
                 revenue += max(0.0, float(next_sales)) * float(prices.get(pid, 0.0))
@@ -340,6 +429,134 @@ class ReplenishmentPlanner(IntermediatePolicy):
             for pid in pids
         )
         return total, opening_grant or {pid: 0 for pid in pids}, opening_order
+
+    def _fill_rate(self) -> float:
+        """Fraction of a granted unit the imagined transition treats as filled."""
+        rate = getattr(self.dynamics, "fill_rate", 1.0)
+        if isinstance(rate, torch.Tensor):
+            return float(rate.detach().item())
+        return float(rate)
+
+    def _priority(
+        self,
+        pids: list[str],
+        inventory: Mapping[str, int],
+        pending: Mapping[str, int],
+        cash: float,
+        capacity: int,
+        suppliers: Mapping[str, str | None],
+        unit_costs: Mapping[str, float],
+        prices: Mapping[str, float],
+        cold: set[str],
+        direct: Any,
+        central_table: Any,
+        profiles: Mapping[str, list[int] | int],
+        delivery_lags: Mapping[str, float],
+    ) -> list[str]:
+        if self.ration == "permutation":
+            # Own stream so the cover search sees the same ``policy_rng``
+            # draws as the density and fair-share arms.
+            if not pids:
+                return []
+            return list(Random(self.policy_seed).sample(list(pids), len(pids)))
+        if self.ration == "fair_share":
+            return list(pids)
+        return self._density_order(
+            pids,
+            inventory,
+            pending,
+            cash,
+            capacity,
+            suppliers,
+            unit_costs,
+            prices,
+            cold,
+            direct,
+            central_table,
+            profiles,
+            delivery_lags,
+        )
+
+    def _density_order(
+        self,
+        pids: list[str],
+        inventory: Mapping[str, int],
+        pending: Mapping[str, int],
+        cash: float,
+        capacity: int,
+        suppliers: Mapping[str, str | None],
+        unit_costs: Mapping[str, float],
+        prices: Mapping[str, float],
+        cold: set[str],
+        direct: Any,
+        central_table: Any,
+        profiles: Mapping[str, list[int] | int],
+        delivery_lags: Mapping[str, float],
+    ) -> list[str]:
+        """SKUs sorted by imagined profit of one capacity unit, highest first.
+
+        One granted unit consumes one unit of the shared pool, so the
+        horizon profit of that unit is already a density. Equal densities
+        break toward the earlier product id and do not touch ``policy_rng``.
+        """
+        if not pids:
+            return []
+        ranked: list[tuple[float, str]] = []
+        for pid in pids:
+            grant = {other: 0 for other in pids}
+            grant[pid] = 1
+            profit, _granted, _order = self._score(
+                pids,
+                {other: 0 for other in pids},
+                list(pids),
+                inventory,
+                pending,
+                cash,
+                capacity,
+                suppliers,
+                unit_costs,
+                prices,
+                cold,
+                direct,
+                central_table,
+                profiles,
+                delivery_lags,
+                opening_desired=grant,
+            )
+            ranked.append((profit, pid))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [pid for _profit, pid in ranked]
+
+    def _uniform_covers(self, pids: list[str], consider: Any) -> None:
+        for _ in range(self.budget):
+            consider({pid: int(self.policy_rng.choice(COVERS)) for pid in pids})
+
+    def _cem_covers(self, pids: list[str], consider: Any) -> None:
+        n_covers = len(COVERS)
+        weights = {pid: [1.0 / n_covers] * n_covers for pid in pids}
+        first_wave = True
+        for population in _cem_waves(self.budget, n_covers):
+            scored: list[tuple[float, dict[str, int]]] = []
+            # Score each cover once with every SKU on that cover, before
+            # the categorical moves. Later samples are draws from it.
+            n_constant = n_covers if first_wave and population >= n_covers else 0
+            first_wave = False
+            for index in range(population):
+                if index < n_constant:
+                    cover = int(COVERS[index])
+                    covers = {pid: cover for pid in pids}
+                else:
+                    covers = {
+                        pid: int(self.policy_rng.choices(COVERS, weights=weights[pid], k=1)[0])
+                        for pid in pids
+                    }
+                scored.append((consider(covers), covers))
+            elite_count = max(1, int(population * _CEM_ELITE_FRACTION))
+            elites = [
+                covers
+                for _score, covers in sorted(scored, key=lambda item: item[0], reverse=True)[:elite_count]
+            ]
+            weights = _mix_cover_weights(weights, elites)
 
     def _place(
         self,

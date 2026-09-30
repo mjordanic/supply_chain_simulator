@@ -154,12 +154,16 @@ def test_decide_uses_the_episode_lead_time_not_the_fit_lag():
         "delivery_lags": {"A": 6},
     }
     planner.decide(obs, table)
-    assert captured.features[0][0][-1] == 6.0
+    first = list(captured.features)
+    assert first
+    assert all(batch[0][-1] == 6.0 for batch in first)
 
     bare = dict(obs)
     del bare["delivery_lags"]
     planner.decide(bare, table)
-    assert captured.features[1][0][-1] == 2.0
+    second = captured.features[len(first):]
+    assert second
+    assert all(batch[0][-1] == 2.0 for batch in second)
 
 
 def test_delivery_lead_time_and_arrival_ages_are_features():
