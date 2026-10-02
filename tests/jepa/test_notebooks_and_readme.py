@@ -7,7 +7,9 @@ Seams, from the issue acceptance criteria:
    prints one decision's covers, ration, and order.
 2. Results beside the rules. When ``runs/jepa-replenishment/synthetic/``
    is present, ``notebooks/10-jepa-synthetic-eval.ipynb`` states the
-   in-distribution rule and the retarget rule next to the loaded tables.
+   in-distribution rule and the holding-rate sweep rule next to the loaded
+   tables and draws a bar or line chart for each. Rollout, capacity, and
+   data-scaling files add their own curves.
 3. Missing artifacts. When that directory is absent, the results notebook
    prints the published command that fills it and does not raise.
 4. Root README. Exact commands for the published log (base count 64, with
@@ -80,6 +82,13 @@ def test_training_notebook_shows_one_decision_on_smoke_settings():
     assert set(covers.values()) <= {0, 1, 2, 4}
     assert set(ration) == set(covers)
     assert isinstance(order, dict)
+    from src.jepa.dynamics import SALES_WINDOW, feature_dim
+    from src.jepa.plan import DEFAULT_HORIZON_MULTIPLE
+
+    assert _printed(output, "search") == "cem"
+    assert int(_printed(output, "sales_window")) == SALES_WINDOW
+    assert int(_printed(output, "feature_dim")) == feature_dim()
+    assert int(_printed(output, "model_unroll_steps")) == DEFAULT_HORIZON_MULTIPLE * 2
     notebook = nbformat.read(TRAINING, as_version=4)
     code = "\n".join(
         cell.source if isinstance(cell.source, str) else "".join(cell.source)
@@ -155,6 +164,7 @@ def test_results_notebook_states_the_rules_beside_the_loaded_tables(tmp_path, mo
     assert f"in_distribution_passes {in_distribution_passes(in_latent, in_anchor)}" in output
     assert "sweep_rates (0.01, 0.05)" in output
     assert "retarget_passes" not in output
+    assert int(_printed(output, "figures")) >= 4
 
 
 def test_root_readme_publishes_the_commands_and_leaves_runs_uncommitted():
@@ -260,6 +270,81 @@ def test_smoke_eval_does_not_publish_an_undertrained_profit_table(tmp_path, monk
     output = _run_notebook(RESULTS)
     assert "in_distribution_passes" not in output
     assert "retarget_passes" not in output
+
+
+def test_results_notebook_plots_floors_rollout_and_scaling_curves(tmp_path, monkeypatch):
+    import json
+
+    import pandas as pd
+
+    pd.DataFrame(
+        {
+            "seed": [1, 2],
+            "never_order": [0.01, 0.01],
+            "random_cover": [0.02, 0.02],
+            "least_squares": [0.03, 0.03],
+            "oracle": [0.9, 0.9],
+            "latent": [0.4, 0.4],
+            "anchor": [0.2, 0.2],
+        }
+    ).to_parquet(tmp_path / "in_distribution.parquet", index=False)
+    for name, seed in (("unseen_sku", 15_000_000), ("unseen_disruption", 16_000_000)):
+        pd.DataFrame(
+            {"seed": [seed, seed + 1], "latent": [0.2, 0.2], "oracle": [0.8, 0.8]}
+        ).to_parquet(tmp_path / f"{name}.parquet", index=False)
+    pd.DataFrame(
+        {
+            "holding_rate": [0.01, 0.05],
+            "seed": [1, 1],
+            "latent": [0.3, 0.1],
+            "ceiling": [0.5, 0.4],
+        }
+    ).to_parquet(tmp_path / "holding_rate_sweep.parquet", index=False)
+    (tmp_path / "rollout_accuracy.json").write_text(
+        json.dumps(
+            {
+                "steps": [1, 2],
+                "latent": [0.2, 0.4],
+                "direct": [0.5, 0.5],
+                "ols": [0.1, 0.3],
+            }
+        ),
+        encoding="utf-8",
+    )
+    scaling = tmp_path / "scaling"
+    scaling.mkdir()
+    (scaling / "capacity.json").write_text(
+        json.dumps(
+            {
+                "points": [
+                    {"parameters": 10, "latent_mean": 0.1, "direct_mean": 0.2, "ols_mean": 0.3},
+                    {"parameters": 20, "latent_mean": 0.2, "direct_mean": 0.3, "ols_mean": 0.3},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (scaling / "data.json").write_text(
+        json.dumps(
+            {
+                "points": [
+                    {"episodes": 4, "latent_mean": 0.0, "direct_mean": 0.2, "ols_mean": 0.3},
+                    {"episodes": 8, "latent_mean": 0.1, "direct_mean": 0.2, "ols_mean": 0.3},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JEPA_SYNTHETIC_DIR", str(tmp_path))
+    monkeypatch.setenv("JEPA_SCALING_DIR", str(scaling))
+    output = _run_notebook(RESULTS)
+    assert "never_order 0.010" in output
+    assert "oracle 0.900" in output
+    assert "rollout_r2_latent_mean 0.300000" in output
+    assert "capacity_points 2" in output
+    assert "data_points 2" in output
+    # Three protocol bars, the sweep, the rollout curve, capacity, and data.
+    assert int(_printed(output, "figures")) >= 7
 
 
 def test_sweep_loader_rejects_a_study_that_does_not_record_its_rate(tmp_path):

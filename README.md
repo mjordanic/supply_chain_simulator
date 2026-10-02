@@ -353,8 +353,10 @@ then places orders by a factored cross-entropy search over per-SKU covers. The t
 ([`notebooks/09-jepa-train-and-plan.ipynb`](notebooks/09-jepa-train-and-plan.ipynb))
 runs on smoke settings and shows one `decide`. The results notebook
 ([`notebooks/10-jepa-synthetic-eval.ipynb`](notebooks/10-jepa-synthetic-eval.ipynb))
-reads the published tables and, when they are missing, prints the eval command
-below instead of inventing numbers. Package notes:
+reads the published tables and plots mean profit, the floors and oracle
+ceiling, the rollout curve, and the capacity and data-scaling curves. When
+the tables are missing, it prints the eval command below instead of inventing
+numbers. Package notes:
 [`src/jepa/README.md`](src/jepa/README.md).
 
 Raw outputs stay under `runs/jepa-replenishment/` and are not committed.
@@ -407,8 +409,10 @@ written to `runs/jepa-replenishment/fit/` and are not committed. `eval` writes
 a profit table only when the latent model's held-out per-step rollout R² beats
 an ordinary-least-squares baseline on the same inputs. The 112-episode
 measurement, latent mean R² 0.124 against least squares at 0.358, does not
-clear that gate, so it does not publish a profit table. The curve is
-`rollout_accuracy.json` next to that table. When the gate refuses, it writes
+clear that gate, so that measurement fit does not publish a profit table. The
+published full-log fit clears the gate and writes the three generalisation
+tables; numbers for that run live in `docs/jepa-replenishment.md`. The curve is
+`rollout_accuracy.json` next to those tables. When the gate refuses, it writes
 `profit_table_refused.json` and does not write the protocol parquets. When the gate opens, each table
 carries a never-order floor, a random-cover floor, a least-squares model in
 the planner, and an oracle model in the planner, plus the permutation-priority
@@ -442,7 +446,8 @@ The sweep rescores the in-distribution seeds at each rate above, with the
 weights from the 0.01 fit and no new log. At each rate the frozen planner is
 compared with the `OrderUpToPolicy` tuned at that same rate, loaded from the
 study directories above. The run writes no sweep table when that planner's
-order sequence is identical across the rates.
+order sequence is identical across the rates; then it writes
+`holding_rate_sweep_refused.json` instead.
 
 ```bash
 uv run python -m src.jepa eval --checkpoints runs/jepa-replenishment/checkpoints --log runs/jepa-replenishment/log/transitions.parquet --tuning-dir runs/jepa-replenishment/tuning --output runs/jepa-replenishment/synthetic

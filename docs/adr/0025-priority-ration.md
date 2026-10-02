@@ -8,6 +8,8 @@ Status: Accepted
 
 **Future work.** A joint latent model of every SKU at once, and any policy control of engine Allocation, are out of this study. Pricing stays out under ADR 0024.
 
-**Why priority fill rather than a search over the joint order?** Tuning episodes ship `K_active = 5`. A free combination of covers is already thousands of candidates and grows worse if K rises. Priority plus greedy fill is one low-dimensional action per SKU and still lets a fast seller take the whole pool when space is tight, which equal fair-share will not do.
+**Why priority fill rather than a search over the joint order?** `K` is sampled per episode from 1 through 30. A free combination of covers is already thousands of candidates at a handful of SKUs and grows worse as K rises. Priority plus greedy fill is one low-dimensional action per SKU and still lets a fast seller take the whole pool when space is tight, which equal fair-share will not do.
+
+**Amendment — 2026-09-30, assortment.** This paragraph used to say tuning episodes ship a fixed `K_active` of 5. That was the first study's episode. The corrected distribution samples `K`. The search reason is unchanged.
 
 **Amendment — 2026-09-30.** The planner computes that priority from the marginal imagined profit of one unit of shared capacity. `ration="permutation"` draws one order from `policy_rng` and is the ablation. `ration="fair_share"` stays, so the comparison is three-way. Covers are chosen by factored cross-entropy, not by a joint random draw. Engine Allocation is unchanged.

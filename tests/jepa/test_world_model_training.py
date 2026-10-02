@@ -304,3 +304,30 @@ def test_latent_decode_is_the_arrival_age_profile(tmp_path: Path):
 
 def test_fit_artifact_directory_is_under_runs():
     assert FIT_ARTIFACT_DIR.parts == ("runs", "jepa-replenishment", "fit")
+
+
+def test_packed_windows_match_the_eager_windows(tmp_path: Path):
+    frame = _frame(episodes=3, ticks=12, lag=2)
+    model = LatentDynamics(delivery_lag=2, model_unroll_steps=4)
+    eager_obs, eager_act = model._windows(frame)
+    packed = model._windows_packed(frame, tmp_path, "all", {0, 1, 2})
+    obs, act = packed.as_tensors()
+    assert torch.equal(obs, eager_obs)
+    assert torch.equal(act, eager_act)
+
+
+def test_a_log_past_the_eager_limit_still_fits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("src.jepa.dynamics._EAGER_ROW_LIMIT", 0)
+    frame = _frame(episodes=3, ticks=12, lag=2)
+    from src.jepa.plan import fit_latent
+
+    fit_latent(
+        frame,
+        delivery_lag=2,
+        epochs=1,
+        seed=0,
+        artifact_dir=tmp_path,
+        model_unroll_steps=4,
+    )
+    record = json.loads((tmp_path / "latent.json").read_text(encoding="utf-8"))
+    assert record["train_episodes"]

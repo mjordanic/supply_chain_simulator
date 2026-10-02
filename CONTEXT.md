@@ -303,14 +303,19 @@ sweep reports no curve when that planner's order sequence is identical across
 the rates on the tuner holdout. Smoke runs shorten the episode and the seed count
 and do not stand in for that holdout check.
 `python -m src.jepa eval` writes `in_distribution.parquet`, `unseen_sku.parquet`,
-`unseen_disruption.parquet`, and `holding_rate_sweep.parquet` under
-`runs/jepa-replenishment/synthetic/` only when the latent model's held-out per-step rollout
-R² beats an ordinary-least-squares baseline on the same inputs. The 112-episode measurement
-(latent mean R² 0.124 versus least squares 0.358) does not clear that gate, so that fit does
-not publish a profit table. The per-step curve for the latent model, the direct predictor,
-and that baseline is `rollout_accuracy.json` in the same directory, written whether or not
-the profit table is. A refusal also writes `profit_table_refused.json` and does not
-write the protocol parquets. The log, the fit, the 150-trial
+and `unseen_disruption.parquet` under `runs/jepa-replenishment/synthetic/` only when
+the latent model's held-out per-step rollout R² beats an ordinary-least-squares
+baseline on the same inputs. The holding-rate sweep is `holding_rate_sweep.parquet`
+when the frozen planner's orders change across rates; when they do not, the run
+writes `holding_rate_sweep_refused.json` and withholds that curve. The 112-episode
+measurement (latent mean R² 0.124 versus least squares 0.358) does not clear that
+gate, so that measurement fit does not publish a profit table. The published
+full-log fit clears the gate and writes the three generalisation tables; its
+sweep refusal and rollout means live beside those files. The per-step curve for
+the latent model, the direct predictor, and that baseline is `rollout_accuracy.json`
+in the same directory, written whether or not the profit table is. A profit-table
+refusal also writes `profit_table_refused.json` and does not write the protocol
+parquets. The log, the fit, the 150-trial
 `OrderUpToPolicy` studies at holding rates 0.005, 0.01, 0.02, 0.05, and 0.1,
 and that eval are the commands in the root README. On that corrected episode
 distribution the tuned anchor beats the published default. At `holding_rate`

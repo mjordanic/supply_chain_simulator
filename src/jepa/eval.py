@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import math
+import multiprocessing
+import os
 import random
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -43,6 +46,7 @@ from src.tuning.config import TuningConfig
 from src.jepa.commands import SWEEP_HOLDING_RATES
 from src.tuning.episode import TuningEpisodeSpec, make_synthetic_catalog, partition_catalog, sample_episode
 from src.tuning.evaluator import evaluate_policy_normalised
+from src.tuning.rollout import run_policy_episode
 from src.tuning.rollout import run_policy_episode
 
 _TUNER = TuningConfig()
@@ -282,6 +286,7 @@ class SyntheticComparison:
     unseen_sku: ComparisonTable
     unseen_disruption: ComparisonTable
     rollout_accuracy: RolloutAccuracy | None = None
+    holding_rate_sweep_refusal: str | None = None
 
 
 def harsh_disruption_params() -> DisruptionParams:
@@ -382,11 +387,69 @@ def _column(kpis: dict[str, object], name: str) -> tuple[float, ...]:
     return tuple(float(value) for value in kpis[name])  # type: ignore[index]
 
 
+def _eval_workers() -> int:
+    raw = os.environ.get("JEPA_EVAL_WORKERS", "1")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1
+
+
+_FACTORY: Callable[[], IntermediatePolicy] | None = None
+_INCLUDE_ORDERS = False
+
+
+def _episode_from_spec(spec: TuningEpisodeSpec) -> dict:
+    if _FACTORY is None:
+        raise RuntimeError("episode worker has no policy factory")
+    return run_policy_episode(_FACTORY(), spec, include_orders=_INCLUDE_ORDERS)
+
+
+def _map_episodes(
+    factory: Callable[[], IntermediatePolicy],
+    specs: list[TuningEpisodeSpec],
+    *,
+    include_orders: bool = False,
+) -> list[dict]:
+    """One fresh policy per seed. Workers above 1 fork; seed order is kept."""
+    global _FACTORY, _INCLUDE_ORDERS
+    workers = _eval_workers()
+    if workers <= 1 or len(specs) <= 1:
+        return [
+            run_policy_episode(factory(), spec, include_orders=include_orders)
+            for spec in specs
+        ]
+    _FACTORY = factory
+    _INCLUDE_ORDERS = include_orders
+    ctx = multiprocessing.get_context("fork")
+    with ctx.Pool(min(workers, len(specs))) as pool:
+        return pool.map(_episode_from_spec, specs)
+
+
+def _score_from_metrics(
+    metrics: list[dict],
+    specs: list[TuningEpisodeSpec],
+) -> dict[str, tuple[float, ...]]:
+    profit = tuple(
+        float(row["net_profit"]) / max(1e-9, float(spec.balance))
+        for row, spec in zip(metrics, specs, strict=True)
+    )
+    return {
+        "profit": profit,
+        "order_volume": tuple(float(row["order_volume"]) for row in metrics),
+        "service_level": tuple(float(row["service_level"]) for row in metrics),
+        "stockout_rate": tuple(float(row["stockout_rate"]) for row in metrics),
+        "fill_rate": tuple(float(row["fill_rate"]) for row in metrics),
+    }
+
+
 def _score_arm(
     factory: Callable[[], IntermediatePolicy],
     specs: list[TuningEpisodeSpec],
 ) -> dict[str, tuple[float, ...]]:
     """Profit and the operational columns the evaluator already returns."""
+    if _eval_workers() > 1 and len(specs) > 1:
+        return _score_from_metrics(_map_episodes(factory, specs), specs)
     kpis = evaluate_policy_normalised(factory, specs)
     profit = tuple(
         float(value) / max(1e-9, float(cash))
@@ -477,6 +540,10 @@ def _table_from_scored(
     )
 
 
+def _progress(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
 def _comparison_table(
     *,
     holding_rate: float,
@@ -486,7 +553,10 @@ def _comparison_table(
     alias: tuple[str, str] | None = None,
     baseline: str = "anchor",
 ) -> ComparisonTable:
-    scored = {name: _score_arm(factory, specs) for name, factory in arms.items()}
+    scored: dict[str, dict[str, tuple[float, ...]]] = {}
+    for name, factory in arms.items():
+        _progress(f"jepa eval arm {name} seeds {len(specs)} holding {holding_rate:g}")
+        scored[name] = _score_arm(factory, specs)
     if alias is not None:
         dest, source = alias
         scored[dest] = scored[source]
@@ -532,9 +602,15 @@ def _roll_frozen_planner(
     stockout: list[float] = []
     fill: list[float] = []
     sequences: list[tuple[tuple[tuple[str, int], ...], ...]] = []
-    for spec in specs:
-        buyer = planner.retarget(holding_rate, order_fee=order_fee)
-        metrics = run_policy_episode(buyer, spec, include_orders=True)
+
+    def factory() -> ReplenishmentPlanner:
+        return planner.retarget(holding_rate, order_fee=order_fee)
+
+    for spec, metrics in zip(
+        specs,
+        _map_episodes(factory, specs, include_orders=True),
+        strict=True,
+    ):
         profits.append(float(metrics["net_profit"]) / max(1e-9, float(spec.balance)))
         volumes.append(float(metrics["order_volume"]))
         service.append(float(metrics["service_level"]))
@@ -586,6 +662,7 @@ def holding_rate_sweep(
     latent_scored: dict[float, dict[str, tuple[float, ...]]] = {}
     sequences: dict[float, tuple] = {}
     for rate, specs in specs_by_rate.items():
+        _progress(f"jepa eval sweep latent holding {rate:g} seeds {len(specs)}")
         scored, sequence = _roll_frozen_planner(planner, rate, specs, order_fee)
         latent_scored[rate] = scored
         sequences[rate] = sequence
@@ -594,6 +671,7 @@ def holding_rate_sweep(
     tables: list[ComparisonTable] = []
     for rate, specs in specs_by_rate.items():
         factory = OrderUpToPolicy if ceiling_factories is None else ceiling_factories[rate]
+        _progress(f"jepa eval sweep ceiling holding {rate:g} seeds {len(specs)}")
         tables.append(
             _table_from_scored(
                 holding_rate=rate,
@@ -620,6 +698,7 @@ def compare_synthetic(
     config: TuningConfig | None = None,
     frame: pd.DataFrame | None = None,
     assert_orders: bool | None = None,
+    least_squares: object | None = None,
 ) -> SyntheticComparison:
     """Score the generalisation protocols and the holding-rate sweep.
 
@@ -658,13 +737,14 @@ def compare_synthetic(
         ),
     }
     order_fee = float(base.order_fee)
-    log = frame if frame is not None else pd.DataFrame()
-    train_episodes = set(latent.dynamics.train_episodes) or None
-    least_squares = fit_least_squares_dynamics(
-        log,
-        delivery_lag=latent.delivery_lag,
-        train_episodes=train_episodes,
-    )
+    if least_squares is None:
+        log = frame if frame is not None else pd.DataFrame()
+        train_episodes = set(latent.dynamics.train_episodes) or None
+        least_squares = fit_least_squares_dynamics(
+            log,
+            delivery_lag=latent.delivery_lag,
+            train_episodes=train_episodes,
+        )
     oracle = OracleDynamics(latent.delivery_lag)
     cover_lag = int(base.delivery_lag) if base.delivery_lag is not None else int(latent.delivery_lag)
 
@@ -723,16 +803,23 @@ def compare_synthetic(
         for name in ("in_distribution", "unseen_sku", "unseen_disruption")
     }
     in_table = generalisation["in_distribution"]
-    return SyntheticComparison(
-        in_distribution=in_table,
-        holding_rate_sweep=holding_rate_sweep(
+    sweep_refusal: str | None = None
+    try:
+        sweep = holding_rate_sweep(
             latent,
             ceiling_factories,
             n_seeds=n_seeds,
             seed_offset=seed_offset,
             config=base,
             assert_orders=_sweep_must_check_orders(base, assert_orders),
-        ),
+        )
+    except UnfalsifiableTransfer as exc:
+        # Keep the three generalisation tables. The sweep curve is withheld.
+        sweep = ()
+        sweep_refusal = str(exc)
+    return SyntheticComparison(
+        in_distribution=in_table,
+        holding_rate_sweep=sweep,
         in_distribution_passes=in_distribution_passes(
             in_table.per_seed["latent"],
             in_table.per_seed["anchor"],
@@ -740,6 +827,7 @@ def compare_synthetic(
         in_distribution_paired_interval=in_table.paired_interval,
         unseen_sku=generalisation["unseen_sku"],
         unseen_disruption=generalisation["unseen_disruption"],
+        holding_rate_sweep_refusal=sweep_refusal,
     )
 
 
@@ -814,6 +902,10 @@ def write_synthetic_comparison(result: SyntheticComparison, directory: str | Pat
             destination / "holding_rate_sweep.parquet",
             index=False,
         )
+    else:
+        sweep = destination / "holding_rate_sweep.parquet"
+        if sweep.exists():
+            sweep.unlink()
     stale = destination / "retarget.parquet"
     if stale.exists():
         stale.unlink()
@@ -884,6 +976,21 @@ def _clear_profit_refusal(destination: Path) -> None:
         refused.unlink()
 
 
+def _record_sweep_refusal(destination: Path, reason: str) -> None:
+    """The order-sequence check withheld the curve. The reason is the exception text."""
+    payload = {"refused": True, "reason": reason}
+    (destination / "holding_rate_sweep_refused.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _clear_sweep_refusal(destination: Path) -> None:
+    refused = destination / "holding_rate_sweep_refused.json"
+    if refused.exists():
+        refused.unlink()
+
+
 def _remove_profit_tables(destination: Path) -> None:
     """Drop profit tables so a refused re-run cannot leave a stale one."""
     for name in _PROFIT_ARTIFACTS:
@@ -909,10 +1016,71 @@ def write_gated_profit_table(
     _write_rollout_accuracy(accuracy, destination / "rollout_accuracy.json")
     if not rollout_beats_baseline(accuracy):
         _remove_profit_tables(destination)
+        _clear_sweep_refusal(destination)
         _record_profit_refusal(destination)
         raise RolloutGateError(accuracy)
     _clear_profit_refusal(destination)
     return write_synthetic_comparison(replace(result, rollout_accuracy=accuracy), destination)
+
+
+def score_rollout_gate(
+    latent: ReplenishmentPlanner,
+    direct: ReplenishmentPlanner,
+    frame: pd.DataFrame,
+    directory: str | Path,
+) -> tuple[RolloutAccuracy, object]:
+    """Write rollout accuracy and fit the least-squares floor.
+
+    The floor does not keep ``frame``. A caller that drops ``frame``
+    before the profit episodes does not hold the log for that scoring.
+    """
+    accuracy = held_out_rollout_accuracy(latent.dynamics, direct.dynamics, frame)
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    _write_rollout_accuracy(accuracy, destination / "rollout_accuracy.json")
+    if not rollout_beats_baseline(accuracy):
+        _remove_profit_tables(destination)
+        _clear_sweep_refusal(destination)
+        _record_profit_refusal(destination)
+        raise RolloutGateError(accuracy)
+    train_episodes = set(latent.dynamics.train_episodes) or None
+    floor = fit_least_squares_dynamics(
+        frame,
+        delivery_lag=latent.delivery_lag,
+        train_episodes=train_episodes,
+    )
+    return accuracy, floor
+
+
+def finish_published_comparison(
+    latent: ReplenishmentPlanner,
+    direct: ReplenishmentPlanner,
+    accuracy: RolloutAccuracy,
+    least_squares: object,
+    directory: str | Path,
+    **compare_kwargs: object,
+) -> SyntheticComparison:
+    """Score the profit tables after the rollout gate has opened.
+
+    An identical-order sweep refusal still writes the three generalisation
+    tables and ``holding_rate_sweep_refused.json``. It does not invent a
+    sweep curve.
+    """
+    compare_kwargs["assert_orders"] = True
+    compare_kwargs["least_squares"] = least_squares
+    destination = Path(directory)
+    result = compare_synthetic(latent, direct, frame=None, **compare_kwargs)
+    result = replace(result, rollout_accuracy=accuracy)
+    _clear_profit_refusal(destination)
+    if result.holding_rate_sweep_refusal is not None:
+        sweep = destination / "holding_rate_sweep.parquet"
+        if sweep.exists():
+            sweep.unlink()
+        _record_sweep_refusal(destination, result.holding_rate_sweep_refusal)
+    else:
+        _clear_sweep_refusal(destination)
+    write_synthetic_comparison(result, destination)
+    return result
 
 
 def publish_synthetic_comparison(
@@ -927,23 +1095,16 @@ def publish_synthetic_comparison(
     A rollout refusal writes ``profit_table_refused.json`` and no protocol
     parquet. The order-sequence check runs only after that gate opens. If
     the frozen planner's orders do not differ across holding rates, the
-    sweep raises and any profit table already in the directory is removed.
+    three generalisation tables are still written,
+    ``holding_rate_sweep.parquet`` is withheld, and
+    ``holding_rate_sweep_refused.json`` records that reason.
     """
-    accuracy = held_out_rollout_accuracy(latent.dynamics, direct.dynamics, frame)
-    destination = Path(directory)
-    destination.mkdir(parents=True, exist_ok=True)
-    _write_rollout_accuracy(accuracy, destination / "rollout_accuracy.json")
-    if not rollout_beats_baseline(accuracy):
-        _remove_profit_tables(destination)
-        _record_profit_refusal(destination)
-        raise RolloutGateError(accuracy)
-    compare_kwargs["assert_orders"] = True
-    try:
-        result = compare_synthetic(latent, direct, frame=frame, **compare_kwargs)
-    except UnfalsifiableTransfer:
-        _remove_profit_tables(destination)
-        raise
-    result = replace(result, rollout_accuracy=accuracy)
-    _clear_profit_refusal(destination)
-    write_synthetic_comparison(result, destination)
-    return result
+    accuracy, floor = score_rollout_gate(latent, direct, frame, directory)
+    return finish_published_comparison(
+        latent,
+        direct,
+        accuracy,
+        floor,
+        directory,
+        **compare_kwargs,
+    )

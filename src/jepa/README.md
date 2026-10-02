@@ -11,7 +11,8 @@ synthetic eval on the three generalisation protocols and the holding-rate sweep,
 [`notebooks/09-jepa-train-and-plan.ipynb`](../../notebooks/09-jepa-train-and-plan.ipynb)
 walks through a smoke log, a fit, and one `decide`.
 [`notebooks/10-jepa-synthetic-eval.ipynb`](../../notebooks/10-jepa-synthetic-eval.ipynb)
-reads `runs/jepa-replenishment/synthetic/` and prints the eval command when
+reads `runs/jepa-replenishment/synthetic/` and plots the tables, the
+rollout curve, and the scaling curves. It prints the eval command when
 those tables are absent. Raw outputs stay under `runs/jepa-replenishment/`
 and are not committed. A fit writes its loss curve and episode holdout under
 `runs/jepa-replenishment/fit/`. The published fit uses embedding width 256 and

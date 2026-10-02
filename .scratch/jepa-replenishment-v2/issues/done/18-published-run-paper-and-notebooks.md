@@ -16,7 +16,7 @@ be left asserting things the code no longer does.
 
 **Blocked by:** 15, 16, 17.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Prior art:** the previous feature's published-run sequence — collect, fit,
 tune, eval — and the structure of its paper; the `Synthetic comparison` and
@@ -27,25 +27,25 @@ tracked file in `docs/`. Notebooks are tracked under `notebooks/`. Nothing that
 must be committed may be written under `runs/` or `data/`, both of which are
 ignored.
 
-- [ ] The full published sequence runs end to end: collect, fit, tune, evaluate,
+- [x] The full published sequence runs end to end: collect, fit, tune, evaluate,
       across all three generalisation protocols and the holding-rate sweep.
-- [ ] Every number in the paper is generated from run artifacts rather than
+- [x] Every number in the paper is generated from run artifacts rather than
       hand-transcribed, including the run record.
-- [ ] The paper reports the model's held-out rollout accuracy alongside every
+- [x] The paper reports the model's held-out rollout accuracy alongside every
       profit number.
-- [ ] The paper states the training-data generation parameters, read from the
+- [x] The paper states the training-data generation parameters, read from the
       manifest rather than retyped.
-- [ ] The results notebook is updated: the new tables, the floors and oracle
+- [x] The results notebook is updated: the new tables, the floors and oracle
       ceiling, the per-step rollout-accuracy curve, the model-capacity and
       data-scaling curves, and the holding-rate sweep, with visualisations rather
       than bare tables.
-- [ ] The training-and-plan notebook is updated to the new training contract,
+- [x] The training-and-plan notebook is updated to the new training contract,
       observation and search.
-- [ ] The M5 notebook is updated so it does not assert behaviour the code no
+- [x] The M5 notebook is updated so it does not assert behaviour the code no
       longer has, even though the M5 exam stays out of scope.
-- [ ] Every README section describing this study is updated, including the
+- [x] Every README section describing this study is updated, including the
       published command strings.
-- [ ] `CONTEXT.md` gains the terms this rebuild introduces and corrects the
+- [x] `CONTEXT.md` gains the terms this rebuild introduces and corrects the
       entries the rebuild invalidates.
-- [ ] A final consistency pass confirms the PRD, the tickets, the paper, the
+- [x] A final consistency pass confirms the PRD, the tickets, the paper, the
       notebooks and the ADRs do not disagree.

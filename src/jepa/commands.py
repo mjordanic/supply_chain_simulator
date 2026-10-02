@@ -322,14 +322,26 @@ def _tune(args: argparse.Namespace) -> None:
 
 
 def _eval(args: argparse.Namespace) -> None:
+    import gc
+
     import pandas as pd
 
-    from src.jepa.eval import IN_DISTRIBUTION_HOLDING_RATE, publish_synthetic_comparison
+    from src.jepa.eval import (
+        IN_DISTRIBUTION_HOLDING_RATE,
+        finish_published_comparison,
+        score_rollout_gate,
+    )
     from src.jepa.plan import load_planners
     from src.tuning.config import TuningConfig
 
     latent, direct = load_planners(args.checkpoints)
+    # The log is only an input to the rollout gate and the least-squares
+    # floor. Drop it before the holdout episodes so those episodes are
+    # not scored while the frame is still resident.
     frame = pd.read_parquet(args.log)
+    accuracy, floor = score_rollout_gate(latent, direct, frame, args.output)
+    del frame
+    gc.collect()
     shape = _tuning_shape(args, ("episode_length", "k_active", "delivery_lag"))
     config = TuningConfig(**shape) if shape else None
     seed_count = {} if args.n_seeds is None else {"n_seeds": args.n_seeds}
@@ -339,10 +351,11 @@ def _eval(args: argparse.Namespace) -> None:
         if args.anchor is not None
         else factories[IN_DISTRIBUTION_HOLDING_RATE]
     )
-    publish_synthetic_comparison(
+    finish_published_comparison(
         latent,
         direct,
-        frame,
+        accuracy,
+        floor,
         args.output,
         anchor_factory=anchor,
         ceiling_factories=factories,

@@ -26,11 +26,13 @@ from __future__ import annotations
 import copy
 import json
 import math
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import torch
 from torch import nn
@@ -51,6 +53,10 @@ PUBLISHED_DEPTH = 4
 PUBLISHED_LR = 1e-4
 
 FIT_BATCH_SIZE = 256
+# The eager path builds every window as a Python list. Past this many log
+# rows that list does not fit beside the frame. Smoke logs stay eager.
+_EAGER_ROW_LIMIT = 50_000
+_ROLLOUT_CHUNK = 8_192
 VAL_EPISODE_FRACTION = 0.2
 EARLY_STOP_PATIENCE = 5
 EMA_INIT_SHARE = 0.05
@@ -272,6 +278,76 @@ def _by_episode(frame: pd.DataFrame, episodes: set[int]) -> pd.DataFrame:
     if frame.empty or not episodes:
         return frame.iloc[0:0]
     return frame.loc[frame["episode_seed"].isin(episodes)]
+
+
+class _PackedWindows:
+    """Open-loop windows stored as float32 memmaps.
+
+    Indexing a batch copies that batch into a tensor. The full array stays
+    on disk so a published log can be fit without holding every window in RAM.
+    """
+
+    def __init__(
+        self,
+        obs: np.memmap,
+        act: np.memmap,
+        *,
+        action_mean: float,
+        action_std: float,
+    ) -> None:
+        self.obs = obs
+        self.act = act
+        self.action_mean = float(action_mean)
+        self.action_std = float(action_std)
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return tuple(int(size) for size in self.obs.shape)
+
+    def batch(self, index: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        idx = index.detach().cpu().numpy()
+        obs = torch.tensor(np.asarray(self.obs[idx]), dtype=torch.float32)
+        act = torch.tensor(np.asarray(self.act[idx]), dtype=torch.float32)
+        return obs, act
+
+    def as_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            torch.tensor(np.asarray(self.obs), dtype=torch.float32),
+            torch.tensor(np.asarray(self.act), dtype=torch.float32),
+        )
+
+
+def _window_dir() -> Path:
+    path = Path("runs/jepa-replenishment/fit")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _discard_window_dir(directory: Path) -> None:
+    for child in directory.glob("*"):
+        child.unlink(missing_ok=True)
+    directory.rmdir()
+
+
+def _population_std(total_sq: float, total: float, count: int) -> tuple[float, float]:
+    if count <= 0:
+        return 0.0, 1.0
+    mean = total / count
+    var = max(total_sq / count - mean * mean, 0.0)
+    return mean, max(math.sqrt(var), 1e-6)
+
+
+def _moment_tensors(total: np.ndarray, total_sq: np.ndarray, count: int) -> tuple[torch.Tensor, torch.Tensor]:
+    if count <= 0:
+        width = 0 if total is None else int(total.shape[0])
+        return torch.zeros(width), torch.ones(width)
+    mean = total / count
+    var = np.maximum(total_sq / count - mean * mean, 0.0)
+    std = np.maximum(np.sqrt(var), 1e-6)
+    return (
+        torch.tensor(mean, dtype=torch.float32),
+        torch.tensor(std, dtype=torch.float32),
+    )
 
 
 def _snapshot(module: nn.Module) -> dict[str, torch.Tensor]:
@@ -573,22 +649,38 @@ class LatentDynamics(_ScaledDynamics):
         train_ids, val_ids = _holdout_episodes(frame["episode_seed"].tolist(), generator)
         self.train_episodes = set(train_ids)
         self.val_episodes = set(val_ids)
-        train_frame = _by_episode(frame, train_ids)
-        val_frame = _by_episode(frame, val_ids)
-        observations, actions = self._windows(train_frame)
-        val_observations, val_actions = self._windows(val_frame)
-        _probe_x, probe_y = self._probe_pairs(train_frame)
-        self._set_stats(self._all_features(train_frame), actions.reshape(-1), probe_y)
-        trained, decay = self._fit_latent(
-            observations,
-            actions,
-            val_observations,
-            val_actions,
-            epochs=epochs,
-            lr=lr,
-            generator=generator,
-            patience=patience,
-        )
+        if len(frame) > _EAGER_ROW_LIMIT:
+            directory = Path(tempfile.mkdtemp(prefix="jepa-windows-", dir=_window_dir()))
+            try:
+                trained, decay = self._fit_latent_packed(
+                    frame,
+                    train_ids,
+                    val_ids,
+                    directory,
+                    epochs=epochs,
+                    lr=lr,
+                    generator=generator,
+                    patience=patience,
+                )
+            finally:
+                _discard_window_dir(directory)
+        else:
+            train_frame = _by_episode(frame, train_ids)
+            val_frame = _by_episode(frame, val_ids)
+            observations, actions = self._windows(train_frame)
+            val_observations, val_actions = self._windows(val_frame)
+            _probe_x, probe_y = self._probe_pairs(train_frame)
+            self._set_stats(self._all_features(train_frame), actions.reshape(-1), probe_y)
+            trained, decay = self._fit_latent(
+                observations,
+                actions,
+                val_observations,
+                val_actions,
+                epochs=epochs,
+                lr=lr,
+                generator=generator,
+                patience=patience,
+            )
         _write_fit_artifact(
             artifact_dir,
             "latent.json",
@@ -629,8 +721,13 @@ class LatentDynamics(_ScaledDynamics):
             return
         generator = _generator(seed)
         train_ids, val_ids = _holdout_episodes(frame["episode_seed"].tolist(), generator)
-        train_x, train_y = self._probe_pairs(_by_episode(frame, train_ids))
-        val_x, val_y = self._probe_pairs(_by_episode(frame, val_ids))
+        if len(frame) > _EAGER_ROW_LIMIT:
+            print(f"jepa fit probes rows {len(frame)}", flush=True)
+            train_x, train_y = self._probe_pairs_in(frame, train_ids)
+            val_x, val_y = self._probe_pairs_in(frame, val_ids)
+        else:
+            train_x, train_y = self._probe_pairs(_by_episode(frame, train_ids))
+            val_x, val_y = self._probe_pairs(_by_episode(frame, val_ids))
         trained = self._fit_probe_passes(
             train_x,
             train_y,
@@ -684,9 +781,22 @@ class LatentDynamics(_ScaledDynamics):
             if val_features_n.numel() == 0:
                 return None
             self.probes.eval()
+            n_val = int(val_features_n.shape[0])
             with torch.no_grad():
-                embedding = self.target_encoder(val_features_n)
-                loss = float(nn.functional.mse_loss(self.probes(embedding), val_targets_n))
+                if n_val <= _EAGER_ROW_LIMIT:
+                    embedding = self.target_encoder(val_features_n)
+                    loss = float(nn.functional.mse_loss(self.probes(embedding), val_targets_n))
+                else:
+                    total = 0.0
+                    for start, end in _chunks(n_val):
+                        embedding = self.target_encoder(val_features_n[start:end])
+                        batch = float(
+                            nn.functional.mse_loss(
+                                self.probes(embedding), val_targets_n[start:end]
+                            )
+                        )
+                        total += batch * (end - start)
+                    loss = total / n_val
             self.probes.train()
             return loss
 
@@ -782,6 +892,79 @@ class LatentDynamics(_ScaledDynamics):
         )
         return trained, decay
 
+    def _fit_latent_packed(
+        self,
+        frame: pd.DataFrame,
+        train_ids: set[int],
+        val_ids: set[int],
+        directory: Path,
+        *,
+        epochs: int,
+        lr: float,
+        generator: torch.Generator,
+        patience: int,
+    ) -> tuple[dict[str, Any], float]:
+        """Train from memmap windows. The loss is the eager open-loop loss."""
+        observations = self._windows_packed(frame, directory, "train", train_ids)
+        validation = self._windows_packed(frame, directory, "val", val_ids)
+        x_mean, x_std = self._feature_moments(frame, train_ids)
+        y_mean, y_std = self._target_moments(frame, train_ids)
+        self.x_mean.copy_(x_mean)
+        self.x_std.copy_(x_std)
+        self.y_mean.copy_(y_mean)
+        self.y_std.copy_(y_std)
+        self.a_mean.fill_(observations.action_mean)
+        self.a_std.fill_(observations.action_std)
+        n_train = int(observations.shape[0])
+        print(f"jepa fit latent windows {n_train}", flush=True)
+        decay = _ema_decay(_batch_count(n_train))
+        self._ema_decay = decay
+        if epochs <= 0 or n_train == 0:
+            return {"curve": [], "stopped_early": False, "best_epoch": None}, decay
+        optimizer = torch.optim.Adam(
+            list(self.encoder.parameters()) + list(self.predictor.parameters()),
+            lr=lr,
+        )
+        self.encoder.train()
+        self.predictor.train()
+        n_val = int(validation.shape[0])
+
+        def loss_on(index: torch.Tensor) -> torch.Tensor:
+            obs, act = observations.batch(index)
+            return self._open_loop_loss(self._norm_x(obs), self._norm_a(act))
+
+        def measured() -> float | None:
+            if n_val == 0:
+                print("jepa fit latent epoch val_loss=none", flush=True)
+                return None
+            total = 0.0
+            weight = 0
+            with torch.no_grad():
+                for start in range(0, n_val, _ROLLOUT_CHUNK):
+                    end = min(start + _ROLLOUT_CHUNK, n_val)
+                    index = torch.arange(start, end)
+                    obs, act = validation.batch(index)
+                    batch = end - start
+                    total += float(self._rollout_mse(self._norm_x(obs), self._norm_a(act))) * batch
+                    weight += batch
+            value = total / weight
+            print(f"jepa fit latent epoch val_loss={value}", flush=True)
+            return value
+
+        trained = _train_passes(
+            n_train=n_train,
+            epochs=epochs,
+            generator=generator,
+            optimizer=optimizer,
+            loss_on=loss_on,
+            val_loss=measured,
+            after_step=self._ema,
+            snapshot=lambda: _snapshot(self),
+            restore=self.load_state_dict,
+            patience=patience,
+        )
+        return trained, decay
+
     def _rollout_mse(self, observations: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """Mean open-loop distance to the stopped target encoder.
 
@@ -843,7 +1026,107 @@ class LatentDynamics(_ScaledDynamics):
             torch.tensor(actions, dtype=torch.float32),
         )
 
+    def _windows_packed(self, frame: pd.DataFrame, directory: Path, name: str, episodes: set[int]) -> _PackedWindows:
+        """Same window order as ``_windows``, written to ``directory``."""
+        horizon = int(self.model_unroll_steps)
+        dim = feature_dim()
+        count = 0
+        for group in _groups(frame):
+            if int(group["episode_seed"].iloc[0]) not in episodes:
+                continue
+            length = len(group)
+            if length >= horizon + 1:
+                count += length - horizon
+        obs = np.memmap(
+            directory / f"{name}-obs.dat",
+            dtype=np.float32,
+            mode="w+",
+            shape=(count, horizon + 1, dim),
+        )
+        act = np.memmap(
+            directory / f"{name}-act.dat",
+            dtype=np.float32,
+            mode="w+",
+            shape=(count, horizon),
+        )
+        cursor = 0
+        action_sum = 0.0
+        action_sq = 0.0
+        action_n = 0
+        for group in _groups(frame):
+            if int(group["episode_seed"].iloc[0]) not in episodes:
+                continue
+            rows = list(group.to_dict("records"))
+            if len(rows) < horizon + 1:
+                continue
+            features = [self._features(row) for row in rows]
+            n = len(rows) - horizon
+            block = np.asarray(
+                [features[start : start + horizon + 1] for start in range(n)],
+                dtype=np.float32,
+            )
+            actions = np.asarray(
+                [
+                    [float(rows[start + step]["filled_qty"]) for step in range(horizon)]
+                    for start in range(n)
+                ],
+                dtype=np.float32,
+            )
+            obs[cursor : cursor + n] = block
+            act[cursor : cursor + n] = actions
+            cursor += n
+            action_sum += float(actions.sum(dtype=np.float64))
+            action_sq += float(np.square(actions.astype(np.float64)).sum())
+            action_n += int(actions.size)
+        obs.flush()
+        act.flush()
+        mean, std = _population_std(action_sq, action_sum, action_n)
+        return _PackedWindows(obs, act, action_mean=mean, action_std=std)
+
+    def _feature_moments(self, frame: pd.DataFrame, episodes: set[int]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Population mean and std of every training row, matching ``_all_features``."""
+        total: np.ndarray | None = None
+        total_sq: np.ndarray | None = None
+        count = 0
+        for group in _groups(frame):
+            if int(group["episode_seed"].iloc[0]) not in episodes:
+                continue
+            for row in group.to_dict("records"):
+                feat = np.asarray(self._features(row), dtype=np.float64)
+                if total is None or total_sq is None:
+                    total = np.zeros_like(feat)
+                    total_sq = np.zeros_like(feat)
+                total += feat
+                total_sq += feat * feat
+                count += 1
+        assert total is not None and total_sq is not None
+        return _moment_tensors(total, total_sq, count)
+
+    def _target_moments(self, frame: pd.DataFrame, episodes: set[int]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Population mean and std of probe targets. The last row of a group has no pair."""
+        total: np.ndarray | None = None
+        total_sq: np.ndarray | None = None
+        count = 0
+        width = target_dim()
+        for group in _groups(frame):
+            if int(group["episode_seed"].iloc[0]) not in episodes:
+                continue
+            rows = list(group.to_dict("records"))
+            for row in rows[:-1]:
+                values = np.asarray(_targets(row), dtype=np.float64)
+                if total is None or total_sq is None:
+                    total = np.zeros(width, dtype=np.float64)
+                    total_sq = np.zeros(width, dtype=np.float64)
+                total += values
+                total_sq += values * values
+                count += 1
+        if total is None or total_sq is None:
+            return torch.zeros(width), torch.ones(width)
+        return _moment_tensors(total, total_sq, count)
+
     def _probe_pairs(self, frame: pd.DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
+        if len(frame) > _EAGER_ROW_LIMIT:
+            return self._probe_pairs_compact(frame)
         features: list[list[float]] = []
         targets: list[list[float]] = []
         for group in _groups(frame):
@@ -854,6 +1137,44 @@ class LatentDynamics(_ScaledDynamics):
         if not features:
             return torch.zeros(0, feature_dim()), torch.zeros(0, target_dim())
         return torch.tensor(features, dtype=torch.float32), torch.tensor(targets, dtype=torch.float32)
+
+    def _probe_pairs_in(
+        self, frame: pd.DataFrame, episodes: set[int]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._probe_pairs_compact(frame, episodes)
+
+    def _probe_pairs_compact(
+        self, frame: pd.DataFrame, episodes: set[int] | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        count = 0
+        for group in _groups(frame):
+            if episodes is not None and int(group["episode_seed"].iloc[0]) not in episodes:
+                continue
+            length = len(group)
+            if length >= 2:
+                count += length - 1
+        dim = feature_dim()
+        width = target_dim()
+        features = np.empty((count, dim), dtype=np.float32)
+        targets = np.empty((count, width), dtype=np.float32)
+        cursor = 0
+        for group in _groups(frame):
+            if episodes is not None and int(group["episode_seed"].iloc[0]) not in episodes:
+                continue
+            rows = list(group.to_dict("records"))
+            n = len(rows) - 1
+            if n <= 0:
+                continue
+            features[cursor : cursor + n] = np.asarray(
+                [self._features(rows[index + 1]) for index in range(n)],
+                dtype=np.float32,
+            )
+            targets[cursor : cursor + n] = np.asarray(
+                [_targets(rows[index]) for index in range(n)],
+                dtype=np.float32,
+            )
+            cursor += n
+        return torch.from_numpy(features), torch.from_numpy(targets)
 
     def _all_features(self, frame: pd.DataFrame) -> torch.Tensor:
         rows = [
@@ -908,8 +1229,13 @@ class DirectDynamics(_ScaledDynamics):
         train_ids, val_ids = _holdout_episodes(frame["episode_seed"].tolist(), generator)
         self.train_episodes = set(train_ids)
         self.val_episodes = set(val_ids)
-        features, actions, targets = self._pairs(_by_episode(frame, train_ids))
-        val_features, val_actions, val_targets = self._pairs(_by_episode(frame, val_ids))
+        if len(frame) > _EAGER_ROW_LIMIT:
+            print(f"jepa fit direct rows {len(frame)}", flush=True)
+            features, actions, targets = self._pairs_in(frame, train_ids)
+            val_features, val_actions, val_targets = self._pairs_in(frame, val_ids)
+        else:
+            features, actions, targets = self._pairs(_by_episode(frame, train_ids))
+            val_features, val_actions, val_targets = self._pairs(_by_episode(frame, val_ids))
         self._set_stats(features, actions, targets)
         trained = self._fit_passes(
             features,
@@ -976,13 +1302,26 @@ class DirectDynamics(_ScaledDynamics):
             if val_features_n.numel() == 0:
                 return None
             self.net.eval()
+            n_val = int(val_features_n.shape[0])
             with torch.no_grad():
-                loss = float(
-                    nn.functional.mse_loss(
-                        self.net(val_features_n, val_actions_n),
-                        val_targets_n,
+                if n_val <= _EAGER_ROW_LIMIT:
+                    loss = float(
+                        nn.functional.mse_loss(
+                            self.net(val_features_n, val_actions_n),
+                            val_targets_n,
+                        )
                     )
-                )
+                else:
+                    total = 0.0
+                    for start, end in _chunks(n_val):
+                        batch = float(
+                            nn.functional.mse_loss(
+                                self.net(val_features_n[start:end], val_actions_n[start:end]),
+                                val_targets_n[start:end],
+                            )
+                        )
+                        total += batch * (end - start)
+                    loss = total / n_val
             self.net.train()
             return loss
 
@@ -1021,6 +1360,17 @@ class DirectDynamics(_ScaledDynamics):
     def _pairs(
         self, frame: pd.DataFrame
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if len(frame) > _EAGER_ROW_LIMIT:
+            packed = _compact_step_arrays(frame, self._features)
+            dim = feature_dim()
+            if packed is None:
+                return torch.zeros(0, dim), torch.zeros(0, 1), torch.zeros(0, target_dim())
+            features, actions, targets = packed
+            return (
+                torch.from_numpy(features),
+                torch.from_numpy(actions).unsqueeze(-1),
+                torch.from_numpy(targets),
+            )
         features: list[list[float]] = []
         actions: list[float] = []
         targets: list[list[float]] = []
@@ -1038,6 +1388,20 @@ class DirectDynamics(_ScaledDynamics):
             torch.tensor(features, dtype=torch.float32),
             torch.tensor(actions, dtype=torch.float32).unsqueeze(-1),
             torch.tensor(targets, dtype=torch.float32),
+        )
+
+    def _pairs_in(
+        self, frame: pd.DataFrame, episodes: set[int]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        packed = _compact_step_arrays(frame, self._features, episodes)
+        dim = feature_dim()
+        if packed is None:
+            return torch.zeros(0, dim), torch.zeros(0, 1), torch.zeros(0, target_dim())
+        features, actions, targets = packed
+        return (
+            torch.from_numpy(features),
+            torch.from_numpy(actions).unsqueeze(-1),
+            torch.from_numpy(targets),
         )
 
 
@@ -1211,12 +1575,56 @@ def _step_scores(pred: torch.Tensor, true: torch.Tensor) -> tuple[float, ...]:
     return tuple(scores)
 
 
+def _compact_step_arrays(
+    frame: pd.DataFrame,
+    feature_of: Callable[[dict], list[float]],
+    episodes: set[int] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """One-step pairs as float32 arrays. ``None`` when the frame has no pair."""
+    count = 0
+    for group in _groups(frame):
+        if episodes is not None and int(group["episode_seed"].iloc[0]) not in episodes:
+            continue
+        length = len(group)
+        if length >= 2:
+            count += length - 1
+    if count == 0:
+        return None
+    features = np.empty((count, feature_dim()), dtype=np.float32)
+    actions = np.empty((count,), dtype=np.float32)
+    targets = np.empty((count, target_dim()), dtype=np.float32)
+    cursor = 0
+    for group in _groups(frame):
+        if episodes is not None and int(group["episode_seed"].iloc[0]) not in episodes:
+            continue
+        rows = list(group.to_dict("records"))
+        n = len(rows) - 1
+        if n <= 0:
+            continue
+        features[cursor : cursor + n] = np.asarray(
+            [feature_of(rows[index]) for index in range(n)],
+            dtype=np.float32,
+        )
+        actions[cursor : cursor + n] = np.asarray(
+            [float(rows[index]["filled_qty"]) for index in range(n)],
+            dtype=np.float32,
+        )
+        targets[cursor : cursor + n] = np.asarray(
+            [_targets(rows[index]) for index in range(n)],
+            dtype=np.float32,
+        )
+        cursor += n
+    return features, actions, targets
+
+
 def _score_windows(
     frame: pd.DataFrame,
     episodes: set[int],
     horizon: int,
     feature_of: Callable[[dict], list[float]],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    if len(frame) > _EAGER_ROW_LIMIT:
+        return _score_windows_compact(frame, episodes, horizon, feature_of)
     initials: list[list[float]] = []
     actions: list[list[float]] = []
     targets: list[list[list[float]]] = []
@@ -1240,11 +1648,64 @@ def _score_windows(
     )
 
 
+def _score_windows_compact(
+    frame: pd.DataFrame,
+    episodes: set[int],
+    horizon: int,
+    feature_of: Callable[[dict], list[float]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    count = 0
+    for group in _groups(frame):
+        if int(group["episode_seed"].iloc[0]) not in episodes:
+            continue
+        length = len(group)
+        if length >= horizon + 1:
+            count += length - horizon
+    if count < 2:
+        return None
+    width = target_dim()
+    initials = np.empty((count, feature_dim()), dtype=np.float32)
+    actions = np.empty((count, horizon), dtype=np.float32)
+    targets = np.empty((count, horizon, width), dtype=np.float32)
+    cursor = 0
+    for group in _groups(frame):
+        if int(group["episode_seed"].iloc[0]) not in episodes:
+            continue
+        rows = list(group.to_dict("records"))
+        if len(rows) < horizon + 1:
+            continue
+        features = [feature_of(row) for row in rows]
+        n = len(rows) - horizon
+        initials[cursor : cursor + n] = np.asarray(
+            [features[start] for start in range(n)],
+            dtype=np.float32,
+        )
+        actions[cursor : cursor + n] = np.asarray(
+            [
+                [float(rows[start + step]["filled_qty"]) for step in range(horizon)]
+                for start in range(n)
+            ],
+            dtype=np.float32,
+        )
+        targets[cursor : cursor + n] = np.asarray(
+            [[_targets(rows[start + step]) for step in range(horizon)] for start in range(n)],
+            dtype=np.float32,
+        )
+        cursor += n
+    return torch.from_numpy(initials), torch.from_numpy(actions), torch.from_numpy(targets)
+
+
 def _one_step_pairs(
     frame: pd.DataFrame,
     episodes: set[int],
     feature_of: Callable[[dict], list[float]],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    if len(frame) > _EAGER_ROW_LIMIT:
+        packed = _compact_step_arrays(frame, feature_of, episodes)
+        if packed is None:
+            return None
+        features, actions, targets = packed
+        return torch.from_numpy(features), torch.from_numpy(actions), torch.from_numpy(targets)
     features: list[list[float]] = []
     actions: list[float] = []
     targets: list[list[float]] = []
@@ -1285,12 +1746,25 @@ def _fit_ols(
     return solution, keep
 
 
+def _chunks(n_rows: int) -> list[tuple[int, int]]:
+    return [
+        (start, min(start + _ROLLOUT_CHUNK, n_rows))
+        for start in range(0, n_rows, _ROLLOUT_CHUNK)
+    ]
+
+
 def _ols_rollout(
     solution: torch.Tensor,
     keep: torch.Tensor,
     initial: torch.Tensor,
     actions: torch.Tensor,
 ) -> torch.Tensor:
+    if int(initial.shape[0]) > _ROLLOUT_CHUNK:
+        parts = [
+            _ols_rollout(solution, keep, initial[start:end], actions[start:end])
+            for start, end in _chunks(int(initial.shape[0]))
+        ]
+        return torch.cat(parts, dim=0)
     raw = initial.clone()
     steps: list[torch.Tensor] = []
     for step in range(actions.shape[1]):
@@ -1466,6 +1940,12 @@ def _latent_rollout_quantities(
     initial: torch.Tensor,
     actions: torch.Tensor,
 ) -> torch.Tensor:
+    if int(initial.shape[0]) > _ROLLOUT_CHUNK:
+        parts = [
+            _latent_rollout_quantities(model, initial[start:end], actions[start:end])
+            for start, end in _chunks(int(initial.shape[0]))
+        ]
+        return torch.cat(parts, dim=0)
     model.encoder.eval()
     model.predictor.eval()
     model.probes.eval()
@@ -1484,6 +1964,12 @@ def _direct_rollout_quantities(
     initial: torch.Tensor,
     actions: torch.Tensor,
 ) -> torch.Tensor:
+    if int(initial.shape[0]) > _ROLLOUT_CHUNK:
+        parts = [
+            _direct_rollout_quantities(model, initial[start:end], actions[start:end])
+            for start, end in _chunks(int(initial.shape[0]))
+        ]
+        return torch.cat(parts, dim=0)
     model.net.eval()
     raw = initial.clone()
     steps: list[torch.Tensor] = []

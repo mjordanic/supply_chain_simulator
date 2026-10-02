@@ -48,6 +48,11 @@ EPISODES_EACH = 64
 # Over-order keeps asking, so it supplies most of the purchases.
 OVER_ORDER_WEIGHT = 8
 
+# A published schedule is hundreds of episodes. Holding every transition
+# dict until the end does not fit beside the frame. Smaller collects,
+# including the tests, stay one in-memory frame.
+_STREAM_EPISODE_MIN = 128
+
 # Textbook families, then the exploratory arm, then the two poor arms.
 # Over-order is last: its seed block follows the others.
 BEHAVIORS: tuple[str, ...] = (
@@ -283,7 +288,9 @@ def collect_transition_log(
     tick of each episode is omitted: it has no next observation.
 
     When ``path`` is set, the parquet is written there and a
-    ``<stem>.manifest.json`` sidecar is written beside it.
+    ``<stem>.manifest.json`` sidecar is written beside it. A schedule at
+    least ``_STREAM_EPISODE_MIN`` episodes long is written one episode at
+    a time and the returned frame is empty; the rows are in the parquet.
     """
     shape: dict[str, Any] = {}
     if episode_length is not None:
@@ -295,21 +302,26 @@ def collect_transition_log(
     config = collection_config(**shape)
     full_catalog = make_synthetic_catalog(config.active_catalog_size())
     catalog, evaluation_catalog = partition_catalog(full_catalog)
+    schedule = behavior_schedule(n_episodes_each, seed_offset)
+    if path is not None and len(schedule) >= _STREAM_EPISODE_MIN:
+        _collect_streaming(
+            schedule,
+            config,
+            catalog,
+            evaluation_catalog,
+            n_episodes_each=n_episodes_each,
+            seed_offset=seed_offset,
+            path=Path(path),
+        )
+        return pd.DataFrame(columns=list(COLUMNS))
 
     rows: list[dict[str, Any]] = []
     sampled: list[dict[str, Any]] = []
     capacity_bound: set[tuple[int, int]] = set()
     cash_bound: set[tuple[int, int]] = set()
-    for behavior, episode_seed in behavior_schedule(n_episodes_each, seed_offset):
-        spec = build_log_scenario(config, episode_seed, catalog)
-        policy, hyper = log_buyer(behavior, episode_seed, spec.delivery_lag)
-        episode_rows, cap_ticks, cash_ticks = _run_episode(
-            spec.scenario,
-            policy,
-            behavior=behavior,
-            episode_seed=episode_seed,
-            delivery_lag=spec.delivery_lag,
-        )
+    for behavior, episode_seed, episode_rows, policy, hyper, cap_ticks, cash_ticks in _iter_episodes(
+        schedule, config, catalog
+    ):
         rows.extend(episode_rows)
         sampled.append({"behavior": behavior, "policy": type(policy).__name__, **hyper})
         capacity_bound.update((episode_seed, tick) for tick in cap_ticks)
@@ -333,6 +345,132 @@ def collect_transition_log(
             cash_bound=cash_bound,
         )
     return frame
+
+
+def _iter_episodes(schedule: list[tuple[str, int]], config: TuningConfig, catalog):
+    for index, (behavior, episode_seed) in enumerate(schedule, start=1):
+        spec = build_log_scenario(config, episode_seed, catalog)
+        policy, hyper = log_buyer(behavior, episode_seed, spec.delivery_lag)
+        episode_rows, cap_ticks, cash_ticks = _run_episode(
+            spec.scenario,
+            policy,
+            behavior=behavior,
+            episode_seed=episode_seed,
+            delivery_lag=spec.delivery_lag,
+        )
+        if len(schedule) >= _STREAM_EPISODE_MIN:
+            print(
+                f"jepa collect {index}/{len(schedule)} seed {episode_seed} rows {len(episode_rows)}",
+                flush=True,
+            )
+        yield behavior, episode_seed, episode_rows, policy, hyper, cap_ticks, cash_ticks
+
+
+class _CoverageTally:
+    """Row shares that ``state_coverage`` would report for the concatenated log."""
+
+    def __init__(self) -> None:
+        self.rows = 0
+        self.nonzero = 0
+        self.low = 0
+        self.high = 0
+        self.capacity = 0
+        self.cash = 0
+
+    def add(
+        self,
+        episode_rows: list[dict],
+        cap_ticks: set[int],
+        cash_ticks: set[int],
+    ) -> None:
+        by_tick: dict[int, list[dict]] = {}
+        for row in episode_rows:
+            self.rows += 1
+            if float(row["filled_qty"]) > 0:
+                self.nonzero += 1
+            if float(row["on_hand"]) == 0.0:
+                self.low += 1
+            by_tick.setdefault(int(row["tick"]), []).append(row)
+        for tick, group in by_tick.items():
+            shelf = sum(float(row["on_hand"]) for row in group)
+            for row in group:
+                capacity = float(row["capacity"])
+                if capacity > 0.0 and shelf >= 0.5 * capacity:
+                    self.high += 1
+            if tick in cap_ticks:
+                self.capacity += len(group)
+            if tick in cash_ticks:
+                self.cash += len(group)
+
+    def fraction(self) -> float:
+        if self.rows == 0:
+            return 0.0
+        return self.nonzero / self.rows
+
+    def coverage(self) -> dict[str, float]:
+        keys = ("low_inventory", "high_inventory", "capacity_bound", "cash_bound")
+        if self.rows == 0:
+            return {key: 0.0 for key in keys}
+        n = self.rows
+        return {
+            "low_inventory": self.low / n,
+            "high_inventory": self.high / n,
+            "capacity_bound": self.capacity / n,
+            "cash_bound": self.cash / n,
+        }
+
+
+def _collect_streaming(
+    schedule: list[tuple[str, int]],
+    config: TuningConfig,
+    catalog,
+    evaluation_catalog,
+    *,
+    n_episodes_each: int,
+    seed_offset: int,
+    path: Path,
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sampled: list[dict[str, Any]] = []
+    tally = _CoverageTally()
+    writer: pq.ParquetWriter | None = None
+    try:
+        for behavior, _episode_seed, episode_rows, policy, hyper, cap_ticks, cash_ticks in _iter_episodes(
+            schedule, config, catalog
+        ):
+            sampled.append({"behavior": behavior, "policy": type(policy).__name__, **hyper})
+            tally.add(episode_rows, cap_ticks, cash_ticks)
+            if not episode_rows:
+                continue
+            part = pd.DataFrame(episode_rows, columns=list(COLUMNS))
+            table = pa.Table.from_pandas(part, preserve_index=False)
+            if writer is None:
+                writer = pq.ParquetWriter(path, table.schema)
+            elif table.schema != writer.schema:
+                table = table.cast(writer.schema)
+            writer.write_table(table)
+    finally:
+        if writer is not None:
+            writer.close()
+    if writer is None:
+        pd.DataFrame(columns=list(COLUMNS)).to_parquet(path, index=False)
+    _write_manifest(
+        path,
+        pd.DataFrame(columns=list(COLUMNS)),
+        config,
+        catalog,
+        evaluation_catalog=evaluation_catalog,
+        n_episodes_each=n_episodes_each,
+        seed_offset=seed_offset,
+        sampled=sampled,
+        capacity_bound=set(),
+        cash_bound=set(),
+        nonzero_order_fraction=tally.fraction(),
+        state_coverage_report=tally.coverage(),
+    )
 
 
 def _git_sha() -> str | None:
@@ -414,18 +552,31 @@ def _write_manifest(
     sampled: list[dict[str, Any]],
     capacity_bound: set[tuple[int, int]],
     cash_bound: set[tuple[int, int]],
+    nonzero_order_fraction: float | None = None,
+    state_coverage_report: dict[str, float] | None = None,
 ) -> None:
     """Sidecar of every parameter that produced ``frame``.
 
     ``nonzero_order_fraction`` is the share of rows whose filled quantity
     is non-zero: the order Allocation realised, not the request.
     ``holding_rate`` is one number. The log is not a holding-rate sweep.
+    A streamed collect passes the two shares it already counted and an
+    empty frame.
     """
     schedule = behavior_schedule(n_episodes_each, seed_offset)
-    if len(frame) == 0:
-        fraction = 0.0
+    if nonzero_order_fraction is None:
+        if len(frame) == 0:
+            fraction = 0.0
+        else:
+            fraction = float((frame["filled_qty"] > 0).mean())
     else:
-        fraction = float((frame["filled_qty"] > 0).mean())
+        fraction = float(nonzero_order_fraction)
+    if state_coverage_report is None:
+        coverage = state_coverage(
+            frame, capacity_bound=capacity_bound, cash_bound=cash_bound
+        )
+    else:
+        coverage = state_coverage_report
     seeds = [seed for _behavior, seed in schedule]
     # Local import: eval does not import the log, but src.jepa does, so a
     # module-level import here cycles through the package init.
@@ -461,9 +612,7 @@ def _write_manifest(
         "harsh_disruption": harsh_disruption_params().to_dict(),
         "protocols": protocols,
         "behavior_mixture": _mixture_manifest(sampled),
-        "state_coverage": state_coverage(
-            frame, capacity_bound=capacity_bound, cash_bound=cash_bound
-        ),
+        "state_coverage": coverage,
         "git_sha": _git_sha(),
         "nonzero_order_fraction": fraction,
     }

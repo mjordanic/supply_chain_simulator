@@ -715,6 +715,36 @@ def test_planning_depth_varies_across_log_episodes():
     assert all(depth > high for depth in depths["over_order"])
 
 
+def _cell(value: object) -> object:
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+
+def test_streamed_collect_matches_the_in_memory_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    kwargs = {
+        "n_episodes_each": 1,
+        "episode_length": 3,
+        "k_active": 2,
+        "delivery_lag": 3,
+        "seed_offset": 14_000_000,
+    }
+    eager_path = tmp_path / "eager.parquet"
+    eager = collect_transition_log(path=eager_path, **kwargs)
+    monkeypatch.setattr("src.jepa.log._STREAM_EPISODE_MIN", 1)
+    stream_path = tmp_path / "stream.parquet"
+    returned = collect_transition_log(path=stream_path, **kwargs)
+    assert returned.empty
+    loaded = pd.read_parquet(stream_path)
+    assert list(loaded.columns) == list(eager.columns)
+    assert len(loaded) == len(eager)
+    for column in eager.columns:
+        assert [_cell(value) for value in loaded[column]] == [_cell(value) for value in eager[column]]
+    eager_manifest = json.loads(eager_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    stream_manifest = json.loads(stream_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    assert stream_manifest == eager_manifest
+
+
 def test_published_log_uses_one_holding_rate():
     cfg = collection_config()
     assert cfg.holding_rate == 0.01
