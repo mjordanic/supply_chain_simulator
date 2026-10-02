@@ -27,6 +27,7 @@ import pandas as pd
 from src.jepa.dynamics import (
     OracleDynamics,
     RolloutAccuracy,
+    apply_logged_fill_rate,
     fit_least_squares_dynamics,
     held_out_rollout_accuracy,
     rollout_beats_baseline,
@@ -1033,7 +1034,11 @@ def score_rollout_gate(
 
     The floor does not keep ``frame``. A caller that drops ``frame``
     before the profit episodes does not hold the log for that scoring.
+    Both predictors take their fill rate from this log, so a checkpoint
+    saved under the old quantity-weighted ratio does not keep it.
     """
+    apply_logged_fill_rate(latent.dynamics, frame)
+    apply_logged_fill_rate(direct.dynamics, frame)
     accuracy = held_out_rollout_accuracy(latent.dynamics, direct.dynamics, frame)
     destination = Path(directory)
     destination.mkdir(parents=True, exist_ok=True)

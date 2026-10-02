@@ -233,16 +233,18 @@ anti-collapse penalty. Probes decode next on-hand, the next arrival-age profile,
 from a stopped embedding and do not train the encoder. The planner sums that profile when it
 scores inventory position. `fit(epochs=N)` takes N shuffled passes of 256-row minibatches over
 the training episodes. A fifth of the episodes — at least one, when two or more exist — is held
-out whole. Early stopping watches that holdout and restores the best epoch. The loss curve is
-written under `runs/jepa-replenishment/fit/`. The target encoder's EMA decay is set from the
+out whole. Early stopping watches that holdout and restores the best epoch. The fit command
+writes the loss curve under `runs/jepa-replenishment/fit/`. A fit that is not given a directory
+does not write one. The target encoder's EMA decay is set from the
 minibatches in one pass, so the epoch early stopping keeps has already left five percent of
 the initial target. `decide` scores `budget` cover proposals (`budget` defaults to 64;
 smoke runs use 4) with factored cross-entropy over per-SKU covers, rations each one, and
 places the grant with the highest imagined score over `horizon_multiple * delivery_lag` steps
 (`horizon_multiple` defaults to 4). Priority is the marginal imagined profit per unit of shared capacity.
 `ration="permutation"` draws one order from `policy_rng`. Search randomness is `policy_seed`.
-Imagined arrivals and imagined purchase cash follow the fill rate fit from the log
-(`filled_qty` / `requested_qty`); the emitted order is the full grant. Each
+Imagined arrivals and imagined purchase cash follow the fill rate of the textbook
+arms in the log (`filled_qty` / `requested_qty` on those rows). A log that names no
+textbook order uses every positive request. The emitted order is the full grant. Each
 step's imagined profit is revenue minus purchase cost minus `holding_rate × on-hand × unit_cost`
 (the cheapest direct supplier's `list_price`) minus the per-supplier order fee. The opening
 order uses the same cold-start pilot, cheapest-first split, and zero minimum-order floor as

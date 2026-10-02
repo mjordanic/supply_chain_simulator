@@ -243,3 +243,56 @@ def test_fit_reads_the_fill_rate_off_the_log():
     direct = fit_direct(frame, delivery_lag=LAG, epochs=0, seed=0)
     assert float(latent.dynamics.fill_rate) == 0.25
     assert float(direct.dynamics.fill_rate) == 0.25
+
+
+def test_fill_rate_follows_textbook_orders_not_the_coverage_arms():
+    """Over-order and exploratory requests are not the planner's grants.
+
+    Quantity-weighting them reports a fill near zero, and the planner
+    then imagines that a cover arrives empty. Textbook orders fill.
+    """
+    import pandas as pd
+
+    from src.jepa.plan import fit_direct, fit_latent
+
+    mixed = pd.DataFrame(
+        {
+            "episode_seed": [1, 1, 1],
+            "behavior": ["order_up_to", "exploratory", "over_order"],
+            "requested_qty": [10.0, 100.0, 1000.0],
+            "filled_qty": [10.0, 1.0, 1.0],
+        }
+    )
+    latent = fit_latent(mixed, delivery_lag=LAG, epochs=0, seed=0)
+    assert float(latent.dynamics.fill_rate) == 1.0
+
+    coverage_only = mixed[mixed["behavior"] != "order_up_to"]
+    direct = fit_direct(coverage_only, delivery_lag=LAG, epochs=0, seed=0)
+    assert abs(float(direct.dynamics.fill_rate) - (2.0 / 1100.0)) < 1e-6
+
+
+def test_rollout_gate_replaces_a_crushed_fill_rate(tmp_path):
+    """A checkpoint fitted on the old ratio must not keep it into the eval."""
+    import pandas as pd
+
+    from src.jepa.eval import score_rollout_gate
+    from src.jepa.plan import fit_direct, fit_latent
+
+    frame = pd.DataFrame(
+        {
+            "episode_seed": [1, 1],
+            "behavior": ["order_up_to", "over_order"],
+            "requested_qty": [4.0, 400.0],
+            "filled_qty": [4.0, 1.0],
+        }
+    )
+    latent = fit_latent(frame, delivery_lag=LAG, epochs=0, seed=0)
+    direct = fit_direct(frame, delivery_lag=LAG, epochs=0, seed=0)
+    latent.dynamics.fill_rate.fill_(0.001)
+    direct.dynamics.fill_rate.fill_(0.001)
+    try:
+        score_rollout_gate(latent, direct, frame, tmp_path)
+    except Exception:
+        pass
+    assert float(latent.dynamics.fill_rate) == 1.0
+    assert float(direct.dynamics.fill_rate) == 1.0

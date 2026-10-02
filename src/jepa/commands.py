@@ -269,12 +269,14 @@ def _fit(args: argparse.Namespace) -> None:
         PUBLISHED_EMBED_DIM,
     )
 
+    artifact_dir = Path(args.output).parent / "fit"
     latent = fit_latent(
         frame,
         seed=0,
         policy_seed=0,
         embed_dim=PUBLISHED_EMBED_DIM,
         depth=PUBLISHED_DEPTH,
+        artifact_dir=artifact_dir,
         **shared,
     )
     direct = fit_direct(
@@ -283,6 +285,7 @@ def _fit(args: argparse.Namespace) -> None:
         policy_seed=1,
         hidden_dim=PUBLISHED_DIRECT_HIDDEN,
         depth=PUBLISHED_DEPTH,
+        artifact_dir=artifact_dir,
         **shared,
     )
     save_planners(latent, direct, args.output)

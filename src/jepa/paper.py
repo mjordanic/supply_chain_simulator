@@ -490,7 +490,7 @@ def _method() -> list[str]:
         "",
         "The world model is per SKU. It is conditioned on the quantity",
         "Allocation filled. The planner imagines that quantity as the grant",
-        "times the log's fill rate, and the emitted order stays the full grant.",
+        "times the textbook arms' fill rate, and the emitted order stays the full grant.",
         "The encoder sees on-hand, an arrival-age",
         "profile, a sales window of its own length rather than the delivery",
         "lead time, cash, capacity, and that lead time. The Market",

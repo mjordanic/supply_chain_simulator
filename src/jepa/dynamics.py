@@ -15,8 +15,9 @@ profile, and sales over the step. Probe losses do not update the encoder.
 
 ``fit(epochs=N)`` takes N shuffled minibatch passes over the training
 episodes. A fraction of episodes is held out whole. Early stopping
-watches that holdout and restores the best epoch. The loss curve is
-written under ``runs/jepa-replenishment/fit/``. The EMA decay is set from the
+watches that holdout and restores the best epoch. The fit command writes
+the loss curve under ``runs/jepa-replenishment/fit/``. A ``fit`` call writes
+that curve only when given a directory. The EMA decay is set from the
 minibatches in one pass, so the epoch early stopping keeps has already
 left only ``EMA_INIT_SHARE`` of the target encoder's initial weights.
 """
@@ -77,14 +78,38 @@ ARRIVAL_AGE_SLOTS = 10
 PLANNING_HORIZON_MULTIPLE = 4
 
 
+# Same four names as ``log.TEXTBOOK_BEHAVIORS``. The planner's grant is
+# ``cover × rate × delivery_lag`` with cover in ``{0, 1, 2, 4}``, which is
+# a textbook order. Exploratory planning depth and the over-order arm ask
+# for more than that, and those requests do not fill.
+_PLANNER_FILL_BEHAVIORS = frozenset(
+    {
+        "order_up_to",
+        "reorder_point",
+        "periodic_order_up_to",
+        "periodic_reorder",
+    }
+)
+
+
 def _fill_ratio(frame: pd.DataFrame) -> float:
-    """Share of requested units Allocation actually filled.
+    """Share of requested units Allocation filled, on orders the planner emits.
 
     A zero request is not a fill. Missing columns, or a log that never
     ordered, leave the rate at 1 so the planner still imagines a whole arrival.
+
+    When the log names behaviours and a textbook arm placed an order, the
+    rate is those rows only. A quantity-weighted ratio over the whole log
+    is the over-order arm's unfilled requests, and the planner then treats
+    a cover as an empty arrival. A log with no textbook order uses every
+    positive request.
     """
     if frame.empty or "requested_qty" not in frame.columns or "filled_qty" not in frame.columns:
         return 1.0
+    if "behavior" in frame.columns:
+        textbook = frame[frame["behavior"].isin(_PLANNER_FILL_BEHAVIORS)]
+        if bool((textbook["requested_qty"] > 0).any()):
+            frame = textbook
     requested = frame["requested_qty"].to_numpy(dtype=float)
     filled = frame["filled_qty"].to_numpy(dtype=float)
     positive = requested > 0
@@ -96,6 +121,17 @@ def _fill_ratio(frame: pd.DataFrame) -> float:
     if ratio > 1.0:
         return 1.0
     return ratio
+
+
+def apply_logged_fill_rate(dynamics: Any, frame: pd.DataFrame) -> float:
+    """Set the planner's fill rate from ``frame``. A stored buffer can be stale."""
+    rate = _fill_ratio(frame)
+    current = getattr(dynamics, "fill_rate", None)
+    if isinstance(current, torch.Tensor):
+        current.fill_(rate)
+    else:
+        dynamics.fill_rate = rate
+    return rate
 
 
 def feature_dim(sales_window_length: int = SALES_WINDOW) -> int:
@@ -355,7 +391,12 @@ def _snapshot(module: nn.Module) -> dict[str, torch.Tensor]:
 
 
 def _write_fit_artifact(directory: str | Path | None, name: str, payload: dict[str, Any]) -> None:
-    destination = FIT_ARTIFACT_DIR if directory is None else Path(directory)
+    """Write one fit record. ``None`` writes nothing, so a test fit cannot
+    replace the published curve under ``FIT_ARTIFACT_DIR``.
+    """
+    if directory is None:
+        return
+    destination = Path(directory)
     destination.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, indent=2, allow_nan=False)
     (destination / name).write_text(text + "\n", encoding="utf-8")
@@ -642,7 +683,7 @@ class LatentDynamics(_ScaledDynamics):
         patience: int = EARLY_STOP_PATIENCE,
     ) -> None:
         torch.manual_seed(seed)
-        self.fill_rate.fill_(_fill_ratio(frame))
+        apply_logged_fill_rate(self, frame)
         if epochs <= 0 or frame.empty:
             return
         generator = _generator(seed)
@@ -1222,7 +1263,7 @@ class DirectDynamics(_ScaledDynamics):
         patience: int = EARLY_STOP_PATIENCE,
     ) -> None:
         torch.manual_seed(seed)
-        self.fill_rate.fill_(_fill_ratio(frame))
+        apply_logged_fill_rate(self, frame)
         if epochs <= 0 or frame.empty:
             return
         generator = _generator(seed)
