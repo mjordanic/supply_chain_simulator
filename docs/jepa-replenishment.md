@@ -226,6 +226,9 @@ unseen_sku_seed_max 15000031
 unseen_disruption_seeds 32
 unseen_disruption_seed_min 16000000
 unseen_disruption_seed_max 16000031
+holding_rate_sweep_seeds 160
+holding_rate_sweep_seed_min 13000000
+holding_rate_sweep_seed_max 13000031
 Means, intervals, and rollout R² below are printed to 6 decimal places.
 
 ## Rollout accuracy
@@ -335,10 +338,57 @@ rollout_r2_ols_mean -0.110273
 
 Holding-rate sweep (0.005, 0.01, 0.02, 0.05, 0.1; same weights, no new log): at each rate the frozen planner is scored against the OrderUpToPolicy tuned at that rate. The run reports no curve when the frozen planner's order sequence is identical across those rates on the tuner holdout.
 
-The holding-rate sweep was refused.
-sweep_refusal {"reason": "frozen planner order sequence is identical across holding rates; refusing to report the transfer curve", "refused": true}
+Held-out rollout accuracy, mean R² over the planning horizon:
+rollout_r2_latent_mean 0.432036
+rollout_r2_direct_mean 0.742028
+rollout_r2_ols_mean -0.110273
 
-This draft has no sweep means.
+sweep_rates (0.005, 0.01, 0.02, 0.05, 0.1)
+
+### holding_rate 0.005
+
+| arm | mean net_profit / initial_cash |
+| --- | --- |
+| ceiling | 1.351098 |
+| latent | 0.604627 |
+
+paired_interval -1.306742 -0.279629
+
+### holding_rate 0.01
+
+| arm | mean net_profit / initial_cash |
+| --- | --- |
+| ceiling | 1.021222 |
+| latent | 0.381458 |
+
+paired_interval -1.185105 -0.184952
+
+### holding_rate 0.02
+
+| arm | mean net_profit / initial_cash |
+| --- | --- |
+| ceiling | 0.425762 |
+| latent | -0.072456 |
+
+paired_interval -1.019959 -0.043683
+
+### holding_rate 0.05
+
+| arm | mean net_profit / initial_cash |
+| --- | --- |
+| ceiling | -1.385574 |
+| latent | -1.406850 |
+
+paired_interval -0.344415 0.426941
+
+### holding_rate 0.1
+
+| arm | mean net_profit / initial_cash |
+| --- | --- |
+| ceiling | -3.547822 |
+| latent | nan |
+
+paired_interval nan nan
 
 
 ## Comparison warnings
@@ -348,68 +398,70 @@ Copied from `synthetic/comparison_warnings.json`.
 {
   "in_distribution": [
     "never_order and least_squares correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and latent correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and direct correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and latent correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and direct correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
+    "never_order and latent correlate at 0.9987 across seeds and are not a distinct comparison",
+    "never_order and direct correlate at 0.9956 across seeds and are not a distinct comparison",
+    "never_order and permutation correlate at 0.9987 across seeds and are not a distinct comparison",
+    "never_order and fair_share correlate at 0.9987 across seeds and are not a distinct comparison",
+    "least_squares and latent correlate at 0.9987 across seeds and are not a distinct comparison",
+    "least_squares and direct correlate at 0.9956 across seeds and are not a distinct comparison",
+    "least_squares and permutation correlate at 0.9987 across seeds and are not a distinct comparison",
+    "least_squares and fair_share correlate at 0.9987 across seeds and are not a distinct comparison",
     "order_up_to and reorder_point correlate at 0.9980 across seeds and are not a distinct comparison",
     "order_up_to and periodic_reorder correlate at 0.9942 across seeds and are not a distinct comparison",
     "reorder_point and periodic_reorder correlate at 0.9929 across seeds and are not a distinct comparison",
-    "latent and direct correlate at 1.0000 across seeds and are not a distinct comparison",
+    "latent and direct correlate at 0.9971 across seeds and are not a distinct comparison",
     "latent and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
     "latent and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
-    "direct and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "direct and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
+    "direct and permutation correlate at 0.9972 across seeds and are not a distinct comparison",
+    "direct and fair_share correlate at 0.9972 across seeds and are not a distinct comparison",
     "permutation and fair_share correlate at 1.0000 across seeds and are not a distinct comparison"
   ],
   "unseen_sku": [
     "never_order and least_squares correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and latent correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and direct correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and latent correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and direct correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
+    "never_order and latent correlate at 0.9997 across seeds and are not a distinct comparison",
+    "never_order and direct correlate at 0.9917 across seeds and are not a distinct comparison",
+    "never_order and permutation correlate at 0.9996 across seeds and are not a distinct comparison",
+    "never_order and fair_share correlate at 0.9997 across seeds and are not a distinct comparison",
+    "least_squares and latent correlate at 0.9997 across seeds and are not a distinct comparison",
+    "least_squares and direct correlate at 0.9917 across seeds and are not a distinct comparison",
+    "least_squares and permutation correlate at 0.9996 across seeds and are not a distinct comparison",
+    "least_squares and fair_share correlate at 0.9997 across seeds and are not a distinct comparison",
     "anchor and periodic_reorder correlate at 0.9906 across seeds and are not a distinct comparison",
     "order_up_to and reorder_point correlate at 0.9974 across seeds and are not a distinct comparison",
     "reorder_point and periodic_reorder correlate at 0.9905 across seeds and are not a distinct comparison",
-    "latent and direct correlate at 1.0000 across seeds and are not a distinct comparison",
+    "latent and direct correlate at 0.9929 across seeds and are not a distinct comparison",
     "latent and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
     "latent and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
-    "direct and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "direct and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
-    "permutation and fair_share correlate at 1.0000 across seeds and are not a distinct comparison"
+    "direct and permutation correlate at 0.9927 across seeds and are not a distinct comparison",
+    "direct and fair_share correlate at 0.9928 across seeds and are not a distinct comparison",
+    "permutation and fair_share correlate at 0.9999 across seeds and are not a distinct comparison"
   ],
   "unseen_disruption": [
     "never_order and least_squares correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and latent correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and direct correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "never_order and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and latent correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and direct correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "least_squares and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
+    "never_order and latent correlate at 0.9971 across seeds and are not a distinct comparison",
+    "never_order and direct correlate at 0.9976 across seeds and are not a distinct comparison",
+    "never_order and permutation correlate at 0.9971 across seeds and are not a distinct comparison",
+    "never_order and fair_share correlate at 0.9971 across seeds and are not a distinct comparison",
+    "least_squares and latent correlate at 0.9971 across seeds and are not a distinct comparison",
+    "least_squares and direct correlate at 0.9976 across seeds and are not a distinct comparison",
+    "least_squares and permutation correlate at 0.9971 across seeds and are not a distinct comparison",
+    "least_squares and fair_share correlate at 0.9971 across seeds and are not a distinct comparison",
     "anchor and order_up_to correlate at 0.9965 across seeds and are not a distinct comparison",
     "anchor and reorder_point correlate at 0.9972 across seeds and are not a distinct comparison",
     "anchor and periodic_reorder correlate at 0.9972 across seeds and are not a distinct comparison",
     "order_up_to and reorder_point correlate at 0.9987 across seeds and are not a distinct comparison",
     "order_up_to and periodic_reorder correlate at 0.9976 across seeds and are not a distinct comparison",
     "reorder_point and periodic_reorder correlate at 0.9990 across seeds and are not a distinct comparison",
-    "latent and direct correlate at 1.0000 across seeds and are not a distinct comparison",
+    "latent and direct correlate at 0.9991 across seeds and are not a distinct comparison",
     "latent and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
     "latent and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
-    "direct and permutation correlate at 1.0000 across seeds and are not a distinct comparison",
-    "direct and fair_share correlate at 1.0000 across seeds and are not a distinct comparison",
+    "direct and permutation correlate at 0.9991 across seeds and are not a distinct comparison",
+    "direct and fair_share correlate at 0.9991 across seeds and are not a distinct comparison",
     "permutation and fair_share correlate at 1.0000 across seeds and are not a distinct comparison"
   ],
-  "holding_rate_sweep": []
+  "holding_rate_sweep": [
+    "holding_rate 0.1: ceiling and latent correlate at 0.9984 across seeds and are not a distinct comparison"
+  ]
 }
 
 ## M5
