@@ -1,0 +1,280 @@
+"""Commands for the perfect-supplier experiment.
+
+    uv run python -m src.perfect_supplier collect --n-worlds 2000
+    uv run python -m src.perfect_supplier fit
+    uv run python -m src.perfect_supplier tune --n-trials 200
+    uv run python -m src.perfect_supplier eval --n-worlds 300
+    uv run python -m src.perfect_supplier shadow --n-worlds 20
+
+Every command takes ``--root`` (default ``runs/perfect-supplier``).
+``collect`` writes the behaviour log (split ``train``). ``fit`` trains the
+JEPA forecaster and the direct ablation on it. ``tune`` fits one parameter
+set per textbook family across ``tune`` worlds. ``eval`` runs every arm
+closed-loop on its own copy of each ``eval`` world. ``shadow`` drives each
+``eval`` world with one arm and logs what every other arm would have ordered.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from collections.abc import Callable
+from pathlib import Path
+
+import numpy as np
+from joblib import Parallel, delayed
+
+from src.perfect_supplier import data
+from src.perfect_supplier.behavior import sample_behavior
+from src.perfect_supplier.forecast import MovingAverageForecaster, OracleForecaster
+from src.perfect_supplier.planner import Planner
+from src.perfect_supplier.sim import Decision, simulate
+from src.perfect_supplier.textbook import FAMILIES, TextbookParams, TextbookPolicy
+from src.perfect_supplier.world import World, demand_path, sample_world, world_seed
+
+PART_SIZE = 50
+
+
+def _workers() -> int:
+    return int(os.environ.get("PS_WORKERS", os.cpu_count() or 1))
+
+
+class NeverOrder:
+    name = "never_order"
+
+    def decide(self, obs) -> Decision:
+        return Decision(np.zeros(obs.n_products, dtype=np.int64))
+
+
+# ---------------------------------------------------------------------------
+# Arms
+# ---------------------------------------------------------------------------
+
+
+def tuned_params(root: Path) -> dict[str, TextbookParams]:
+    path = root / "tuning" / "best_params.json"
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text())
+    return {family: TextbookParams(**p) for family, p in raw.items()}
+
+
+def arm_factories(root: Path, arms: list[str]) -> dict[str, Callable[[World], object]]:
+    """Map arm name to ``world -> policy``. Model weights load once per worker."""
+    tuned = tuned_params(root)
+    factories: dict[str, Callable[[World], object]] = {}
+    for arm in arms:
+        if arm == "never_order":
+            factories[arm] = lambda w: NeverOrder()
+        elif arm.startswith("tuned_"):
+            family = arm.removeprefix("tuned_")
+            factories[arm] = lambda w, f=family, a=arm: TextbookPolicy(tuned[f], name=a)
+        elif arm.startswith("default_"):
+            family = arm.removeprefix("default_")
+            factories[arm] = lambda w, f=family, a=arm: TextbookPolicy(TextbookParams(family=f), name=a)
+        elif arm == "planner_oracle":
+            factories[arm] = lambda w: Planner(OracleForecaster(w), name="planner_oracle")
+        elif arm == "planner_moving_average":
+            factories[arm] = lambda w: Planner(MovingAverageForecaster(), name="planner_moving_average")
+        elif arm in ("jepa", "direct"):
+            factories[arm] = _model_factory(root, arm)
+        else:
+            raise ValueError(f"unknown arm {arm!r}")
+    return factories
+
+
+def _model_factory(root: Path, arm: str):
+    from src.perfect_supplier import jepa
+
+    cache: dict[str, object] = {}
+
+    def make(world: World):
+        if "model" not in cache:
+            import torch
+
+            torch.set_num_threads(1)
+            cache["model"] = jepa.load(root / "models" / f"{arm}.pt")
+        return Planner(jepa.JepaForecaster(cache["model"], name=arm), name=arm)
+
+    return make
+
+
+# ---------------------------------------------------------------------------
+# Batch runner
+# ---------------------------------------------------------------------------
+
+
+def _run_part(root: Path, split: str, method: str, part: int, seeds: list[int], make, shadow_makers=None):
+    frames, summaries = [], []
+    for seed in seeds:
+        world = sample_world(seed, split)
+        policy = make(world)
+        shadow = {n: m(world) for n, m in (shadow_makers or {}).items()}
+        result = simulate(world, policy, shadow=shadow)
+        result.frame["method"] = method
+        result.summary["method"] = method
+        result.summary["behavior"] = policy.name
+        if hasattr(policy, "describe"):
+            result.summary["behavior_params"] = json.dumps(policy.describe())
+        frames.append(result.frame.assign(behavior=policy.name))
+        summaries.append(result.summary)
+    data.write_part(root, split, method, part, frames, summaries)
+    return [s["score"] for s in summaries]
+
+
+def run_split(root: Path, split: str, method: str, seeds: list[int], make, shadow_makers=None) -> None:
+    data.clear(root, split, method)
+    chunks = [seeds[i : i + PART_SIZE] for i in range(0, len(seeds), PART_SIZE)]
+    # Small parts so every worker stays busy on slow (planner) arms.
+    if len(chunks) < 4 * _workers():
+        size = max(1, len(seeds) // (4 * _workers()))
+        chunks = [seeds[i : i + size] for i in range(0, len(seeds), size)]
+    scores = Parallel(n_jobs=_workers(), verbose=5)(
+        delayed(_run_part)(root, split, method, i, chunk, make, shadow_makers) for i, chunk in enumerate(chunks)
+    )
+    flat = [s for part in scores for s in part]
+    print(f"{split}/{method}: {len(flat)} worlds, mean score {np.mean(flat):.4f}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def collect(root: Path, n_worlds: int) -> None:
+    seeds = [world_seed("train", i) for i in range(n_worlds)]
+    run_split(root, "train", "behavior", seeds, lambda w: sample_behavior(w.world_seed))
+
+
+def _bank(root: Path, seeds: list[int]):
+    from src.perfect_supplier.jepa import bank_from_timeseries
+    from src.perfect_supplier.world import HISTORY_DAYS
+
+    frame = data.load_timeseries(
+        root, split="train", method="behavior", world_seed=seeds,
+        columns=["world_seed", "product", "day", "sales", "censored", "demand"],
+    )
+    history = {s: demand_path(sample_world(s, "train"))[:HISTORY_DAYS] for s in seeds}
+    return bank_from_timeseries(frame, history)
+
+
+def fit(root: Path, n_worlds: int | None, steps: int, val_fraction: float = 0.1) -> None:
+    import torch
+
+    from src.perfect_supplier import jepa
+
+    torch.set_num_threads(_workers())
+    summary = data.load_summary(root)
+    seeds = sorted(summary.loc[(summary["split"] == "train"), "world_seed"].unique().tolist())
+    if n_worlds:
+        seeds = seeds[:n_worlds]
+    rng = np.random.default_rng(0)
+    val = set(rng.choice(seeds, size=max(1, int(len(seeds) * val_fraction)), replace=False).tolist())
+    train_bank = _bank(root, [s for s in seeds if s not in val])
+    val_bank = _bank(root, sorted(val))
+    (root / "models").mkdir(parents=True, exist_ok=True)
+    (root / "models" / "val_worlds.json").write_text(json.dumps(sorted(int(s) for s in val)))
+    for arm, use_jepa in (("jepa", True), ("direct", False)):
+        print(f"fitting {arm}", flush=True)
+        config = jepa.JepaConfig(jepa=use_jepa, steps=steps)
+        model = jepa.fit(train_bank, val_bank, config, log_path=root / "models" / f"{arm}_fit.json")
+        jepa.save(model, root / "models" / f"{arm}.pt")
+
+
+def _tune_objective(params: TextbookParams, seeds: list[int]) -> float:
+    policy = TextbookPolicy(params)
+    return float(np.mean([simulate(sample_world(s, "tune"), policy).summary["score"] for s in seeds]))
+
+
+def tune(root: Path, n_trials: int, n_worlds: int) -> None:
+    import optuna
+
+    seeds = [world_seed("tune", i) for i in range(n_worlds)]
+    best: dict[str, dict] = {}
+    out = root / "tuning"
+    out.mkdir(parents=True, exist_ok=True)
+    for family in FAMILIES:
+
+        def objective(trial, family=family):
+            params = TextbookParams(
+                family=family,
+                cover_horizon_ticks=trial.suggest_int("cover_horizon_ticks", 1, 28),
+                safety_lead_pct_of_lag=trial.suggest_float("safety_lead_pct_of_lag", 0.0, 2.0),
+                stockout_safety_bonus_pct_of_lag=trial.suggest_float("stockout_safety_bonus_pct_of_lag", 0.0, 1.5),
+                review_interval=(
+                    trial.suggest_int("review_interval", 1, 14) if family.startswith("periodic") else None
+                ),
+                demand_window=trial.suggest_int("demand_window", 2, 42),
+            )
+            return _tune_objective(params, seeds)
+
+        study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=0))
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        study.optimize(objective, n_trials=n_trials, n_jobs=_workers())
+        params = dict(study.best_params)
+        params.setdefault("review_interval", None)
+        best[family] = {"family": family, **params}
+        study.trials_dataframe().to_parquet(out / f"{family}_trials.parquet")
+        print(f"{family}: best {study.best_value:.4f} {params}", flush=True)
+    (out / "best_params.json").write_text(json.dumps(best, indent=1))
+
+
+DEFAULT_EVAL_ARMS = [
+    "jepa",
+    "direct",
+    "planner_moving_average",
+    "planner_oracle",
+    "tuned_order_up_to",
+    "tuned_reorder_point",
+    "tuned_periodic_order_up_to",
+    "tuned_periodic_reorder",
+    "default_order_up_to",
+    "never_order",
+]
+
+
+def evaluate(root: Path, n_worlds: int, arms: list[str], offset: int = 0) -> None:
+    seeds = [world_seed("eval", offset + i) for i in range(n_worlds)]
+    for arm, make in arm_factories(root, arms).items():
+        run_split(root, "eval", arm, seeds, make)
+
+
+def shadow(root: Path, n_worlds: int, driver: str, arms: list[str]) -> None:
+    seeds = [world_seed("eval", 100_000 + i) for i in range(n_worlds)]
+    makers = arm_factories(root, [driver, *[a for a in arms if a != driver]])
+    drive = makers.pop(driver)
+    run_split(root, "shadow", driver, seeds, drive, shadow_makers=makers)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="python -m src.perfect_supplier")
+    parser.add_argument("--root", type=Path, default=data.DEFAULT_ROOT)
+    sub = parser.add_subparsers(dest="command", required=True)
+    c = sub.add_parser("collect")
+    c.add_argument("--n-worlds", type=int, default=2000)
+    f = sub.add_parser("fit")
+    f.add_argument("--n-worlds", type=int, default=None)
+    f.add_argument("--steps", type=int, default=20_000)
+    t = sub.add_parser("tune")
+    t.add_argument("--n-trials", type=int, default=200)
+    t.add_argument("--n-worlds", type=int, default=64)
+    e = sub.add_parser("eval")
+    e.add_argument("--n-worlds", type=int, default=300)
+    e.add_argument("--offset", type=int, default=0)
+    e.add_argument("--arms", nargs="+", default=DEFAULT_EVAL_ARMS)
+    s = sub.add_parser("shadow")
+    s.add_argument("--n-worlds", type=int, default=20)
+    s.add_argument("--driver", default="jepa")
+    s.add_argument("--arms", nargs="+", default=["jepa", "planner_oracle", "tuned_order_up_to", "tuned_periodic_order_up_to"])
+    args = parser.parse_args(argv)
+    if args.command == "collect":
+        collect(args.root, args.n_worlds)
+    elif args.command == "fit":
+        fit(args.root, args.n_worlds, args.steps)
+    elif args.command == "tune":
+        tune(args.root, args.n_trials, args.n_worlds)
+    elif args.command == "eval":
+        evaluate(args.root, args.n_worlds, args.arms, args.offset)
+    elif args.command == "shadow":
+        shadow(args.root, args.n_worlds, args.driver, args.arms)

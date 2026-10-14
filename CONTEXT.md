@@ -592,13 +592,26 @@ was structurally single-node). `metrics.py` becomes DataFrame-native; `src/tunin
 are deleted in favour of building the frame from the run log. The rewrite must be **value-
 preserving**: existing KPI test values are the tuner/RL objective and must not shift.
 
-**Realized profit** (the single profit number, once holding/fee charging is implemented — ADR 0019)
-= change in **equity** (cash + inventory-at-cost + in-transit-at-cost). Exact, conserved by the
-cash-flow model (ADR 0013). Headline profit in 02 / 02a. ADR 0013 Rules 4–5 already mandate that
-`IntermediateNode` **holding cost** and **order fee** are charged against the node's balance and "go
-to the void" (credited to no node) — but the engine does **not yet implement this** (a conformance
-gap; `src/sim/node.py` charges neither, and no test asserts the Rule 5 identity, which holds
-trivially while both are 0). ADR 0019 closes the gap with these mechanics:
+**Perfect supplier** (`src/perfect_supplier/`, ADR 0033)
+The one supplier of the perfect-supplier shop. It never shorts an order for lack of stock, a minimum order, a disruption, or a markup. The shop's cash and free shelf still clamp the order, and that clamped quantity arrives in full after the delivery lag. Free shelf is capacity minus on-hand minus in-transit, so an arrival never overflows the shelf.
+_Avoid_: supplier fill rate. That is the factory's own short.
+
+**Perfect-supplier world** (`src/perfect_supplier/world.py`)
+The world of the simpler replenishment experiment, run on a lean single-shop simulator that matches `src/sim`'s tick order (arrivals, sales, decide, holding). Four products, all active for the whole run, no lifecycle, market, or disruptions. Unit cost 10, price 20, order fee 50 once per day the shop orders. Per world: delivery lag uniform in 2–7 days (same for every product), holding rate one of `0.25/365`, `1/365`, `0.01` per day, demand CV one of 0.1, 0.3, 0.6, a product mean log-uniform in 5–20 units a day, a shop-wide weekday profile, and per-product level shifts at Poisson times. Opening on-hand is one lag of mean demand; the shelf holds `(2 × lag + 14)` days of total mean demand; opening cash buys `lag + 7` days of it. The shop sees `HISTORY_DAYS` (56) uncensored days of sales before day 0. Lost sales do not change demand, so one `world_seed` gives every policy the same demand path.
+
+**Perfect-supplier buyer** (`src/perfect_supplier/planner.py`)
+The learned policy for that world. Inventory, arrivals, cash, holding, the fee, and the shelf ration are the simulator's exact recursion; only demand is learned, by the JEPA forecaster. Each day it imagines 64 demand paths and scores every joint reorder plan `(cover R, service quantile z)` by the mean change in equity over 35 days. The winning plan's day-0 order is placed. The same planner run with the moving-average, direct, or oracle forecast isolates what the forecast is worth.
+_Avoid_: world model. The inventory mechanics are not what this buyer learns.
+
+**Margin capture** (the perfect-supplier `score`)
+Change in **equity** over the episode divided by `(price − unit_cost) × total demand`. 1.0 would sell every demanded unit with no fee and no holding cost. Ranks arms world by world.
+
+**Equity**
+Cash plus on-hand at catalog unit cost plus in-transit at catalog unit cost. The perfect-supplier replenishment experiment ranks a policy on the change in equity over the episode. Holding cost has already left cash, so stock left at the horizon is worth its cost and was not free to hold.
+_Avoid_: net profit. Net profit is the cash change only: revenue − order cost − holding cost − order fees.
+
+**Realized profit** (ADR 0019)
+The change in **equity**. Exact, conserved by the cash-flow model (ADR 0013). The engine charges holding cost and the order fee to the void (ADR 0019). The published JEPA comparison ranked `net_profit / initial_cash` instead; that column stays a cash report. Mechanics:
 - **Holding cost** — each tick, `cash -= Σ_pid closing_on_hand[pid] × holding_rate × unit_cost[pid]`,
   on the end-of-tick snapshot, valued at catalog `unit_cost`, charged in the final tick phase.
 - **Order fee** — `order_fee` once per `(node, supplier)` purchase order per tick (a multi-SKU PO to
@@ -661,3 +674,9 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0030](docs/adr/0030-market-seasonal-cycle-read-time.md) — Seasonal cycle is a read-time multiplier on the demand level; `abs(cycle_amp) < 1`. Supersedes CRN baselines that depended on the integrated cycle. **Accepted.**
 - [ADR 0031](docs/adr/0031-supply-side-scarcity.md) — Replenishment episodes have several factories per SKU, a sampled markup, demand-relative supply, and differing lead times. Realised supplier fill rate is on the run log. Routing stays outside the learned action. **Accepted.** Amends ADR 0013 rule 3 for those episodes.
 - [ADR 0032](docs/adr/0032-binding-tightness.md) — Tuning episodes size shop capacity and opening cash from separate tightness factors times episode demand. Both factors are per-seed columns. **Accepted.** Replaces ADR 0009 decision (d) for those episodes. RL keeps log-uniform scale draws.
+- [ADR 0033](docs/adr/0033-perfect-supplier-experiment.md) — Simpler replenishment experiment: one perfect supplier, a lean simulator with engine parity, a JEPA demand forecaster under an exact-recursion planner, textbook rules tuned once across worlds. **Accepted.**
+
+## Flagged ambiguities
+
+- "Profit" was used for both **net profit** (cash change) and the change in **equity**. The perfect-supplier experiment ranks on the change in equity. Net profit stays a reported cash column.
+- "Full quantity" means the quantity Allocation accepted, not the quantity the policy asked for. Cash and free shelf can still reduce it.
