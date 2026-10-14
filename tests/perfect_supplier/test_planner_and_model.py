@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import pandas as pd
 import torch
 
@@ -86,3 +87,94 @@ def test_storage_keeps_columns_that_only_one_method_writes(tmp_path):
     assert {"x", "dec_y"} <= set(both.columns) and len(both) == 4
     assert len(data.load_timeseries(tmp_path, method="b", world_seed=2)) == 1
     assert set(data.load_summary(tmp_path)["method"]) == {"a", "b"}
+
+
+def test_eoq_without_fee_orders_up_to_the_reorder_point():
+    from src.perfect_supplier.textbook import EoqParams, EoqPolicy
+
+    obs = _obs(on_hand=[0, 0], pipeline=np.zeros((2, 2)), cash=1e9, capacity=10**9, holding_rate=0.001)
+    obs.order_fee = 0.0
+    decision = EoqPolicy(EoqParams(service_z=0.0, demand_window=7)).decide(obs)
+    np.testing.assert_allclose(decision.qty, np.rint(decision.info["s"]))
+    assert (decision.info["S"] == decision.info["s"]).all()
+
+
+def test_planner_ration_matches_the_sim():
+    from src.perfect_supplier.planner import _ration
+    from src.perfect_supplier.sim import ration
+
+    rng = np.random.default_rng(0)
+    want = rng.integers(0, 40, (6, 50, 4)).astype(float)
+    free = rng.integers(-5, 120, (6, 50)).astype(float)
+    budget = rng.uniform(-100, 1500, (6, 50))
+    got = _ration(want, free, budget, 10.0)
+    for c in range(6):
+        for m in range(50):
+            np.testing.assert_array_equal(got[c, m], ration(want[c, m].astype(np.int64), free[c, m], budget[c, m], 10.0))
+
+
+@pytest.mark.parametrize("cash_scale,cap_scale", [(100, 100), (0.3, 1), (100, 0.6)])
+def test_imagined_equity_matches_the_sim_on_the_realised_demand(cash_scale, cap_scale):
+    """Each candidate plan, imagined on the true demand path, equals a real run of that plan."""
+    import dataclasses
+
+    from src.perfect_supplier.sim import Decision
+    from src.perfect_supplier.world import demand_path
+
+    w = sample_world(3000001, "eval")
+    w = dataclasses.replace(w, initial_cash=w.initial_cash * cash_scale, capacity=int(w.capacity * cap_scale))
+    demand = demand_path(w)
+    future = demand[HISTORY_DAYS + 1 : HISTORY_DAYS + 1 + HORIZON].astype(float)
+
+    class Capture:
+        name = "capture"
+
+        def decide(self, obs):
+            self.obs = obs
+            return Decision(np.zeros(obs.n_products, dtype=np.int64))
+
+    capture = Capture()
+    simulate(dataclasses.replace(w, n_days=1), capture, demand=demand)
+    planner = Planner(None, name="x", n_paths=4)
+    paths = np.repeat(future[None], 4, axis=0)
+    score, first = planner.imagine(capture.obs, paths)
+    reorder, targets = planner._levels(paths, w.delivery_lag)
+    for c in range(0, len(planner.review), 5):
+
+        class Rule:
+            name = "rule"
+
+            def decide(self, o):
+                pos = o.position.astype(float)
+                if (pos < reorder[c, o.day]).any():
+                    return Decision(np.maximum(np.rint(targets[c, o.day] - pos), 0).astype(np.int64))
+                return Decision(np.zeros(o.n_products, dtype=np.int64))
+
+        day = simulate(dataclasses.replace(w, n_days=HORIZON), Rule(), demand=demand).frame.groupby("day")
+        first_day = day.first().iloc[0]
+        before_order = first_day["equity_close"] + first_day["fee_paid"] + first_day["holding_cost"]
+        real = day.first()["equity_close"].iloc[-1] - before_order
+        assert real == pytest.approx(score[c], abs=1e-6)
+        np.testing.assert_array_equal(day.get_group(0)["filled"].to_numpy(), first[c])
+
+
+def test_joint_eoq_orders_every_product_when_one_is_low():
+    from src.perfect_supplier.textbook import EoqParams, EoqPolicy
+
+    obs = _obs(on_hand=[0, 5000], cash=1e9, capacity=10**9)
+    alone = EoqPolicy(EoqParams(demand_window=7)).decide(obs).qty
+    joint = EoqPolicy(EoqParams(demand_window=7, joint=True)).decide(obs).qty
+    assert alone[0] > 0 and alone[1] == 0
+    assert joint[0] > 0 and joint[1] == 0  # product 1 is far above its order-up-to level
+    obs2 = _obs(on_hand=[0, 40], cash=1e9, capacity=10**9)
+    assert (EoqPolicy(EoqParams(demand_window=7, joint=True)).decide(obs2).qty > 0).all()
+    assert EoqPolicy(EoqParams(demand_window=7)).decide(obs2).qty[1] == 0
+
+
+def test_eval_offset_adds_to_earlier_worlds(tmp_path):
+    from src.perfect_supplier.experiment import evaluate
+
+    evaluate(tmp_path, 3, ["never_order"], "base", None, offset=0)
+    evaluate(tmp_path, 2, ["never_order"], "base", None, offset=3)
+    seeds = sorted(data.load_summary(tmp_path)["world_seed"])
+    assert seeds == list(range(3_000_000, 3_000_005))

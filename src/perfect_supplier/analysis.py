@@ -7,7 +7,9 @@ world. Plots take the frames from :mod:`src.perfect_supplier.data`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,6 +24,8 @@ LABELS = {
     "tuned_reorder_point": "tuned (s,Q)",
     "tuned_periodic_order_up_to": "tuned (R,S)",
     "tuned_periodic_reorder": "tuned (R,s,S)",
+    "tuned_eoq": "tuned EOQ (s,Q)",
+    "tuned_eoq_joint": "tuned joint EOQ",
     "default_order_up_to": "default (s,S)",
     "never_order": "never order",
 }
@@ -33,6 +37,14 @@ def bootstrap_ci(x: np.ndarray, n: int = 5000, alpha: float = 0.05, seed: int = 
     return float(np.quantile(means, alpha / 2)), float(np.quantile(means, 1 - alpha / 2))
 
 
+def _complete(m: pd.DataFrame) -> pd.DataFrame:
+    """Fail rather than silently compare arms on different worlds."""
+    missing = m.isna().sum()
+    if missing.any():
+        raise ValueError(f"arms missing eval worlds: {missing[missing > 0].to_dict()}")
+    return m
+
+
 def score_matrix(summary: pd.DataFrame, metric: str = "score", split: str = "eval") -> pd.DataFrame:
     s = summary[summary["split"] == split]
     return s.pivot_table(index="world_seed", columns="method", values=metric)
@@ -40,7 +52,7 @@ def score_matrix(summary: pd.DataFrame, metric: str = "score", split: str = "eva
 
 def paired_table(summary: pd.DataFrame, baseline: str, metric: str = "score", split: str = "eval") -> pd.DataFrame:
     """Per arm: mean metric, mean paired difference to ``baseline``, its 95% CI, and win rate."""
-    m = score_matrix(summary, metric, split).dropna()
+    m = _complete(score_matrix(summary, metric, split))
     rows = []
     for arm in m.columns:
         diff = (m[arm] - m[baseline]).to_numpy()
@@ -59,14 +71,37 @@ def paired_table(summary: pd.DataFrame, baseline: str, metric: str = "score", sp
     return pd.DataFrame(rows).set_index("arm").sort_values(f"mean_{metric}", ascending=False)
 
 
+def pairwise(summary: pd.DataFrame, pairs: Sequence[tuple[str, str]], split: str = "eval") -> pd.DataFrame:
+    """Mean paired score difference ``a - b`` in points, its 95% CI, and a's win rate, per pair."""
+    m = _complete(score_matrix(summary, split=split))
+    rows = []
+    for a, b in pairs:
+        d = (m[a] - m[b]).to_numpy()
+        lo, hi = bootstrap_ci(d)
+        rows.append(
+            {"arm": a, "vs": b, "diff (pts)": d.mean() * 100, "ci low": lo * 100, "ci high": hi * 100,
+             "win rate": float((d > 0).mean()), "n_worlds": len(d)}
+        )
+    return pd.DataFrame(rows)
+
+
+def best_textbook(root: str | Path) -> str:
+    """The tuned textbook arm with the best score on the tune worlds.
+
+    Chosen on tuning data, not on the eval worlds it is then compared on.
+    """
+    scores = json.loads((Path(root) / "tuning" / "best_scores.json").read_text())
+    return "tuned_" + max(scores, key=lambda f: scores[f]["tune_score"])
+
+
 def breakdown(summary: pd.DataFrame, split: str = "eval") -> pd.DataFrame:
     """Where each arm loses margin, as a share of the margin on all demand.
 
-    ``lost_sales + fees + holding`` is the gap between the score and 1, up to
-    the change in stock value at cost.
+    ``score + lost_sales + fees_share + holding_share`` is exactly 1: equity
+    values stock at cost, so only these three take margin away.
     """
     s = summary[summary["split"] == split].copy()
-    margin = s["revenue"] / (s["fill_rate_demand"].clip(lower=1e-9)) / s["price"] * (s["price"] - s["unit_cost"])
+    margin = s["total_demand"] * (s["price"] - s["unit_cost"])
     s["lost_sales"] = s["lost_units"] * (s["price"] - s["unit_cost"]) / margin
     s["fees_share"] = s["fees"] / margin
     s["holding_share"] = s["holding_cost"] / margin
@@ -76,7 +111,7 @@ def breakdown(summary: pd.DataFrame, split: str = "eval") -> pd.DataFrame:
 
 def plot_paired(summary: pd.DataFrame, baseline: str, arms: Sequence[str] | None = None, ax=None):
     """Box plot of world-by-world score differences to ``baseline``."""
-    m = score_matrix(summary).dropna()
+    m = _complete(score_matrix(summary))
     arms = [a for a in (arms or m.columns) if a != baseline]
     diffs = [(m[a] - m[baseline]).to_numpy() * 100 for a in arms]
     ax = ax or plt.subplots(figsize=(9, 0.5 * len(arms) + 1.5))[1]
@@ -89,7 +124,7 @@ def plot_paired(summary: pd.DataFrame, baseline: str, arms: Sequence[str] | None
 def plot_by_world_feature(summary: pd.DataFrame, baseline: str, feature: str, arms: Sequence[str], ax=None):
     """Mean paired difference to ``baseline`` for each value of a world feature."""
     s = summary[summary["split"] == "eval"]
-    m = score_matrix(summary).dropna()
+    m = _complete(score_matrix(summary))
     feat = s.drop_duplicates("world_seed").set_index("world_seed")[feature].reindex(m.index)
     if feat.nunique() > 8:
         feat = pd.qcut(feat, 4)

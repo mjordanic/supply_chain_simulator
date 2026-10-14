@@ -7,7 +7,7 @@ uncertain, and only demand is learned. Inventory mechanics are exact.
 | --- | --- |
 | `world.py` | samples a world (economics, opening state) and its demand path |
 | `sim.py` | the daily loop, in `src/sim`'s tick order; logs every day × product |
-| `textbook.py` | the four textbook rules, line for line with `src/sim/policy.py` |
+| `textbook.py` | the four textbook rules, line for line with `src/sim/policy.py`, and EOQ (s,Q) with a per-product or joint trigger |
 | `behavior.py` | the behaviour mixture that writes the training log |
 | `forecast.py` | oracle and moving-average demand forecasters |
 | `jepa.py` | JEPA quantile forecaster, censored pinball loss, training |
@@ -26,6 +26,20 @@ uv run python -m src.perfect_supplier shadow --n-worlds 12 --driver jepa
 
 Output lands under `runs/perfect-supplier/` (`timeseries/`, `summary/`,
 `models/`, `tuning/`). `notebooks/15-perfect-supplier.ipynb` reads it.
+
+Two variants take the order fee out of the comparison (`world.py`):
+`one_product` keeps product 0 of each base world; `no_fee` sets the fee to 0.
+They reuse the base forecasters, which learn demand only:
+
+```
+for V in one_product no_fee; do
+  uv run python -m src.perfect_supplier --variant $V tune
+  uv run python -m src.perfect_supplier --variant $V --model-root runs/perfect-supplier eval --n-worlds 500
+  uv run python -m src.perfect_supplier --variant $V --model-root runs/perfect-supplier shadow --n-worlds 12
+done
+```
+
+Output for a variant goes under `runs/perfect-supplier-<variant>/`.
 
 ## Result (500 eval worlds, 2026-10-14)
 

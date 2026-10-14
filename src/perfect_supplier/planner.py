@@ -47,6 +47,26 @@ def sample_paths(quantiles: np.ndarray, n_paths: int, rng: np.random.Generator) 
     return np.rint(v_lo + w * (v_hi - v_lo))
 
 
+def _ration(want: np.ndarray, free: np.ndarray, budget: np.ndarray, unit_cost: float) -> np.ndarray:
+    """:func:`src.perfect_supplier.sim.ration` on every (candidate, path) at once.
+
+    ``want`` is ``(C, M, P)``; ``free`` and ``budget`` are ``(C, M)``.
+    """
+    limit = np.minimum(np.maximum(free, 0), np.maximum(np.floor(budget / unit_cost + 1e-9), 0))
+    total = want.sum(axis=2)
+    over = total > limit
+    if not over.any():
+        return want
+    share = want * (limit / np.maximum(total, 1))[:, :, None]
+    out = np.floor(share)
+    rest = limit - out.sum(axis=2)
+    # Largest remainders first; ties go to the lower product index, as in the sim.
+    order = np.argsort(-(share - out), axis=2, kind="stable")
+    rank = np.argsort(order, axis=2, kind="stable")
+    out += rank < rest[:, :, None]
+    return np.where(over[:, :, None], out, want)
+
+
 class Planner:
     def __init__(
         self,
@@ -148,12 +168,7 @@ class Planner:
             due = (position < reorder[:, h, None, :]).any(axis=2)  # (C, M)
             if due.any():
                 want = np.maximum(np.rint(targets[:, h, None, :] - position), 0) * due[:, :, None]
-                free = obs.capacity - position.sum(axis=2)
-                budget = (cash - obs.order_fee) / obs.unit_cost
-                limit = np.maximum(np.minimum(free, budget), 0)
-                total = want.sum(axis=2)
-                scale = np.where(total > limit, limit / np.maximum(total, 1), 1.0)
-                qty = np.floor(want * scale[:, :, None])
+                qty = _ration(want, obs.capacity - position.sum(axis=2), cash - obs.order_fee, obs.unit_cost)
                 units = qty.sum(axis=2)
                 cash -= obs.unit_cost * units + obs.order_fee * (units > 0)
                 arriving[:, :, h + L - 1, :] += qty

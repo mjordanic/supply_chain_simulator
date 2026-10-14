@@ -245,7 +245,8 @@ def episode_summary(
     row["delta_equity"] = final_equity - initial_equity
     # Share of the margin on every demanded unit that ended up as equity.
     # 1.0 would sell all demand with no fee and no holding cost.
-    row["score"] = row["delta_equity"] / ((world.price - world.unit_cost) * float(frame["demand"].sum()))
+    row["total_demand"] = float(frame["demand"].sum())
+    row["score"] = row["delta_equity"] / ((world.price - world.unit_cost) * row["total_demand"])
     row["delta_equity_over_initial"] = row["delta_equity"] / initial_equity
     per_day = frame.groupby("day").first()
     row["net_profit"] = float(per_day["cash_close"].iloc[-1] - world.initial_cash)
@@ -253,7 +254,8 @@ def episode_summary(
     row["purchase_cost"] = float(per_day["purchase_cost"].sum())
     row["fees"] = float(per_day["fee_paid"].sum())
     row["holding_cost"] = float(per_day["holding_cost"].sum())
-    row["order_days"] = int((per_day["fee_paid"] > 0).sum())
+    # Days with any filled order; not fee_paid, which is 0 every day when the fee is 0.
+    row["order_days"] = int((frame.groupby("day")["filled"].sum() > 0).sum())
     row["fill_rate_demand"] = float(frame["sales"].sum() / max(frame["demand"].sum(), 1))
     row["lost_units"] = int(frame["lost"].sum())
     row["stockout_product_days"] = int((frame["lost"] > 0).sum())

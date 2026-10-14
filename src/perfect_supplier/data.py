@@ -11,12 +11,18 @@ loading the rest; ``load_summary`` concatenates every summary part.
 
 from __future__ import annotations
 
+import numbers
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import pandas as pd
 
 DEFAULT_ROOT = Path("runs/perfect-supplier")
+
+
+def variant_root(variant: str) -> Path:
+    """Run root of one world variant; ``base`` is :data:`DEFAULT_ROOT`."""
+    return DEFAULT_ROOT if variant == "base" else Path(f"{DEFAULT_ROOT}-{variant}")
 
 
 def _part_name(root: Path, split: str, method: str, part: int) -> tuple[Path, Path]:
@@ -70,11 +76,11 @@ def load_timeseries(
     def wanted(value):
         if value is None:
             return None
-        return {str(v) for v in ([value] if isinstance(value, (str, int)) else value)}
+        return {str(v) for v in ([value] if isinstance(value, (str, numbers.Integral)) else value)}
 
     splits, methods = wanted(split), wanted(method)
     seeds = None if world_seed is None else (
-        [world_seed] if isinstance(world_seed, int) else [int(s) for s in world_seed]
+        [int(world_seed)] if isinstance(world_seed, numbers.Integral) else [int(s) for s in world_seed]
     )
     filters = [("world_seed", "in", seeds)] if seeds is not None else None
     frames = []

@@ -52,3 +52,28 @@ def test_shelf_never_overflows():
     f = simulate(world, Fixed(10_000)).frame
     day = f.groupby("day")[["on_hand_open"]].sum()
     assert (day["on_hand_open"] <= world.capacity).all()
+
+
+def test_variants_share_the_base_world():
+    base = sample_world(9, "eval")
+    one = sample_world(9, "eval", variant="one_product")
+    free = sample_world(9, "eval", variant="no_fee")
+    assert one.n_products == 1 and free.order_fee == 0.0
+    assert (one.delivery_lag, one.cv, one.holding_rate) == (base.delivery_lag, base.cv, base.holding_rate)
+    assert (demand_path(one)[:, 0] == demand_path(base)[:, 0]).all()
+    assert (demand_path(free) == demand_path(base)).all()
+    assert one.capacity < base.capacity and one.initial_cash < base.initial_cash
+
+
+def test_order_days_count_orders_when_the_fee_is_zero():
+    world = sample_world(5, variant="no_fee")
+    summary = simulate(world, Fixed(1, every=7)).summary
+    assert summary["fees"] == 0.0
+    assert summary["order_days"] == len(range(0, world.n_days, 7))
+
+
+def test_fee_is_charged_once_per_order_day():
+    world = sample_world(5)
+    summary = simulate(world, Fixed(3, every=4)).summary
+    assert summary["order_days"] == len(range(0, world.n_days, 4))
+    assert summary["fees"] == world.order_fee * summary["order_days"]

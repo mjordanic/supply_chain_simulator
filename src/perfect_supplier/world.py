@@ -12,6 +12,12 @@ Demand for product ``p`` on day ``t`` is::
 ``U`` is uniform with mean 1 and coefficient of variation ``cv``; ``level`` is a
 piecewise-constant multiplier that jumps at Poisson times. ``weekday`` is a
 shop-wide day-of-week profile with mean 1.
+
+A ``variant`` removes the order fee as a source of difference between
+policies. ``one_product`` keeps product 0 of the base world (same lag, cv,
+holding rate, demand path); the fee then buys one product's order, so
+ordering products together cannot save fees. ``no_fee`` keeps all four
+products and sets the order fee to 0.
 """
 
 from __future__ import annotations
@@ -41,6 +47,8 @@ LEVEL_CLIP = (0.5, 2.0)
 # Seed blocks keep training, tuning, and evaluation worlds apart.
 SPLIT_SEED_OFFSET = {"train": 1_000_000, "tune": 2_000_000, "eval": 3_000_000}
 
+VARIANTS = ("base", "one_product", "no_fee")
+
 
 @dataclass(frozen=True)
 class World:
@@ -59,6 +67,7 @@ class World:
     unit_cost: float = UNIT_COST
     price: float = PRICE
     order_fee: float = ORDER_FEE
+    variant: str = "base"
 
     @property
     def n_products(self) -> int:
@@ -77,12 +86,20 @@ def world_seed(split: str, index: int) -> int:
     return SPLIT_SEED_OFFSET[split] + int(index)
 
 
-def sample_world(seed: int, split: str = "train", n_days: int = EPISODE_DAYS) -> World:
-    """Draw the economics and opening state of one world from ``seed``."""
+def sample_world(seed: int, split: str = "train", n_days: int = EPISODE_DAYS, variant: str = "base") -> World:
+    """Draw the economics and opening state of one world from ``seed``.
+
+    Every variant draws the base world's random numbers, so a seed gives the
+    same lag, cv, holding rate, and product-0 demand in every variant.
+    """
+    if variant not in VARIANTS:
+        raise ValueError(f"unknown variant {variant!r}")
     rng = np.random.default_rng([seed, 0])
     lag = int(rng.integers(LAG_RANGE[0], LAG_RANGE[1] + 1))
     lo, hi = np.log(MEAN_RANGE)
     means = np.exp(rng.uniform(lo, hi, N_PRODUCTS))
+    if variant == "one_product":
+        means = means[:1]
     total = float(means.sum())
     # Opening stock covers about one delivery lag; the shelf holds about
     # (2 * lag + 14) days of total mean demand; opening cash buys one
@@ -103,6 +120,8 @@ def sample_world(seed: int, split: str = "train", n_days: int = EPISODE_DAYS) ->
         initial_on_hand=on_hand,
         initial_cash=float(cash),
         capacity=capacity,
+        order_fee=0.0 if variant == "no_fee" else ORDER_FEE,
+        variant=variant,
     )
 
 
@@ -118,8 +137,10 @@ def demand_mean_path(world: World) -> np.ndarray:
     """
     rng = np.random.default_rng([world.world_seed, 1])
     total_days = HISTORY_DAYS + world.n_days
-    level = np.ones((total_days, world.n_products))
-    for p in range(world.n_products):
+    # Levels for all base products are drawn so product p's path does not
+    # depend on how many products the variant keeps.
+    level = np.ones((total_days, N_PRODUCTS))
+    for p in range(N_PRODUCTS):
         current = 1.0
         for t in range(total_days):
             if rng.random() < SHIFT_RATE_PER_DAY:
@@ -128,7 +149,7 @@ def demand_mean_path(world: World) -> np.ndarray:
     # Day index counts from the start of the history so the weekday of
     # episode day t is (HISTORY_DAYS + t) % 7.
     weekday = weekday_profile(world)[np.arange(total_days) % 7]
-    return np.asarray(world.base_mean)[None, :] * level * weekday[:, None]
+    return np.asarray(world.base_mean)[None, :] * level[:, : world.n_products] * weekday[:, None]
 
 
 def uniform_half_width(cv: float) -> float:
@@ -141,5 +162,5 @@ def demand_path(world: World) -> np.ndarray:
     mean = demand_mean_path(world)
     rng = np.random.default_rng([world.world_seed, 2])
     a = uniform_half_width(world.cv)
-    u = rng.uniform(1 - a, 1 + a, mean.shape)
+    u = rng.uniform(1 - a, 1 + a, (mean.shape[0], N_PRODUCTS))[:, : world.n_products]
     return np.rint(np.clip(mean * u, 0, None)).astype(np.int64)
