@@ -26,3 +26,17 @@ uv run python -m src.perfect_supplier shadow --n-worlds 12 --driver jepa
 
 Output lands under `runs/perfect-supplier/` (`timeseries/`, `summary/`,
 `models/`, `tuning/`). `notebooks/15-perfect-supplier.ipynb` reads it.
+
+## Result (500 eval worlds, 2026-10-14)
+
+Margin capture, each arm closed-loop on its own copy of every world, paired by world:
+
+| arm | score | paired difference, pts, 95% CI |
+| --- | --- | --- |
+| planner + oracle forecast (ceiling) | 0.9629 | oracle − JEPA: +0.37 [+0.35, +0.40] |
+| JEPA planner | 0.9592 | JEPA − tuned (R,S): +2.43 [+2.36, +2.49], wins 100% of worlds |
+| direct-forecast planner (no JEPA loss) | 0.9592 | JEPA − direct: +0.00 [−0.01, +0.02] |
+| planner + moving average | 0.9556 | JEPA − MA: +0.36 [+0.32, +0.39] |
+| tuned (R,S) / (s,Q) / (s,S) / (R,s,S) | 0.935 / 0.929 / 0.929 / 0.929 | |
+
+Most of the gain is the planner: it orders all products on one day (about 49 order days a year against about 91) and sizes stock against the holding rate. The learned forecast adds 0.36 points over a moving average, mostly fewer lost sales. The JEPA latent loss adds nothing over the same network trained on the quantile loss alone.
