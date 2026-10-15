@@ -178,3 +178,12 @@ def test_eval_offset_adds_to_earlier_worlds(tmp_path):
     evaluate(tmp_path, 2, ["never_order"], "base", None, offset=3)
     seeds = sorted(data.load_summary(tmp_path)["world_seed"])
     assert seeds == list(range(3_000_000, 3_000_005))
+
+
+def test_loader_asks_each_method_only_for_columns_it_has(tmp_path):
+    a = pd.DataFrame({"world_seed": [1], "day": [0], "split": "eval", "method": "a", "x": [1]})
+    b = pd.DataFrame({"world_seed": [1], "day": [0], "split": "eval", "method": "b", "dec_y": [3]})
+    data.write_part(tmp_path, "eval", "a", 0, [a], [{"world_seed": 1}])
+    data.write_part(tmp_path, "eval", "b", 0, [b], [{"world_seed": 1}])
+    both = data.load_timeseries(tmp_path, columns=["method", "day", "dec_y"])
+    assert list(both.columns) == ["method", "day", "dec_y"] and both["dec_y"].isna().sum() == 1

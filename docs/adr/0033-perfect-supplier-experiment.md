@@ -18,6 +18,21 @@ The published JEPA buyer (ADRs 0024–0032) did not beat a tuned order-up-to pol
 
 The experiment runs thousands of episodes in minutes and stores every day × product row (`src/perfect_supplier/data.py`). Results do not transfer to multi-supplier worlds; that claim needs its own run. The engine path (`src/jepa/`) is unchanged.
 
+## Addendum (2026-10-15): fee-free variants and fairer baselines
+
+The first result (JEPA +2.4 points over the best engine rule) came mostly from the order fee. The planner orders every product on one day and pays one fee. It also reads the fee and holding rate, while the engine rules trigger per product and read neither. Two changes make the comparison fair:
+
+1. **Variants.** `one_product` keeps product 0 of each base world, so there is no fee to share. `no_fee` keeps the base world with fee 0. Both reuse the base forecasters, which learn demand only; the demand process is the same in every variant.
+2. **EOQ baselines.** Textbook (s,Q) with the EOQ quantity and safety stock `z·sd·sqrt(lag)`, which read the fee and holding rate. There is a per-product version and a joint-trigger version. They are tuned once per world type, like the others.
+
+The notebook's baseline is now the tuned rule with the best tune-world score. A code review also fixed the following. JEPA's base score did not change, and the engine rules moved by under 0.1 points after re-tuning:
+
+- the planner's imagined ration now equals the sim's
+- the textbook ration reserves the order fee
+- `order_days` counts filled orders
+
+With these changes JEPA leads the best textbook rule (joint EOQ) by +0.40 points in the base world, +0.06 with one product, and −0.05 with no fee. The JEPA latent loss adds nothing over the direct ablation in any world.
+
 ## Cross-references
 
 - ADR 0019 — equity and the fee and holding mechanics

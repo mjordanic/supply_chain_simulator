@@ -229,7 +229,7 @@ def tune(root: Path, n_trials: int, n_worlds: int, variant: str, families: list[
         def objective(trial, family=family):
             if family.startswith("eoq"):
                 params = EoqParams(
-                    service_z=trial.suggest_float("service_z", 0.0, 3.5),
+                    service_z=trial.suggest_float("service_z", 0.0, 6.0),
                     demand_window=trial.suggest_int("demand_window", 7, 56),
                     q_scale=trial.suggest_float("q_scale", 0.25, 4.0, log=True),
                     joint=family == "eoq_joint",

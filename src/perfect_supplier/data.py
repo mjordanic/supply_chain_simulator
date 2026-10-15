@@ -16,6 +16,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 DEFAULT_ROOT = Path("runs/perfect-supplier")
 
@@ -92,7 +93,9 @@ def load_timeseries(
             method_name = method_dir.name.removeprefix("method=")
             if methods is not None and method_name not in methods:
                 continue
-            cols = None if columns is None else [c for c in columns if c not in ("split", "method")]
+            # Ask each partition only for the columns it has; decision columns differ by method.
+            present = set(pq.ParquetDataset(method_dir).schema.names)
+            cols = None if columns is None else [c for c in columns if c in present]
             part = pd.read_parquet(method_dir, filters=filters, columns=cols)
             if len(part):
                 frames.append(part.assign(split=split_name, method=method_name))
