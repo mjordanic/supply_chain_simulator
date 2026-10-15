@@ -47,7 +47,10 @@ def _complete(m: pd.DataFrame) -> pd.DataFrame:
 
 def score_matrix(summary: pd.DataFrame, metric: str = "score", split: str = "eval") -> pd.DataFrame:
     s = summary[summary["split"] == split]
-    return s.pivot_table(index="world_seed", columns="method", values=metric)
+    dup = s.duplicated(["world_seed", "method"])
+    if dup.any():
+        raise ValueError(f"{int(dup.sum())} duplicate (world, method) rows in split {split!r}")
+    return s.pivot(index="world_seed", columns="method", values=metric)
 
 
 def paired_table(summary: pd.DataFrame, baseline: str, metric: str = "score", split: str = "eval") -> pd.DataFrame:

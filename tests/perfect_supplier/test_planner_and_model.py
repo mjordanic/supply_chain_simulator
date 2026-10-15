@@ -171,6 +171,17 @@ def test_joint_eoq_orders_every_product_when_one_is_low():
     assert EoqPolicy(EoqParams(demand_window=7)).decide(obs2).qty[1] == 0
 
 
+def test_joint_eoq_uses_one_common_cycle():
+    from src.perfect_supplier.textbook import EoqParams, EoqPolicy
+
+    obs = _obs(on_hand=[0, 0], cash=1e9, capacity=10**9)
+    obs.sales[:, 1] = 40  # product 1 sells four times as fast
+    info = EoqPolicy(EoqParams(service_z=0.0, demand_window=7, joint=True)).decide(obs).info
+    Q = info["S"] - info["s"]
+    cycle = np.sqrt(2 * obs.order_fee / (obs.holding_rate * obs.unit_cost * 50))
+    np.testing.assert_allclose(Q, [10 * cycle, 40 * cycle])
+
+
 def test_eval_offset_adds_to_earlier_worlds(tmp_path):
     from src.perfect_supplier.experiment import evaluate
 

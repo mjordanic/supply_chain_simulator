@@ -112,10 +112,11 @@ class EoqPolicy:
     fee, ``Q`` is 0 and this is a daily base-stock rule.
 
     ``joint=False``: each product triggers on its own and pays its own fee in
-    the formula. ``joint=True`` is the textbook can-order idea at its simplest:
-    when any product is below ``s``, every product orders up to ``s + Q``, and
-    the fee in ``Q`` is shared by all products. That is the planner's ordering
-    pattern without the forecast.
+    the formula. ``joint=True`` is joint replenishment with one shared fee:
+    when any product is below ``s``, every product orders up to ``s + Q``,
+    where ``Q_i = q_scale * d_i * T`` and ``T = sqrt(2 * fee / (holding_rate *
+    unit_cost * sum(d)))`` is the common EOQ cycle. That is the planner's
+    ordering pattern without the forecast. With one product both modes agree.
     """
 
     def __init__(self, params: EoqParams, name: str | None = None):
@@ -128,8 +129,12 @@ class EoqPolicy:
         rate = recent.mean(axis=0)
         sd = recent.std(axis=0, ddof=1)
         s = rate * lag + p.service_z * sd * np.sqrt(lag)
-        fee = obs.order_fee / obs.n_products if p.joint else obs.order_fee
-        Q = p.q_scale * np.sqrt(2 * fee * rate / (obs.holding_rate * obs.unit_cost))
+        h = obs.holding_rate * obs.unit_cost
+        if p.joint:
+            cycle = np.sqrt(2 * obs.order_fee / (h * max(rate.sum(), 1e-9)))
+            Q = p.q_scale * rate * cycle
+        else:
+            Q = p.q_scale * np.sqrt(2 * obs.order_fee * rate / h)
         S = s + Q
         position = obs.position
         below = position < s

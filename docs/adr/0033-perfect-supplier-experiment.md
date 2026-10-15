@@ -23,15 +23,15 @@ The experiment runs thousands of episodes in minutes and stores every day × pro
 The first result (JEPA +2.4 points over the best engine rule) came mostly from the order fee. The planner orders every product on one day and pays one fee. It also reads the fee and holding rate, while the engine rules trigger per product and read neither. Two changes make the comparison fair:
 
 1. **Variants.** `one_product` keeps product 0 of each base world, so there is no fee to share. `no_fee` keeps the base world with fee 0. Both reuse the base forecasters, which learn demand only; the demand process is the same in every variant.
-2. **EOQ baselines.** Textbook (s,Q) with the EOQ quantity and safety stock `z·sd·sqrt(lag)`, which read the fee and holding rate. There is a per-product version and a joint-trigger version. They are tuned once per world type, like the others.
+2. **EOQ baselines.** Textbook (s,Q) with the EOQ quantity and safety stock `z·sd·sqrt(lag)`, which read the fee and holding rate. There is a per-product version and a joint-replenishment version (one trigger, one common EOQ cycle). They are tuned once per world type, like the others. The engine rules may now tune cover to 0, which makes them pure base-stock when ordering is free.
 
-The notebook's baseline is now the tuned rule with the best tune-world score. A code review also fixed the following. JEPA's base score did not change, and the engine rules moved by under 0.1 points after re-tuning:
+The notebook's baseline is now the tuned rule with the best tune-world score. A code review also fixed the following. JEPA's base score did not change, and the engine rules moved by under 0.2 points after re-tuning:
 
 - the planner's imagined ration now equals the sim's
 - the textbook ration reserves the order fee
 - `order_days` counts filled orders
 
-With these changes JEPA leads the best textbook rule (joint EOQ) by +0.40 points in the base world, +0.06 with one product, and −0.05 with no fee. The JEPA latent loss adds nothing over the direct ablation in any world.
+With these changes JEPA leads the best textbook rule (joint EOQ) by +0.24 points in the base world, +0.06 with one product, and −0.05 with no fee. The JEPA latent loss adds nothing over the direct ablation in any world.
 
 ## Cross-references
 

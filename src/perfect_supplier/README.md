@@ -44,21 +44,19 @@ Output for a variant goes under `runs/perfect-supplier-<variant>/`.
 ## Result (500 eval worlds per world type, 2026-10-15)
 
 Margin capture, each arm closed-loop on its own copy of every world, paired by
-world. The best textbook rule in all three worlds is tuned joint EOQ: textbook
-(s,Q) with the EOQ quantity, a joint trigger, and the fee and holding rate as
-inputs, as the planner has.
+world. The best textbook rule in all three worlds is tuned joint EOQ: joint
+replenishment with a common EOQ cycle and `z·sd·sqrt(lag)` safety stock. It
+reads the fee and holding rate, as the planner does.
 
 | world | JEPA | best textbook | JEPA − best textbook, pts [95% CI] | JEPA wins | JEPA − direct |
 | --- | --- | --- | --- | --- | --- |
-| base (4 products, fee 50) | 0.9592 | 0.9551 | +0.40 [+0.37, +0.43] | 94% | −0.00 |
+| base (4 products, fee 50) | 0.9592 | 0.9568 | +0.24 [+0.22, +0.26] | 88% | −0.00 |
 | one product, fee 50 | 0.9252 | 0.9246 | +0.06 [+0.02, +0.11] | 53% | −0.01 |
 | 4 products, no fee | 0.9818 | 0.9823 | −0.05 [−0.09, −0.01] | 39% | −0.01 |
 
-Against the four engine rules (per-product triggers, no fee or holding-rate
-input), JEPA leads by 2.5–3.1 points in the base world. That lead is mostly
-ordering every product on one day. Joint EOQ does the same without learning
-and closes 2.1 of those points. Once the fee cannot separate policies, JEPA
-ties the best textbook rule. The learned forecast beats a moving average
-inside the same planner (+0.24 to +0.65), and the JEPA latent loss adds
-nothing over the direct ablation. The oracle planner shows 0.2–0.7 points of
-headroom a better forecast could take. Notebook 15, section 12, has the details.
+- **Engine rules.** Against the four engine rules (per-product triggers, no fee or holding-rate input), JEPA leads by 2.6–3.1 points in the base world. Most of that is ordering every product on one day: joint EOQ does the same without learning and closes 2.35 points.
+- **Without the fee**, JEPA ties the best textbook rule.
+- **The forecast.** The learned forecast beats a moving average inside the same planner (+0.24 to +0.65). The JEPA latent loss adds nothing over the direct ablation.
+- **Headroom.** The oracle planner shows 0.2–0.7 points a better forecast could take.
+
+Notebook 15, section 12, has the details.

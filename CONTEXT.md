@@ -603,7 +603,7 @@ The world of the simpler replenishment experiment, run on a lean single-shop sim
 A change to the perfect-supplier world that takes the order fee out of the comparison. `one_product` keeps product 0 of each base world: same lag, CV, holding rate, and demand path, so no fee can be shared across products. `no_fee` keeps the base world with fee 0. `base` is the world above.
 
 **Joint EOQ** (`textbook.py`, `EoqPolicy(joint=True)`)
-Textbook (s,Q) baseline that reads the fee and holding rate. Reorder point `s = rate·lag + z·sd·sqrt(lag)`; order quantity is the EOQ, with the fee shared across products. When any product falls below `s`, every product orders up to `s + Q`. It is the planner's ordering pattern without a forecast. `joint=False` triggers per product.
+Textbook (s,Q) baseline that reads the fee and holding rate. Reorder point `s = rate·lag + z·sd·sqrt(lag)`; order quantities follow one common EOQ cycle `T = sqrt(2·fee / (holding_rate·cost·Σrate))`, so `Q_i = rate_i·T`. When any product falls below `s`, every product orders up to `s + Q`. It is the planner's ordering pattern without a forecast. `joint=False` triggers per product.
 
 **Perfect-supplier buyer** (`src/perfect_supplier/planner.py`)
 The learned policy for that world. Inventory, arrivals, cash, holding, the fee, and the shelf ration are the simulator's exact recursion; only demand is learned, by the JEPA forecaster. Each day it imagines 64 demand paths and scores every joint reorder plan `(cover R, service quantile z)` by the mean change in equity over 35 days. The winning plan's day-0 order is placed. The same planner run with the moving-average, direct, or oracle forecast isolates what the forecast is worth.

@@ -56,17 +56,26 @@ class NeverOrder:
 # ---------------------------------------------------------------------------
 
 
-def tuned_params(root: Path) -> dict[str, TextbookParams | EoqParams]:
+def tuned_params(root: Path, variant: str | None = None) -> dict[str, TextbookParams | EoqParams]:
+    """Tuned parameters under ``root``; refuses parameters tuned on another variant."""
     path = root / "tuning" / "best_params.json"
     if not path.exists():
         return {}
+    scores_path = root / "tuning" / "best_scores.json"
+    if variant is not None and scores_path.exists():
+        tuned_on = {f: v["variant"] for f, v in json.loads(scores_path.read_text()).items()}
+        wrong = {f: v for f, v in tuned_on.items() if v != variant}
+        if wrong:
+            raise ValueError(f"{root}: parameters tuned on another variant than {variant!r}: {wrong}")
     raw = json.loads(path.read_text())
     return {family: (EoqParams if family.startswith("eoq") else TextbookParams)(**p) for family, p in raw.items()}
 
 
-def arm_factories(root: Path, arms: list[str], model_root: Path | None = None) -> dict[str, Callable[[World], object]]:
+def arm_factories(
+    root: Path, arms: list[str], model_root: Path | None = None, variant: str | None = None
+) -> dict[str, Callable[[World], object]]:
     """Map arm name to ``world -> policy``. Model weights load once per worker."""
-    tuned = tuned_params(root)
+    tuned = tuned_params(root, variant)
     factories: dict[str, Callable[[World], object]] = {}
     for arm in arms:
         if arm == "never_order":
@@ -238,7 +247,8 @@ def tune(root: Path, n_trials: int, n_worlds: int, variant: str, families: list[
                 return _tune_objective(EoqPolicy(params), seeds, variant)
             params = TextbookParams(
                 family=family,
-                cover_horizon_ticks=trial.suggest_int("cover_horizon_ticks", 1, 28),
+                # 0 lets order-up-to rules become pure base-stock when ordering is free.
+                cover_horizon_ticks=trial.suggest_int("cover_horizon_ticks", 0, 28),
                 safety_lead_pct_of_lag=trial.suggest_float("safety_lead_pct_of_lag", 0.0, 2.0),
                 stockout_safety_bonus_pct_of_lag=trial.suggest_float("stockout_safety_bonus_pct_of_lag", 0.0, 1.5),
                 review_interval=(
@@ -282,14 +292,14 @@ DEFAULT_EVAL_ARMS = [
 
 def evaluate(root: Path, n_worlds: int, arms: list[str], variant: str, model_root: Path | None, offset: int = 0) -> None:
     seeds = [world_seed("eval", offset + i) for i in range(n_worlds)]
-    for arm, make in arm_factories(root, arms, model_root).items():
+    for arm, make in arm_factories(root, arms, model_root, variant).items():
         # A run writes at most one part per world, so numbering parts from the offset cannot collide.
         run_split(root, "eval", arm, seeds, make, variant=variant, first_part=offset)
 
 
 def shadow(root: Path, n_worlds: int, driver: str, arms: list[str], variant: str, model_root: Path | None) -> None:
     seeds = [world_seed("eval", 100_000 + i) for i in range(n_worlds)]
-    makers = arm_factories(root, [driver, *[a for a in arms if a != driver]], model_root)
+    makers = arm_factories(root, [driver, *[a for a in arms if a != driver]], model_root, variant)
     drive = makers.pop(driver)
     run_split(root, "shadow", driver, seeds, drive, shadow_makers=makers, variant=variant)
 
