@@ -13,6 +13,11 @@ A config is ``{"name", "kind", "variant", "params", ...}``:
   name a model file in ``config["model"]`` (path and sha256).
 - ``seasonal_ets``: the planner with :class:`SeasonalEtsForecaster`.
 
+Planner and ``seasonal_ets`` params may also set the planner's knobs
+(``n_paths``, ``rho``, ``service_max``, ``level_paths``) and
+``tail_quantiles``: the oracle, moving-average, and ETS forecasters then emit
+``TAIL_QUANTILES``. A model's levels are the ones it was trained on.
+
 Hashing a config (:func:`~src.perfect_supplier.bench.protocol.config_sha256`)
 identifies the arm for the test gate and the log.
 """
@@ -26,13 +31,20 @@ import numpy as np
 from scipy.stats import norm
 
 from src.perfect_supplier.experiment import NeverOrder
-from src.perfect_supplier.forecast import HORIZON, QUANTILES, MovingAverageForecaster, OracleForecaster
+from src.perfect_supplier.forecast import (
+    HORIZON,
+    QUANTILES,
+    TAIL_QUANTILES,
+    MovingAverageForecaster,
+    OracleForecaster,
+)
 from src.perfect_supplier.planner import Planner
 from src.perfect_supplier.textbook import FAMILIES, EoqParams, EoqPolicy, TextbookParams, TextbookPolicy
 from src.perfect_supplier.world import World
 
 TEXTBOOK_KINDS = (*FAMILIES, "eoq", "eoq_joint", "param_eoq_joint")
 KINDS = (*TEXTBOOK_KINDS, "never_order", "planner", "seasonal_ets")
+PLANNER_KNOBS = ("n_paths", "rho", "service_max", "level_paths")
 
 
 class SeasonalEtsForecaster:
@@ -47,8 +59,9 @@ class SeasonalEtsForecaster:
 
     name = "seasonal_ets"
 
-    def __init__(self, alpha: float = 0.1, gamma: float = 0.1, horizon: int = HORIZON):
+    def __init__(self, alpha: float = 0.1, gamma: float = 0.1, horizon: int = HORIZON, levels: np.ndarray = QUANTILES):
         self.alpha, self.gamma, self.horizon = alpha, gamma, horizon
+        self.levels = np.asarray(levels)
 
     def __call__(self, obs) -> np.ndarray:
         y = obs.sales.astype(float)
@@ -65,7 +78,7 @@ class SeasonalEtsForecaster:
         h = np.arange(self.horizon)
         mu = level[None, :] + season[(n + h) % 7]  # (H, P)
         sd = sigma[None, :] * np.sqrt(1 + h * self.alpha**2)[:, None]
-        q = mu[:, :, None] + sd[:, :, None] * norm.ppf(QUANTILES)[None, None, :]
+        q = mu[:, :, None] + sd[:, :, None] * norm.ppf(self.levels)[None, None, :]
         return np.clip(q, 0, None)
 
 
@@ -112,22 +125,23 @@ def make_policy(config: dict, world: World):
         return TextbookPolicy(TextbookParams(family=kind, **params), name=name)
     if kind in ("eoq", "eoq_joint", "param_eoq_joint"):
         return EoqPolicy(_eoq_params(kind, params, world), name=name)
+    knobs = {k: params.pop(k) for k in PLANNER_KNOBS if k in params}
+    levels = TAIL_QUANTILES if params.pop("tail_quantiles", False) else QUANTILES
     if kind == "seasonal_ets":
-        n_paths = params.pop("n_paths", 64)
-        return Planner(SeasonalEtsForecaster(**params), name=name, n_paths=n_paths)
+        return Planner(SeasonalEtsForecaster(**params, levels=levels), name=name, **knobs)
     if kind == "planner":
         fc = params.pop("forecaster")
         if fc == "oracle":
-            forecaster = OracleForecaster(world)
+            forecaster = OracleForecaster(world, levels=levels)
         elif fc == "moving_average":
-            forecaster = MovingAverageForecaster()
+            forecaster = MovingAverageForecaster(levels=levels)
         elif fc in ("jepa", "direct"):
             from src.perfect_supplier.jepa import JepaForecaster
 
             forecaster = JepaForecaster(_model(config["model"]), name=fc)
         else:
             raise ValueError(f"unknown forecaster {fc!r}")
-        return Planner(forecaster, name=name, **params)
+        return Planner(forecaster, name=name, **knobs, **params)
     raise ValueError(f"unknown arm kind {kind!r}")
 
 

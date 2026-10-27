@@ -15,7 +15,7 @@ The online encoder embeds the context. An EMA copy embeds the future window
 and is the JEPA target; the predictor maps the context embedding to it.
 VICReg variance and covariance terms keep the context embedding from
 collapsing. A quantile head reads the context embedding and the predicted
-future embedding and emits ``len(QUANTILES)`` quantiles of demand for each
+future embedding and emits ``len(config.quantiles)`` quantiles of demand for each
 future day. Its loss is censored pinball: on a sold-out day the sale is only
 a lower bound on demand, so only predictions below it are penalised.
 The head's gradient also trains the encoder and predictor.
@@ -56,6 +56,7 @@ class JepaConfig:
     steps: int = 20_000
     eval_every: int = 2_000
     seed: int = 0
+    quantiles: tuple[float, ...] = tuple(QUANTILES.tolist())
 
 
 def _mlp(i: int, h: int, o: int) -> nn.Sequential:
@@ -71,7 +72,7 @@ class JepaModel(nn.Module):
         super().__init__()
         self.config = config
         w, d, h = config.window, config.embed_dim, config.hidden
-        n_q = len(QUANTILES)
+        n_q = len(config.quantiles)
         self.encoder = _mlp(2 * w + 7, h, d)
         head_in = d + 7
         if config.jepa:
@@ -240,7 +241,7 @@ def evaluate(model: JepaModel, bank: SeriesBank, n: int = 20_000, seed: int = 1)
     s_all, e_all = bank.anchors(model.config.window)
     pick = rng.choice(len(s_all), size=min(n, len(s_all)), replace=False)
     batch = make_batch(bank, s_all[pick], e_all[pick], model.config.window)
-    levels = torch.as_tensor(QUANTILES, dtype=torch.float32)
+    levels = torch.as_tensor(model.config.quantiles, dtype=torch.float32)
     q, _, _ = model(batch["context"], batch["weekday_next"])
     losses = _losses(model, batch, levels)
     true = batch["demand"]
@@ -306,7 +307,7 @@ def fit(train: SeriesBank, val: SeriesBank, config: JepaConfig, log_path: str | 
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=config.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=config.lr, total_steps=config.steps, pct_start=0.05)
-    levels = torch.as_tensor(QUANTILES, dtype=torch.float32)
+    levels = torch.as_tensor(config.quantiles, dtype=torch.float32)
     s_all, e_all = train.anchors(config.window)
     history, best, best_state = [], math.inf, None
     for step in range(1, config.steps + 1):
@@ -356,6 +357,7 @@ class JepaForecaster:
 
     def __init__(self, model: JepaModel, name: str = "jepa"):
         self.model, self.name = model, name
+        self.levels = np.asarray(model.config.quantiles)
 
     @torch.no_grad()
     def __call__(self, obs) -> np.ndarray:

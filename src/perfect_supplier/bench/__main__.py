@@ -49,6 +49,14 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument("--base-config", type=Path, default=None, help="fixed fields (model, forecaster) for the arm")
     t.add_argument("--out", type=Path, required=True)
 
+    ft = sub.add_parser("fit", help="train one learned forecaster for one training seed")
+    ft.add_argument("--root", type=Path, required=True, help="behaviour log of the protocol's train block")
+    ft.add_argument("--arm", choices=("jepa", "direct"), required=True)
+    ft.add_argument("--seed", type=int, required=True)
+    ft.add_argument("--steps", type=int, default=20_000)
+    ft.add_argument("--no-tail-quantiles", action="store_true", help="train on QUANTILES only")
+    ft.add_argument("--out", type=Path, required=True)
+
     f = sub.add_parser("freeze", help="list arm configs in experiments/frozen.json")
     f.add_argument("--arms", type=Path, nargs="+", required=True)
     f.add_argument("--note", required=True)
@@ -101,6 +109,12 @@ def main(argv: list[str] | None = None) -> None:
         base = json.loads(args.base_config.read_text()) if args.base_config else None
         config = tune(args.kind, args.name, args.variant, protocol, args.track, args.out,
                       cell_keys=args.cell_keys, base_config=base)
+        print(json.dumps(config, indent=1))
+    elif args.command == "fit":
+        from src.perfect_supplier.bench.fit import fit_model
+
+        config = fit_model(args.root, args.arm, args.seed, protocol, args.track, args.out, steps=args.steps,
+                           tail_quantiles=not args.no_tail_quantiles)
         print(json.dumps(config, indent=1))
     elif args.command == "freeze":
         for config in _configs(args.arms):
