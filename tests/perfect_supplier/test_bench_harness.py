@@ -44,6 +44,7 @@ def test_repo_protocol_holds_the_approved_constants():
     tb = p.budget("eoq_joint")
     assert tb["trials"] * tb["worlds_per_trial"] >= 4 * 48 * 32
     assert p.raw["training_seeds"] == 3
+    assert p.raw["comparisons"]["primary"]["arms"] == ["jepa", "direct"]
     assert p.workers() <= 3 or "PS_WORKERS" in __import__("os").environ
     assert p.burnt(3_000_123) and p.burnt(3_200_000) and not p.burnt(4_000_000)
 
@@ -120,9 +121,14 @@ def test_dev_eval_writes_paired_scores_and_a_report(proto, tmp_path):
     (row,) = log.read("t", tmp_path / "log")
     assert row["kind"] == "dev-eval" and row["seeds"] == {"first": 4_000_000, "count": 4}
     assert set(row["config"]) == {"eoq_joint_a", "eoq_b", "never_order"}
-    text = write_report(tmp_path / "out", proto, tmp_path / "r.md", primary=["eoq_b"], strata=["holding_rate"])
+    text = write_report(tmp_path / "out", proto, tmp_path / "r.md", "t", primary=["eoq_b"], strata=["holding_rate"],
+                        log_dir=tmp_path / "log")
     assert "reference: `eoq_joint_a` (best tune score" in text
     assert "| eoq_b − eoq_joint_a |" in text and "cost reduction" in text
+    assert "## Primary family (exploratory" in text
+    report_row = log.read("t", tmp_path / "log")[-1]
+    assert report_row["kind"] == "report" and report_row["families"] == "exploratory"
+    assert report_row["primary"] == ["eoq_b"]
 
 
 def test_param_eoq_with_zero_slope_is_global_eoq_and_cells_pick_their_params():
@@ -204,7 +210,8 @@ def test_report_averages_training_seeds_and_adds_a_two_level_section(proto, tmp_
     rng = np.random.default_rng(0)
     n = 200
     ref = rng.uniform(0.9, 0.97, n)
-    arms = {"ref": ref, **{f"jepa_s{k}": ref + 0.002 + 0.0005 * k + rng.normal(0, 0.002, n) for k in range(3)}}
+    arms = {"ref": ref, **{f"jepa_s{k}": ref + 0.002 + 0.0005 * k + rng.normal(0, 0.002, n) for k in range(3)},
+            "planner_oracle": ref + 0.004 + rng.normal(0, 0.002, n), "seasonal_ets": ref + rng.normal(0, 0.002, n)}
     rows = [{"world_seed": 4_000_000 + i, "arm": a, "score": s[i], "variant": "base", "split": "dev",
              "holding_rate": 0.01, "cv": 0.3, "total_demand": 1000.0, "price": 20.0, "unit_cost": 10.0,
              "lost_units": 1, "fees": 50.0, "holding_cost": 30.0, "order_days": 50, "fill_rate_demand": 0.99,
@@ -212,8 +219,16 @@ def test_report_averages_training_seeds_and_adds_a_two_level_section(proto, tmp_
     (tmp_path / "s").mkdir()
     pd.DataFrame(rows).to_parquet(tmp_path / "s" / "scores.parquet")
     configs = [{"name": "ref", "kind": "eoq_joint", "params": {}, "tune_score": 0.95}]
-    configs += [{"name": f"jepa_s{k}", "kind": "planner", "seed_group": "jepa", "params": {}} for k in range(3)]
+    configs += [{"name": f"jepa_s{k}", "kind": "planner", "seed_group": "jepa", "params": {"forecaster": "jepa"}}
+                for k in range(3)]
+    configs += [{"name": "planner_oracle", "kind": "planner", "params": {"forecaster": "oracle"}},
+                {"name": "seasonal_ets", "kind": "seasonal_ets", "params": {}}]
     (tmp_path / "s" / "arms.json").write_text(json.dumps(configs))
-    text = write_report(tmp_path / "s", proto, tmp_path / "r.md", strata=[])
-    assert "| jepa − ref |" in text and "## Training seeds" in text
+    text = write_report(tmp_path / "s", proto, tmp_path / "r.md", "t", strata=[], log_dir=tmp_path / "log")
+    primary, secondary = text.split("## Primary family")[1].split("## Secondary family")
+    assert "| jepa − ref |" in primary and "planner_oracle" not in primary and "seasonal_ets" not in primary
+    assert "| jepa − seasonal_ets |" in secondary and "| jepa − planner_oracle |" in secondary
+    assert "pre-registered" in text and "exploratory" not in text and "## Training seeds" in text
+    (row,) = log.read("t", tmp_path / "log")
+    assert row["kind"] == "report" and row["families"] == "pre-registered" and row["primary"] == ["jepa"]
     assert "jepa_s0: +0.182, jepa_s1: +0.254, jepa_s2: +0.292" in text

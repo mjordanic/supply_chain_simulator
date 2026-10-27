@@ -6,7 +6,7 @@ The lean result (ADR 0033) is +0.24 pts margin capture over tuned joint EOQ in t
 
 **Decision — Every claim from here on goes through one harness, `src/perfect_supplier/bench/`, under a protocol fixed before any tuning.**
 
-1. **Protocol.** `experiments/protocol.yaml` holds the approved constants: margin capture primary with cost reduction co-reported, SESOI 0.10 pts, seed blocks, the burnt-seed list, budgets, search spaces, 3 training seeds. It changes only by a logged amendment, and every log line carries its sha256.
+1. **Protocol.** `experiments/protocol.yaml` holds the approved constants: margin capture primary with cost reduction co-reported, SESOI 0.10 pts, seed blocks, the burnt-seed list, budgets, search spaces, 3 training seeds, the comparison families, and each track's stopping rules (amendment 2). It changes only by a logged amendment, and every log line carries its sha256.
 2. **Seeds.** The harness hands out seeds only from registered blocks: tune 2,000,000+, dev 4,000,000–4,000,499, and a sealed test block 9,000,000–9,000,999. Burnt ranges (the old eval block, shadow runs, audit diagnostics, the engine line's blocks) are refused.
 3. **Sealed test.** A test run is refused unless every arm's config hash is listed in `experiments/frozen.json` under the current protocol. A second test run of the same arm and variant needs a logged rerun reason.
 4. **Budgets.** Learned arms get 48 trials × 32 tune worlds. Textbook arms get at least 4× that, and each cell of a contextual arm gets the full textbook budget. Tuning is sequential TPE with a process pool per trial; Optuna's thread mode is GIL-bound on these episodes.

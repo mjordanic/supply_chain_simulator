@@ -63,10 +63,13 @@ def main(argv: list[str] | None = None) -> None:
 
     r = sub.add_parser("report", help="markdown report from an eval directory")
     r.add_argument("--scores", type=Path, required=True, help="directory with scores.parquet and arms.json")
-    r.add_argument("--reference", default=None, help="default: the textbook arm with the best tune score")
-    r.add_argument("--primary", nargs="+", default=[], help="arms compared with the reference (Holm family)")
-    r.add_argument("--secondary", nargs="+", default=[], help="pairs a:b (Holm within the family)")
-    r.add_argument("--strata", nargs="+", default=["holding_rate", "cv"], help="BH-adjusted, exploratory")
+    r.add_argument("--reference", default=None,
+                   help="default: the textbook arm with the best tune score; setting it makes the report exploratory")
+    r.add_argument("--primary", nargs="+", default=None,
+                   help="default: the protocol's primary family; setting it makes the report exploratory")
+    r.add_argument("--secondary", nargs="+", default=None,
+                   help="pairs a:b; default: the protocol's secondary family; setting it makes the report exploratory")
+    r.add_argument("--strata", nargs="+", default=None, help="BH-adjusted, exploratory; default: the protocol's")
     r.add_argument("--title", default="Paired evaluation")
     r.add_argument("--out", type=Path, required=True)
 
@@ -113,9 +116,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "report":
         from src.perfect_supplier.bench.report import write_report
 
-        text = write_report(args.scores, protocol, args.out, reference=args.reference, primary=args.primary,
-                            secondary=[tuple(p.split(":")) for p in args.secondary], strata=args.strata,
-                            title=args.title)
+        secondary = [tuple(p.split(":")) for p in args.secondary] if args.secondary else None
+        text = write_report(args.scores, protocol, args.out, args.track, reference=args.reference,
+                            primary=args.primary, secondary=secondary, strata=args.strata, title=args.title)
         print(text)
     elif args.command == "backfill":
         from src.perfect_supplier.bench.backfill import backfill

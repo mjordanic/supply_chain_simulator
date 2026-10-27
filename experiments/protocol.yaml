@@ -5,7 +5,7 @@
 # amendment: edit, bump `version`, and append a `kind: amendment` line to the
 # track's log saying why. Every log line records this file's sha256.
 
-version: 1
+version: 2  # 2: pre-registered comparison families and stopping rules (amendment, before any test-block look)
 
 world_families:
   perfect_supplier:
@@ -29,6 +29,45 @@ statistics:
   resamples: 10000
   level: 0.95
   tost_level: 0.90     # equivalent: the 90% interval lies inside +-SESOI
+
+# Comparison families, fixed before any tuning; the report reads them from here.
+# An arm's role is its planner forecaster (oracle, moving_average, jepa, direct)
+# or its kind (seasonal_ets). Arms sharing a `seed_group` (one config per
+# training seed) count as one arm, averaged over the training seeds.
+comparisons:
+  primary:
+    # One comparison per (track x world family) and learned arm: the arm minus
+    # the textbook arm with the best tune score (never chosen on eval worlds).
+    # Holm at `statistics.alpha` across the whole primary family.
+    arms: [jepa, direct]
+    reference: best_textbook_by_tune_score
+    correction: holm
+  secondary:
+    # JEPA minus direct, minus the planner with a classical forecaster, minus the oracle. Holm within the family.
+    pairs: [[jepa, direct], [jepa, seasonal_ets], [jepa, moving_average], [jepa, oracle]]
+    correction: holm
+  strata:
+    # Exploratory, BH at `statistics.bh_q`.
+    keys: [holding_rate, cv, delivery_lag]
+    correction: bh
+  labels:
+    superior: Holm-adjusted lower bound > 0
+    practically_superior: superior and the estimate >= SESOI
+    equivalent: the 90% interval lies inside +-SESOI (TOST)
+    inferior: Holm-adjusted upper bound < 0
+    inconclusive: anything else
+
+# Gates a track must pass before it spends the next stage of compute.
+stopping_rules:
+  T1:
+    - {gate: G1, before: training, rule: "the oracle / Bayes planner beats the best textbook arm by >= 1 pt margin capture on dev"}
+    - {gate: G2, before: closed-loop runs, rule: "JEPA beats direct on the dev forecast metrics"}
+  T2: []  # no gate: the sealed test runs once the config is frozen
+  T3:
+    - {gate: oracle, before: training, rule: "the oracle planner beats tuned capped base-stock by >= SESOI on dev"}
+  # Enforced by the harness gate: one sealed test run per (arm, world family
+  # and variant); a second needs a logged --rerun-reason.
+  test_runs_per_arm: 1
 
 # Independent forecaster training seeds per learned arm.
 training_seeds: 3

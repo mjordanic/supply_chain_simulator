@@ -1,13 +1,16 @@
 """Markdown report for one paired evaluation directory (``scores.parquet`` + ``arms.json``).
 
-Sections: arm means with the cost breakdown; the primary family (each named arm
-against the reference, Holm across the family, protocol labels); the secondary
-family (named pairs, Holm within it); training seeds (two-level bootstrap) for
-arms that share a ``seed_group``; strata (BH-adjusted, exploratory). Margin
+Sections: arm means with the cost breakdown; the primary family (each learned
+arm against the reference, Holm across the family, protocol labels); the
+secondary family (pairs, Holm within it); training seeds (two-level bootstrap)
+for arms that share a ``seed_group``; strata (BH-adjusted, exploratory). Margin
 capture differences are in points; cost reduction sits next to each.
 
-The reference defaults to the textbook arm with the best tune score, so it is
-chosen on tuning data, never on the worlds it is compared on.
+The families and strata come from ``comparisons`` in the protocol. The reference
+is the textbook arm with the best tune score, so it is chosen on tuning data,
+never on the worlds it is compared on. A reference, primary, or secondary
+family passed by the caller makes the report exploratory, and says so. Every
+report is a log line.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.perfect_supplier.bench import stats
+from src.perfect_supplier.bench import log, stats
 from src.perfect_supplier.bench.arms import TEXTBOOK_KINDS
 from src.perfect_supplier.bench.evaluate import score_matrix
 from src.perfect_supplier.bench.protocol import Protocol
@@ -29,6 +32,21 @@ def best_textbook(configs: list[dict]) -> str:
     if not tuned:
         raise ValueError("no tuned textbook arm with a tune score; pass the reference explicitly")
     return max(tuned, key=lambda c: c["tune_score"])["name"]
+
+
+def role(config: dict) -> str:
+    """The name the protocol's comparison families use for an arm."""
+    return config.get("params", {}).get("forecaster", "") if config["kind"] == "planner" else config["kind"]
+
+
+def arms_by_role(configs: list[dict]) -> dict[str, list[str]]:
+    """Role -> arms in the report (a seed group counts once)."""
+    out: dict[str, list[str]] = {}
+    for c in configs:
+        arms = out.setdefault(role(c), [])
+        if (c.get("seed_group") or c["name"]) not in arms:
+            arms.append(c.get("seed_group") or c["name"])
+    return out
 
 
 def breakdown(frame: pd.DataFrame) -> pd.DataFrame:
@@ -78,6 +96,7 @@ def write_report(
     scores_dir: str | Path,
     protocol: Protocol,
     out: str | Path,
+    track: str,
     *,
     reference: str | None = None,
     primary: list[str] | None = None,
@@ -85,6 +104,7 @@ def write_report(
     strata: list[str] | None = None,
     title: str = "Paired evaluation",
     n_resamples: int | None = None,
+    log_dir: str | Path = log.LOG_DIR,
 ) -> str:
     scores_dir = Path(scores_dir)
     frame = pd.read_parquet(scores_dir / "scores.parquet")
@@ -92,7 +112,18 @@ def write_report(
     st = protocol.stats
     n_resamples = n_resamples or st["resamples"]
     level, alpha, sesoi = st["level"], st["alpha"], protocol.sesoi
+    comp = protocol.raw["comparisons"]
+    exploratory = reference is not None or primary is not None or secondary is not None
     reference = reference or best_textbook(configs)
+    by_role = arms_by_role(configs)
+    if primary is None:
+        primary = [a for r in comp["primary"]["arms"] for a in by_role.get(r, [])]
+    if secondary is None:
+        secondary = [(a, b) for ra, rb in comp["secondary"]["pairs"]
+                     for a in by_role.get(ra, []) for b in by_role.get(rb, [])]
+    if strata is None:
+        strata = comp["strata"]["keys"]
+    tag = " (exploratory: families chosen by the caller)" if exploratory else ""
     groups: dict[str, list[str]] = {}
     for c in configs:
         if c.get("seed_group"):
@@ -100,8 +131,6 @@ def write_report(
     m = score_matrix(frame)
     split = frame["split"].iloc[0] if "split" in frame else "?"
     worlds = frame.drop_duplicates("world_seed").set_index("world_seed").reindex(m.index)
-    primary = primary or list(dict.fromkeys(
-        c.get("seed_group") or c["name"] for c in configs if c["kind"] not in TEXTBOOK_KINDS + ("never_order",)))
 
     def run_family(pairs):
         fam = [stats.compare(_vectors(m, groups, a), _vectors(m, groups, b), (a, b), sesoi, level=level,
@@ -117,14 +146,16 @@ def write_report(
         f"BCa {n_resamples} resamples; Holm at α = {alpha}",
         f"- reference: `{reference}`" + (" (best tune score among tuned textbook arms)"
                                           if reference == best_textbook(configs) else ""),
+        "- families: " + ("**exploratory**, chosen by the caller; not the pre-registered ones" if exploratory
+                          else "pre-registered (`comparisons` in the protocol)"),
         "- margin capture is the primary metric; cost reduction is `1 − (1 − s_arm)/(1 − s_ref)`, a ratio of means",
         "", "## Arms", "",
         markdown_table(breakdown(frame).round(4)), "",
-        "## Primary family", "",
+        f"## Primary family{tag}", "",
         *_family_table(run_family([(a, reference) for a in primary if a != reference])), "",
     ]
     if secondary:
-        lines += ["## Secondary family", "", *_family_table(run_family(secondary)), ""]
+        lines += [f"## Secondary family{tag}", "", *_family_table(run_family(secondary)), ""]
     if groups:
         lines += ["## Training seeds (two-level bootstrap: worlds and seeds resampled)", "",
                   "| group − reference | mean, pts [95%] | per-seed estimates, pts |", "| --- | --- | --- |"]
@@ -152,4 +183,9 @@ def write_report(
     text = "\n".join(lines)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(text)
+    log.append(track, {"kind": "report", "scores": scores_dir, "split": split, "reference": reference,
+                       "primary": primary, "secondary": secondary, "strata": strata,
+                       "families": "exploratory" if exploratory else "pre-registered",
+                       "artifacts": [{"path": str(out), "sha256": log.file_sha256(out)}], "status": "kept"},
+               protocol, log_dir)
     return text
