@@ -82,3 +82,38 @@ def test_selection_scores_every_textbook_arm_on_the_same_tune_worlds(proto, tmp_
     assert best_textbook(picked) == "b"
     (row,) = log.read("t", tmp_path / "log")
     assert row["kind"] == "select" and set(row["result"]["select_scores"]) == {"a", "b"}
+
+
+def test_a_partial_pooled_primary_counts_the_missing_cells_as_the_largest_p_values(proto, tmp_path):
+    from src.perfect_supplier.bench import stats
+    from src.perfect_supplier.bench.report import write_pooled_primary
+    from tests.perfect_supplier.test_bench_harness import _log_test_eval, _with_cells
+
+    rng = np.random.default_rng(3)
+    ref = rng.uniform(0.9, 0.97, 100)
+    jepa, direct = ref + 0.0004 + rng.normal(0, 0.003, 100), ref + rng.normal(0, 0.003, 100)
+    _log_test_eval("T2", "base", {
+        "ref": ({"name": "ref", "kind": "eoq_joint", "params": {}, "tune_score": 0.95}, ref),
+        "jepa": ({"name": "jepa", "kind": "planner", "params": {"forecaster": "jepa"}}, jepa),
+        "direct": ({"name": "direct", "kind": "planner", "params": {"forecaster": "direct"}}, direct)},
+        proto, tmp_path)
+    declared = _with_cells(proto, tmp_path, [("T1", "base"), ("T2", "base")])
+    with pytest.raises(ValueError, match="no test eval"):
+        write_pooled_primary(declared, tmp_path / "p.md", "T2", log_dir=tmp_path / "log")
+    text = write_pooled_primary(declared, tmp_path / "p.md", "T2", partial=True, log_dir=tmp_path / "log")
+    assert "partial" in text and "T1/perfect_supplier/base" in text
+    row = log.read("T2", tmp_path / "log")[-1]
+    p = [stats.ttest_p(jepa - ref), stats.ttest_p(direct - ref)]
+    # Holm over all 4 declared comparisons, the 2 missing ones at p = 1: an upper bound on the final adjusted p.
+    expected = stats.holm(p + [1.0, 1.0])[:2]
+    got = [row["result"][f"T2/perfect_supplier/base: {a}"]["p_holm"] for a in ("jepa", "direct")]
+    assert got == pytest.approx(list(expected))
+    assert row["families"] == "pre-registered (partial)"
+
+
+def test_an_arm_with_an_explicit_role_stays_out_of_the_comparison_families():
+    from src.perfect_supplier.bench.report import arms_by_role
+
+    configs = [{"name": "jepa_s0", "kind": "planner", "params": {"forecaster": "jepa"}, "seed_group": "jepa"},
+               {"name": "jepa_s0_plain", "kind": "planner", "params": {"forecaster": "jepa"}, "role": "ablation"}]
+    assert arms_by_role(configs) == {"jepa": ["jepa"], "ablation": ["jepa_s0_plain"]}
