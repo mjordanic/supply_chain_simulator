@@ -73,6 +73,10 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--title", default="Paired evaluation")
     r.add_argument("--out", type=Path, required=True)
 
+    pp = sub.add_parser("pooled-primary", help="Holm once over the primary family of the tracks' test evals")
+    pp.add_argument("--tracks", nargs="+", required=True, help="every track whose primary comparisons are claimed")
+    pp.add_argument("--out", type=Path, required=True)
+
     b = sub.add_parser("backfill", help="write the historical results as kind=historical log lines")
     b.add_argument("--snapshot", type=Path, required=True, help="copy of the captain's runs/ (read-only)")
 
@@ -120,6 +124,10 @@ def main(argv: list[str] | None = None) -> None:
         text = write_report(args.scores, protocol, args.out, args.track, reference=args.reference,
                             primary=args.primary, secondary=secondary, strata=args.strata, title=args.title)
         print(text)
+    elif args.command == "pooled-primary":
+        from src.perfect_supplier.bench.report import write_pooled_primary
+
+        print(write_pooled_primary(args.tracks, protocol, args.out, args.track))
     elif args.command == "backfill":
         from src.perfect_supplier.bench.backfill import backfill
 

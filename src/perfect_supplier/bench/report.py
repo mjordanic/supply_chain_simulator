@@ -11,6 +11,11 @@ is the textbook arm with the best tune score, so it is chosen on tuning data,
 never on the worlds it is compared on. A reference, primary, or secondary
 family passed by the caller makes the report exploratory, and says so. Every
 report is a log line.
+
+The primary family spans every (track, world family, variant), so a single
+report's Holm is provisional and prints no labels. :func:`write_pooled_primary`
+pools the primary comparisons of every logged test eval of the named tracks,
+runs Holm once over the whole family, and writes the final labels.
 """
 
 from __future__ import annotations
@@ -80,16 +85,25 @@ def _vectors(m: pd.DataFrame, groups: dict[str, list[str]], name: str) -> np.nda
     return m[groups[name]].mean(axis=1).to_numpy() if name in groups else m[name].to_numpy()
 
 
-def _family_table(family: list[stats.Comparison]) -> list[str]:
+def _family_table(family: list[stats.Comparison], labels: bool = True) -> list[str]:
     lines = ["| comparison | diff, pts [95% BCa] | Holm-adjusted interval | cost reduction [95%] | win rate "
-             "| Wilcoxon p | Holm p | TOST p | CVaR10, pts | label |",
-             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+             "| Wilcoxon p | Holm p | TOST p | CVaR10, pts |" + (" label |" if labels else ""),
+             "| --- | --- | --- | --- | --- | --- | --- | --- | --- |" + (" --- |" if labels else "")]
     for c in family:
         lines.append(
             f"| {c.arm} − {c.ref} | {_pts(c.diff)} {_ci(c.ci)} | {_ci(c.ci_adj)} | "
             f"{100 * c.cost_reduction:+.1f}% [{100 * c.cost_reduction_ci[0]:+.1f}, {100 * c.cost_reduction_ci[1]:+.1f}] | "
-            f"{c.win_rate:.0%} | {c.p_wilcoxon:.2g} | {c.p_adj:.2g} | {c.p_tost:.2g} | {_pts(c.cvar10)} | {c.label} |")
+            f"{c.win_rate:.0%} | {c.p_wilcoxon:.2g} | {c.p_adj:.2g} | {c.p_tost:.2g} | {_pts(c.cvar10)} |"
+            + (f" {c.label} |" if labels else ""))
     return lines
+
+
+def _seed_groups(configs: list[dict]) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = {}
+    for c in configs:
+        if c.get("seed_group"):
+            groups.setdefault(c["seed_group"], []).append(c["name"])
+    return groups
 
 
 def write_report(
@@ -124,19 +138,13 @@ def write_report(
     if strata is None:
         strata = comp["strata"]["keys"]
     tag = " (exploratory: families chosen by the caller)" if exploratory else ""
-    groups: dict[str, list[str]] = {}
-    for c in configs:
-        if c.get("seed_group"):
-            groups.setdefault(c["seed_group"], []).append(c["name"])
+    groups = _seed_groups(configs)
     m = score_matrix(frame)
     split = frame["split"].iloc[0] if "split" in frame else "?"
     worlds = frame.drop_duplicates("world_seed").set_index("world_seed").reindex(m.index)
 
     def run_family(pairs):
-        fam = [stats.compare(_vectors(m, groups, a), _vectors(m, groups, b), (a, b), sesoi, level=level,
-                             n_resamples=n_resamples) for a, b in pairs]
-        diffs = [_vectors(m, groups, a) - _vectors(m, groups, b) for a, b in pairs]
-        return stats.decide(fam, diffs, sesoi, alpha=alpha, n_resamples=n_resamples) if fam else []
+        return _decide([(m, groups, a, b) for a, b in pairs], protocol, n_resamples)
 
     lines = [
         f"# {title}", "",
@@ -151,8 +159,9 @@ def write_report(
         "- margin capture is the primary metric; cost reduction is `1 − (1 − s_arm)/(1 − s_ref)`, a ratio of means",
         "", "## Arms", "",
         markdown_table(breakdown(frame).round(4)), "",
-        f"## Primary family{tag}", "",
-        *_family_table(run_family([(a, reference) for a in primary if a != reference])), "",
+        f"## Primary family{tag} (provisional: Holm within this report, not over the whole pre-registered "
+        "family; final labels come from the pooled primary report)", "",
+        *_family_table(run_family([(a, reference) for a in primary if a != reference]), labels=False), "",
     ]
     if secondary:
         lines += [f"## Secondary family{tag}", "", *_family_table(run_family(secondary)), ""]
@@ -186,6 +195,74 @@ def write_report(
     log.append(track, {"kind": "report", "scores": scores_dir, "split": split, "reference": reference,
                        "primary": primary, "secondary": secondary, "strata": strata,
                        "families": "exploratory" if exploratory else "pre-registered",
+                       "artifacts": [{"path": str(out), "sha256": log.file_sha256(out)}], "status": "kept"},
+               protocol, log_dir)
+    return text
+
+
+def _decide(pairs: list[tuple[pd.DataFrame, dict, str, str]], protocol: Protocol,
+            n_resamples: int) -> list[stats.Comparison]:
+    """Compare each (scores, seed groups, arm, ref) and apply Holm and the labels across all of them."""
+    st, sesoi = protocol.stats, protocol.sesoi
+    fam = [stats.compare(_vectors(m, g, a), _vectors(m, g, b), (a, b), sesoi, level=st["level"],
+                         n_resamples=n_resamples) for m, g, a, b in pairs]
+    diffs = [_vectors(m, g, a) - _vectors(m, g, b) for m, g, a, b in pairs]
+    return stats.decide(fam, diffs, sesoi, alpha=st["alpha"], n_resamples=n_resamples) if fam else []
+
+
+def write_pooled_primary(
+    tracks: list[str],
+    protocol: Protocol,
+    out: str | Path,
+    track: str,
+    *,
+    title: str = "Primary family (pooled)",
+    n_resamples: int | None = None,
+    log_dir: str | Path = log.LOG_DIR,
+) -> str:
+    """Holm once over every primary comparison of the kept test evals of ``tracks``.
+
+    A cell is a (track, world family, variant); its scores are every kept
+    test eval logged for it, the latest run of an arm winning. Raises
+    :class:`ValueError` while a track has no test eval or a cell lacks a
+    primary arm of the protocol.
+    """
+    n_resamples = n_resamples or protocol.stats["resamples"]
+    cells: dict[tuple, list[dict]] = {}
+    for row in log.read(log_dir=log_dir):
+        if row.get("kind") == "test-eval" and row.get("status") == "kept" and row.get("track") in tracks:
+            cells.setdefault((row["track"], row["world_family"], row["variant"]), []).append(row)
+    missing = [t for t in tracks if not any(c[0] == t for c in cells)]
+    pairs, names = [], []
+    for cell, rows in cells.items():
+        frames = [pd.read_parquet(Path(a["path"])) for row in rows for a in row["artifacts"]
+                  if Path(a["path"]).name == "scores.parquet"]
+        configs = {c["name"]: c for row in rows for a in row["artifacts"] if Path(a["path"]).name == "arms.json"
+                   for c in json.loads(Path(a["path"]).read_text())}
+        frame = pd.concat(frames).drop_duplicates(["arm", "world_seed"], keep="last")
+        m, groups = score_matrix(frame), _seed_groups(list(configs.values()))
+        reference, by_role = best_textbook(list(configs.values())), arms_by_role(list(configs.values()))
+        for r in protocol.raw["comparisons"]["primary"]["arms"]:
+            if r not in by_role:
+                missing.append(f"{'/'.join(cell)}: {r}")
+            for a in by_role.get(r, []):
+                pairs.append((m, groups, a, reference))
+                names.append("/".join(cell))
+    if missing:
+        raise ValueError(f"pooled primary family incomplete; missing: {', '.join(missing)}")
+    family = _decide(pairs, protocol, n_resamples)
+    for c, cell in zip(family, names):
+        c.arm = f"{cell}: {c.arm}"
+    lines = [f"# {title}", "",
+             f"- protocol sha256 `{protocol.sha256[:16]}…`; SESOI {protocol.raw['sesoi_pts']} pts; "
+             f"BCa {n_resamples} resamples; Holm at α = {protocol.stats['alpha']} over all {len(family)} comparisons",
+             f"- tracks: {', '.join(tracks)}; sealed test evals only; final labels", "",
+             *_family_table(family), ""]
+    text = "\n".join(lines)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(text)
+    log.append(track, {"kind": "report", "tracks": tracks, "split": "test", "families": "pre-registered",
+                       "primary": [c.arm for c in family], "result": {c.arm: {"label": c.label, "p_holm": c.p_adj} for c in family},
                        "artifacts": [{"path": str(out), "sha256": log.file_sha256(out)}], "status": "kept"},
                protocol, log_dir)
     return text

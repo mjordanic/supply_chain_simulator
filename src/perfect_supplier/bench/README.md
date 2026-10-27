@@ -66,6 +66,17 @@ config hash is in `experiments/frozen.json` under the current protocol. A
 second test run of the same (arm, variant) also needs `--rerun-reason`.
 `PS_WORKERS` sets the process pool size (default 3 from the protocol).
 
+A single report's primary family is provisional: Holm runs within that report
+only, so it prints no labels. The final labels come from
+
+```
+$B pooled-primary --tracks T1-hidden-regimes T2-consolidation --out runs/bench/primary.md
+```
+
+which pools the primary comparisons of every kept test eval of those tracks
+(one cell per track, world family, and variant), runs Holm once over the whole
+family, and refuses while a track has no test eval or a cell lacks a primary arm.
+
 The report's families come from `comparisons` in the protocol. Passing
 `--reference`, `--primary`, or `--secondary` makes it exploratory: the report
 says so and its log line records `families: exploratory`.

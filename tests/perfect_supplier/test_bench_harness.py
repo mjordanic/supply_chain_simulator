@@ -10,7 +10,8 @@ from src.perfect_supplier.bench.arms import SeasonalEtsForecaster, cell_of, make
 from src.perfect_supplier.bench.calibration import calibrate
 from src.perfect_supplier.bench.evaluate import evaluate, episode
 from src.perfect_supplier.bench.protocol import PROTOCOL_PATH, GateError, Protocol, freeze
-from src.perfect_supplier.bench.report import write_report
+from src.perfect_supplier.bench import stats
+from src.perfect_supplier.bench.report import write_pooled_primary, write_report
 from src.perfect_supplier.bench.tuner import tune
 from src.perfect_supplier.forecast import HORIZON, QUANTILES
 from src.perfect_supplier.sim import Obs
@@ -226,9 +227,55 @@ def test_report_averages_training_seeds_and_adds_a_two_level_section(proto, tmp_
     (tmp_path / "s" / "arms.json").write_text(json.dumps(configs))
     text = write_report(tmp_path / "s", proto, tmp_path / "r.md", "t", strata=[], log_dir=tmp_path / "log")
     primary, secondary = text.split("## Primary family")[1].split("## Secondary family")
+    assert "provisional" in primary and "superior" not in primary and "inconclusive" not in primary
     assert "| jepa − ref |" in primary and "planner_oracle" not in primary and "seasonal_ets" not in primary
     assert "| jepa − seasonal_ets |" in secondary and "| jepa − planner_oracle |" in secondary
     assert "pre-registered" in text and "exploratory" not in text and "## Training seeds" in text
     (row,) = log.read("t", tmp_path / "log")
     assert row["kind"] == "report" and row["families"] == "pre-registered" and row["primary"] == ["jepa"]
     assert "jepa_s0: +0.182, jepa_s1: +0.254, jepa_s2: +0.292" in text
+
+
+def _scores_dir(path, arms):
+    """A synthetic eval directory: ``arms`` maps name -> (config, scores)."""
+    path.mkdir(parents=True)
+    rows = [{"world_seed": 9_000_000 + i, "arm": a, "score": s[i], "variant": "base", "split": "test"}
+            for a, (_, s) in arms.items() for i in range(len(s))]
+    pd.DataFrame(rows).to_parquet(path / "scores.parquet")
+    (path / "arms.json").write_text(json.dumps([c for c, _ in arms.values()]))
+    return [{"path": str(path / f), "sha256": ""} for f in ("scores.parquet", "arms.json")]
+
+
+def test_pooled_primary_runs_holm_once_over_every_track(proto, tmp_path):
+    rng = np.random.default_rng(1)
+    n = 100
+    diffs = []
+    for track, shift in (("T1", 0.0005), ("T2", 0.001)):
+        ref = rng.uniform(0.9, 0.97, n)
+        jepa, direct = ref + shift + rng.normal(0, 0.003, n), ref + shift / 2 + rng.normal(0, 0.003, n)
+        diffs += [jepa - ref, direct - ref]
+        artifacts = _scores_dir(tmp_path / track, {
+            "ref": ({"name": "ref", "kind": "eoq_joint", "params": {}, "tune_score": 0.95}, ref),
+            "jepa": ({"name": "jepa", "kind": "planner", "params": {"forecaster": "jepa"}}, jepa),
+            "direct": ({"name": "direct", "kind": "planner", "params": {"forecaster": "direct"}}, direct)})
+        log.append(track, {"kind": "test-eval", "world_family": "perfect_supplier", "variant": "base",
+                           "artifacts": artifacts, "status": "kept"}, proto, tmp_path / "log")
+    text = write_pooled_primary(["T1", "T2"], proto, tmp_path / "pooled.md", "T2", log_dir=tmp_path / "log")
+    assert "over all 4 comparisons" in text
+    row = log.read("T2", tmp_path / "log")[-1]
+    assert row["kind"] == "report"
+    p_holm = [row["result"][f"{t}/perfect_supplier/base: {a}"]["p_holm"] for t in ("T1", "T2") for a in ("jepa", "direct")]
+    assert p_holm == pytest.approx(list(stats.holm([stats.ttest_p(d) for d in diffs])))
+    with pytest.raises(ValueError, match="missing: T3"):
+        write_pooled_primary(["T1", "T2", "T3"], proto, tmp_path / "p3.md", "T2", log_dir=tmp_path / "log")
+
+
+def test_pooled_primary_refuses_a_cell_without_a_primary_arm(proto, tmp_path):
+    ref = np.linspace(0.9, 0.95, 20)
+    artifacts = _scores_dir(tmp_path / "T2", {
+        "ref": ({"name": "ref", "kind": "eoq_joint", "params": {}, "tune_score": 0.95}, ref),
+        "jepa": ({"name": "jepa", "kind": "planner", "params": {"forecaster": "jepa"}}, ref + 0.001)})
+    log.append("T2", {"kind": "test-eval", "world_family": "perfect_supplier", "variant": "base",
+                      "artifacts": artifacts, "status": "kept"}, proto, tmp_path / "log")
+    with pytest.raises(ValueError, match="T2/perfect_supplier/base: direct"):
+        write_pooled_primary(["T2"], proto, tmp_path / "p.md", "T2", log_dir=tmp_path / "log")
