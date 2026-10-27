@@ -37,8 +37,13 @@ def sample_paths(quantiles: np.ndarray, n_paths: int, rng: np.random.Generator) 
     Days are drawn independently. Levels below the first and above the last
     quantile take the end values.
     """
+    H, P, _ = quantiles.shape
+    return paths_from_uniforms(quantiles, rng.random((n_paths, H, P)))
+
+
+def paths_from_uniforms(quantiles: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """Inverse-CDF of the piecewise-linear quantiles ``(H, P, Q)`` at uniforms ``u`` ``(M, H, P)``."""
     H, P, Q = quantiles.shape
-    u = rng.random((n_paths, H, P))
     idx = np.clip(np.searchsorted(QUANTILES, u) - 1, 0, Q - 2)
     lo, hi = QUANTILES[idx], QUANTILES[idx + 1]
     w = np.clip((u - lo) / (hi - lo), 0, 1)

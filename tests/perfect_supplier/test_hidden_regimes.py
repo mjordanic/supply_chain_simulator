@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from src.perfect_supplier.forecast import QUANTILES
 from src.perfect_supplier.world import HISTORY_DAYS, demand_mean_path, demand_path, regime_path, sample_world
 
 
@@ -161,3 +162,135 @@ def test_harness_runs_and_logs_arms_on_the_hidden_regime_family(proto, tmp_path)
     assert tune_row["world_family"] == eval_row["world_family"] == "hidden_regimes"
     with pytest.raises(ValueError, match="world family"):
         evaluate([ets], "dev", 1, "base", tmp_path / "o2", proto, "t", log_dir=tmp_path / "log")
+
+
+def test_baum_welch_recovers_a_known_gaussian_hmm():
+    from src.perfect_supplier.regimes import fit_gaussian_hmm
+
+    rng = np.random.default_rng(0)
+    means, sds, p = np.array([-0.5, 0.0, 0.5]), np.array([0.1, 0.1, 0.1]), 0.03
+    seqs = []
+    for _ in range(60):
+        k, xs = int(rng.integers(3)), []
+        for t in range(400):
+            if rng.random() < p:
+                k = (k + 1 + int(rng.integers(2))) % 3
+            xs.append(rng.normal(means[k], sds[k]))
+        x = np.array(xs)
+        x[rng.random(400) < 0.2] = np.nan  # missing (sold-out) days carry no emission
+        seqs.append(x)
+    hmm = fit_gaussian_hmm(seqs, 3, seed=1)
+    order = np.argsort(hmm.means)
+    np.testing.assert_allclose(hmm.means[order], means, atol=0.03)
+    np.testing.assert_allclose(hmm.sds[order], sds, atol=0.02)
+    assert 0.02 < 1 - np.diag(hmm.trans).mean() < 0.04
+    # Filtering a fresh sequence finds its state most of the time.
+    k, xs, ks = 0, [], []
+    for t in range(300):
+        if rng.random() < p:
+            k = (k + 1 + int(rng.integers(2))) % 3
+        xs.append(rng.normal(means[k], sds[k]))
+        ks.append(k)
+    post = hmm.filter(np.array(xs))
+    assert np.mean(np.argsort(order)[post.argmax(axis=1)] == np.array(ks)) > 0.9
+
+
+def test_hmm_forecaster_fitted_on_train_sales_tracks_true_demand():
+    from src.perfect_supplier.regimes import HmmForecaster, fit_hmm_on_sales
+
+    train = [demand_path(sample_world(1_000_000 + i, "train", family="hidden_regimes")) for i in range(30)]
+    hmm = fit_hmm_on_sales([(d, np.zeros_like(d, dtype=bool)) for d in train], n_states=3)
+    w = sample_world(4_000_010, "dev", family="hidden_regimes")
+    fc = HmmForecaster(hmm)
+    days = range(0, 320, 4)
+    pred = [fc.paths(_uncensored_obs(w, t), 256, np.random.default_rng(t))[:, :7].mean(axis=0).sum() for t in days]
+    true = [demand_mean_path(w)[HISTORY_DAYS + t + 1 : HISTORY_DAYS + t + 8].sum() for t in days]
+    rolling = [demand_path(w)[HISTORY_DAYS + t - 27 : HISTORY_DAYS + t + 1].sum(axis=1).mean() * 7 for t in days]
+    assert np.corrcoef(pred, true)[0, 1] > np.corrcoef(rolling, true)[0, 1] + 0.1
+    assert 0.9 < np.mean(pred) / np.mean(true) < 1.1
+
+
+def test_copula_sampler_keeps_the_marginals_and_correlates_the_days():
+    from types import SimpleNamespace
+
+    from src.perfect_supplier.forecast import MovingAverageForecaster
+    from src.perfect_supplier.regimes import CopulaSampler
+
+    obs = SimpleNamespace(sales=np.random.default_rng(0).poisson(10, (HISTORY_DAYS + 5, 2)))
+    lead = {}
+    for rho in (0.0, 0.8):
+        p = CopulaSampler(MovingAverageForecaster(), rho).paths(obs, 4000, np.random.default_rng(1))
+        lead[rho] = p[:, :10].sum(axis=1)  # (M, P)
+        assert abs(p.mean() - obs.sales[-28:].mean()) < 0.3
+    assert lead[0.8].std() > 2 * lead[0.0].std()
+
+
+def _demand_bank(seeds, split):
+    from src.perfect_supplier.joint import ShopBank
+
+    d = np.stack([demand_path(sample_world(s, split, family="hidden_regimes")) for s in seeds]).astype(np.float32)
+    return ShopBank(d, np.zeros(d.shape, bool), d, np.asarray(seeds))
+
+
+@pytest.mark.parametrize("use_jepa", [True, False])
+def test_joint_model_learns_the_shop_and_draws_coherent_paths(use_jepa):
+    from src.perfect_supplier import joint
+
+    train, val = _demand_bank(range(1_000_000, 1_000_016), "train"), _demand_bank(range(1_000_100, 1_000_104), "train")
+    config = joint.JointConfig(jepa=use_jepa, steps=300, eval_every=150, batch_size=64, hidden=64, embed_dim=16)
+    untrained = joint.evaluate(joint.JointModel(config), val)["nll"]
+    model = joint.fit(train, val, config)
+    assert joint.evaluate(model, val)["nll"] < untrained
+    fc = joint.JointForecaster(model)
+    obs = _uncensored_obs(sample_world(4_000_010, "dev", family="hidden_regimes"), 40)
+    paths = fc.paths(obs, 300, np.random.default_rng(0))
+    assert paths.shape == (300, 35, 4) and (paths >= 0).all() and np.allclose(paths, np.rint(paths))
+    assert fc(obs).shape == (35, 4, len(QUANTILES))
+
+
+def test_planner_arms_build_from_saved_joint_and_hmm_models(tmp_path):
+    from src.perfect_supplier import joint
+    from src.perfect_supplier.bench.arms import make_policy, model_spec
+    from src.perfect_supplier.regimes import fit_hmm_on_sales, save_hmm
+
+    w = sample_world(4_000_002, "dev", family="hidden_regimes")
+    obs = _uncensored_obs(w, 5)
+    from src.perfect_supplier.sim import Obs
+
+    obs = Obs(day=5, weekday=obs.weekday, delivery_lag=w.delivery_lag, on_hand=np.zeros(4, int),
+              pipeline=np.zeros((w.delivery_lag - 1, 4), int), sales=obs.sales, censored=obs.censored, cash=1e5,
+              capacity=w.capacity, unit_cost=10.0, price=20.0, order_fee=50.0, holding_rate=w.holding_rate)
+    joint.save(joint.JointModel(joint.JointConfig(hidden=16, embed_dim=8)), tmp_path / "j.pt")
+    save_hmm(fit_hmm_on_sales([(demand_path(w), np.zeros((HISTORY_DAYS + w.n_days, 4), bool))], 3), tmp_path / "h.json")
+    configs = [
+        {"name": "j", "kind": "planner", "params": {"forecaster": "jepa", "n_paths": 8},
+         "model": model_spec(tmp_path / "j.pt", "joint")},
+        {"name": "jc", "kind": "planner", "params": {"forecaster": "direct", "n_paths": 8, "copula_rho": 0.5},
+         "model": model_spec(tmp_path / "j.pt", "joint")},
+        {"name": "h", "kind": "planner", "params": {"forecaster": "hmm", "n_paths": 8},
+         "model": model_spec(tmp_path / "h.json", "hmm")},
+        {"name": "h", "kind": "planner", "params": {"forecaster": "hmm", "n_paths": 8, "copula_rho": 0.3},
+         "model": model_spec(tmp_path / "h.json", "hmm")},
+    ]
+    for c in configs:
+        qty = make_policy(c, w).decide(obs).qty
+        assert qty.shape == (4,) and (qty >= 0).all(), c["name"]
+
+
+def test_t1_workflow_collects_fits_and_scores_the_g2_gate(proto, tmp_path, monkeypatch):
+    from src.perfect_supplier import t1
+    from src.perfect_supplier.bench import log
+
+    monkeypatch.setenv("PS_WORKERS", "1")
+    logs = tmp_path / "log"
+    (tmp_path / "models").mkdir()
+    t1.collect(tmp_path, proto, sizes={"train": 6, "tune": 2, "dev": 2}, log_dir=logs)
+    t1.fit(tmp_path, [0], 60, proto, log_dir=logs)
+    t1.fit_hmm(tmp_path, [2, 3], proto, log_dir=logs)
+    text = t1.g2(tmp_path, [0], proto, 2, log_dir=logs)
+    assert "G2 passes" in text or "G2 fails" in text
+    rows = log.read(t1.TRACK, logs)
+    arms = [r["arm"] for r in rows]
+    assert arms[:3] == ["behaviour_log"] * 3 and sorted(arms[3:5]) == ["direct-s0", "jepa-s0"] and arms[5:] == ["hmm", "G2"]
+    assert all(r["status"] == "kept" and r["world_family"] == "hidden_regimes" for r in rows)
+    assert rows[-1]["result"]["gate"] == "G2" and "lead_time" in rows[-1]["result"]["jepa_minus_direct"]

@@ -11,8 +11,12 @@ A config is ``{"name", "kind", "variant", "params", ...}``:
 - ``never_order``.
 - ``planner``: the exact-recursion planner with ``params["forecaster"]`` one of
   ``oracle``, ``moving_average``, ``bayes`` (the known-model regime filter of a
-  ``hidden_regimes`` world), ``jepa``, ``direct``. ``jepa`` and ``direct``
-  name a model file in ``config["model"]`` (path and sha256).
+  ``hidden_regimes`` world), ``hmm``, ``jepa``, ``direct``. ``hmm``, ``jepa``
+  and ``direct`` name a model file in ``config["model"]`` (path, sha256, and a
+  ``type``: ``joint`` for the multi-product model of
+  :mod:`src.perfect_supplier.joint`, ``hmm`` for a fitted HMM; default the
+  per-product JEPA). ``params["copula_rho"]`` draws the planner's paths from
+  the forecaster's marginals under a one-factor Gaussian copula.
 - ``seasonal_ets``: the planner with :class:`SeasonalEtsForecaster`.
 
 Hashing a config (:func:`~src.perfect_supplier.bench.protocol.config_sha256`)
@@ -99,7 +103,16 @@ def _model(spec: dict):
         if spec.get("sha256") and file_sha256(path) != spec["sha256"]:
             raise ValueError(f"{path}: sha256 does not match the arm config")
         torch.set_num_threads(1)
-        _MODELS[path] = jepa.load(path)
+        if spec.get("type") == "hmm":
+            from src.perfect_supplier.regimes import load_hmm
+
+            _MODELS[path] = load_hmm(path)
+        elif spec.get("type") == "joint":
+            from src.perfect_supplier import joint
+
+            _MODELS[path] = joint.load(path)
+        else:
+            _MODELS[path] = jepa.load(path)
     return _MODELS[path]
 
 
@@ -119,6 +132,7 @@ def make_policy(config: dict, world: World):
         return Planner(SeasonalEtsForecaster(**params), name=name, n_paths=n_paths)
     if kind == "planner":
         fc = params.pop("forecaster")
+        rho = params.pop("copula_rho", None)
         if fc == "oracle":
             forecaster = OracleForecaster(world)
         elif fc == "moving_average":
@@ -127,21 +141,33 @@ def make_policy(config: dict, world: World):
             from src.perfect_supplier.regimes import BayesRegimeForecaster
 
             forecaster = BayesRegimeForecaster(world)
+        elif fc == "hmm":
+            from src.perfect_supplier.regimes import HmmForecaster
+
+            forecaster = HmmForecaster(_model(config["model"]))
+        elif fc in ("jepa", "direct") and config["model"].get("type") == "joint":
+            from src.perfect_supplier.joint import JointForecaster
+
+            forecaster = JointForecaster(_model(config["model"]), name=fc)
         elif fc in ("jepa", "direct"):
             from src.perfect_supplier.jepa import JepaForecaster
 
             forecaster = JepaForecaster(_model(config["model"]), name=fc)
         else:
             raise ValueError(f"unknown forecaster {fc!r}")
+        if rho is not None:
+            from src.perfect_supplier.regimes import CopulaSampler
+
+            forecaster = CopulaSampler(forecaster, rho)
         return Planner(forecaster, name=name, **params)
     raise ValueError(f"unknown arm kind {kind!r}")
 
 
-def model_spec(path: str | Path) -> dict:
+def model_spec(path: str | Path, type: str | None = None) -> dict:
     from src.perfect_supplier.bench.log import file_sha256
 
     path = Path(path).resolve()
-    return {"path": str(path), "sha256": file_sha256(path)}
+    return {"path": str(path), "sha256": file_sha256(path), **({"type": type} if type else {})}
 
 
 def legacy_configs(root: str | Path, variant: str, model_root: str | Path | None = None) -> list[dict]:
