@@ -246,36 +246,54 @@ def _scores_dir(path, arms):
     return [{"path": str(path / f), "sha256": ""} for f in ("scores.parquet", "arms.json")]
 
 
-def test_pooled_primary_runs_holm_once_over_every_track(proto, tmp_path):
+def _with_cells(proto, tmp_path, cells):
+    """``proto`` with these declared primary cells, each a (track, variant) of the perfect-supplier family."""
+    raw = yaml.safe_load(proto.path.read_text())
+    raw["comparisons"]["primary"]["cells"] = [{"track": t, "world_family": "perfect_supplier", "variant": v}
+                                              for t, v in cells]
+    path = tmp_path / f"protocol-{len(cells)}.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return Protocol.load(path)
+
+
+def _log_test_eval(track, variant, arms, proto, tmp_path):
+    artifacts = _scores_dir(tmp_path / f"{track}-{variant}", arms)
+    log.append(track, {"kind": "test-eval", "world_family": "perfect_supplier", "variant": variant,
+                       "artifacts": artifacts, "status": "kept"}, proto, tmp_path / "log")
+
+
+def test_pooled_primary_runs_holm_once_over_the_declared_cells(proto, tmp_path):
     rng = np.random.default_rng(1)
     n = 100
     diffs = []
-    for track, shift in (("T1", 0.0005), ("T2", 0.001)):
+    for track, variant, shift in (("T1", "base", 0.0005), ("T2", "base", 0.001), ("T2", "no_fee", 0.003)):
         ref = rng.uniform(0.9, 0.97, n)
         jepa, direct = ref + shift + rng.normal(0, 0.003, n), ref + shift / 2 + rng.normal(0, 0.003, n)
-        diffs += [jepa - ref, direct - ref]
-        artifacts = _scores_dir(tmp_path / track, {
+        if variant == "base":
+            diffs += [jepa - ref, direct - ref]
+        _log_test_eval(track, variant, {
             "ref": ({"name": "ref", "kind": "eoq_joint", "params": {}, "tune_score": 0.95}, ref),
             "jepa": ({"name": "jepa", "kind": "planner", "params": {"forecaster": "jepa"}}, jepa),
-            "direct": ({"name": "direct", "kind": "planner", "params": {"forecaster": "direct"}}, direct)})
-        log.append(track, {"kind": "test-eval", "world_family": "perfect_supplier", "variant": "base",
-                           "artifacts": artifacts, "status": "kept"}, proto, tmp_path / "log")
-    text = write_pooled_primary(["T1", "T2"], proto, tmp_path / "pooled.md", "T2", log_dir=tmp_path / "log")
-    assert "over all 4 comparisons" in text
+            "direct": ({"name": "direct", "kind": "planner", "params": {"forecaster": "direct"}}, direct)},
+            proto, tmp_path)
+    declared = _with_cells(proto, tmp_path, [("T1", "base"), ("T2", "base")])
+    text = write_pooled_primary(declared, tmp_path / "pooled.md", "T2", log_dir=tmp_path / "log")
+    assert "over all 4 comparisons" in text and "no_fee" not in text
     row = log.read("T2", tmp_path / "log")[-1]
-    assert row["kind"] == "report"
+    assert row["kind"] == "report" and row["cells"] == ["T1/perfect_supplier/base", "T2/perfect_supplier/base"]
     p_holm = [row["result"][f"{t}/perfect_supplier/base: {a}"]["p_holm"] for t in ("T1", "T2") for a in ("jepa", "direct")]
     assert p_holm == pytest.approx(list(stats.holm([stats.ttest_p(d) for d in diffs])))
-    with pytest.raises(ValueError, match="missing: T3"):
-        write_pooled_primary(["T1", "T2", "T3"], proto, tmp_path / "p3.md", "T2", log_dir=tmp_path / "log")
+    with_t3 = _with_cells(proto, tmp_path, [("T1", "base"), ("T2", "base"), ("T3", "base")])
+    with pytest.raises(ValueError, match="T3/perfect_supplier/base: no test eval"):
+        write_pooled_primary(with_t3, tmp_path / "p3.md", "T2", log_dir=tmp_path / "log")
 
 
 def test_pooled_primary_refuses_a_cell_without_a_primary_arm(proto, tmp_path):
     ref = np.linspace(0.9, 0.95, 20)
-    artifacts = _scores_dir(tmp_path / "T2", {
+    _log_test_eval("T2", "base", {
         "ref": ({"name": "ref", "kind": "eoq_joint", "params": {}, "tune_score": 0.95}, ref),
-        "jepa": ({"name": "jepa", "kind": "planner", "params": {"forecaster": "jepa"}}, ref + 0.001)})
-    log.append("T2", {"kind": "test-eval", "world_family": "perfect_supplier", "variant": "base",
-                      "artifacts": artifacts, "status": "kept"}, proto, tmp_path / "log")
+        "jepa": ({"name": "jepa", "kind": "planner", "params": {"forecaster": "jepa"}}, ref + 0.001)},
+        proto, tmp_path)
     with pytest.raises(ValueError, match="T2/perfect_supplier/base: direct"):
-        write_pooled_primary(["T2"], proto, tmp_path / "p.md", "T2", log_dir=tmp_path / "log")
+        write_pooled_primary(_with_cells(proto, tmp_path, [("T2", "base")]), tmp_path / "p.md", "T2",
+                             log_dir=tmp_path / "log")

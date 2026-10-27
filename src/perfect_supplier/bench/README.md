@@ -70,12 +70,15 @@ A single report's primary family is provisional: Holm runs within that report
 only, so it prints no labels. The final labels come from
 
 ```
-$B pooled-primary --tracks T1-hidden-regimes T2-consolidation --out runs/bench/primary.md
+$B pooled-primary --out runs/bench/primary.md
 ```
 
-which pools the primary comparisons of every kept test eval of those tracks
-(one cell per track, world family, and variant), runs Holm once over the whole
-family, and refuses while a track has no test eval or a cell lacks a primary arm.
+which takes its cells, each a (track, world family, variant), only from
+`comparisons.primary.cells` in the protocol (T2's base, no-fee and one-product
+worlds, T1's hidden-regime world). It pools the primary comparisons of their
+kept test evals, runs Holm once over the whole family, and refuses while a
+declared cell has no test eval or lacks a primary arm. Test evals of any other
+cell are ablations and stay out of the family.
 
 The report's families come from `comparisons` in the protocol. Passing
 `--reference`, `--primary`, or `--secondary` makes it exploratory: the report

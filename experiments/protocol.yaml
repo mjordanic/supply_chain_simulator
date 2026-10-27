@@ -5,11 +5,14 @@
 # amendment: edit, bump `version`, and append a `kind: amendment` line to the
 # track's log saying why. Every log line records this file's sha256.
 
-version: 2  # 2: pre-registered comparison families and stopping rules (amendment, before any test-block look)
+version: 3  # 2: pre-registered comparison families and stopping rules; 3: the primary cells (amendments, before any test-block look)
 
 world_families:
   perfect_supplier:
     variants: [base, one_product, no_fee]
+  # Track T1's hidden demand regimes; the world sampler lands with T1.
+  hidden_regimes:
+    variants: [base]
 
 metrics:
   # Margin capture, the simulator's `score`, paired by world.
@@ -41,6 +44,15 @@ comparisons:
     # Holm at `statistics.alpha` across the whole primary family.
     arms: [jepa, direct]
     reference: best_textbook_by_tune_score
+    # The headline cells, one per (track, world family) with its variant.
+    # The pooled report takes its cells only from here; a test eval of any
+    # other (track, world family, variant) is an ablation, outside the family.
+    # T3 and T4 are not approved to run and are left out.
+    cells:
+      - {track: T2-consolidation, world_family: perfect_supplier, variant: base}   # 4 products, order fee
+      - {track: T2-consolidation, world_family: perfect_supplier, variant: no_fee}
+      - {track: T2-consolidation, world_family: perfect_supplier, variant: one_product}
+      - {track: T1-hidden-regimes, world_family: hidden_regimes, variant: base}
     correction: holm
   secondary:
     # JEPA minus direct, minus the planner with a classical forecaster, minus the oracle. Holm within the family.

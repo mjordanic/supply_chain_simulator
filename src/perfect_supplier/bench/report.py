@@ -14,8 +14,9 @@ report is a log line.
 
 The primary family spans every (track, world family, variant), so a single
 report's Holm is provisional and prints no labels. :func:`write_pooled_primary`
-pools the primary comparisons of every logged test eval of the named tracks,
-runs Holm once over the whole family, and writes the final labels.
+pools the primary comparisons of the protocol's declared primary cells from
+their logged test evals, runs Holm once over the whole family, and writes the
+final labels.
 """
 
 from __future__ import annotations
@@ -211,7 +212,6 @@ def _decide(pairs: list[tuple[pd.DataFrame, dict, str, str]], protocol: Protocol
 
 
 def write_pooled_primary(
-    tracks: list[str],
     protocol: Protocol,
     out: str | Path,
     track: str,
@@ -220,21 +220,26 @@ def write_pooled_primary(
     n_resamples: int | None = None,
     log_dir: str | Path = log.LOG_DIR,
 ) -> str:
-    """Holm once over every primary comparison of the kept test evals of ``tracks``.
+    """Holm once over every primary comparison of the protocol's declared primary cells.
 
-    A cell is a (track, world family, variant); its scores are every kept
-    test eval logged for it, the latest run of an arm winning. Raises
-    :class:`ValueError` while a track has no test eval or a cell lacks a
-    primary arm of the protocol.
+    A cell is a (track, world family, variant) listed under
+    ``comparisons.primary.cells``; its scores are every kept test eval logged
+    for it, the latest run of an arm winning. Test evals of undeclared cells
+    are ignored. Raises :class:`ValueError` while a declared cell has no test
+    eval or lacks a primary arm of the protocol.
     """
     n_resamples = n_resamples or protocol.stats["resamples"]
-    cells: dict[tuple, list[dict]] = {}
+    cells: dict[tuple, list[dict]] = {(c["track"], c["world_family"], c["variant"]): []
+                                      for c in protocol.raw["comparisons"]["primary"]["cells"]}
     for row in log.read(log_dir=log_dir):
-        if row.get("kind") == "test-eval" and row.get("status") == "kept" and row.get("track") in tracks:
-            cells.setdefault((row["track"], row["world_family"], row["variant"]), []).append(row)
-    missing = [t for t in tracks if not any(c[0] == t for c in cells)]
+        cell = (row.get("track"), row.get("world_family"), row.get("variant"))
+        if row.get("kind") == "test-eval" and row.get("status") == "kept" and cell in cells:
+            cells[cell].append(row)
+    missing = [f"{'/'.join(cell)}: no test eval" for cell, rows in cells.items() if not rows]
     pairs, names = [], []
     for cell, rows in cells.items():
+        if not rows:
+            continue
         frames = [pd.read_parquet(Path(a["path"])) for row in rows for a in row["artifacts"]
                   if Path(a["path"]).name == "scores.parquet"]
         configs = {c["name"]: c for row in rows for a in row["artifacts"] if Path(a["path"]).name == "arms.json"
@@ -256,12 +261,13 @@ def write_pooled_primary(
     lines = [f"# {title}", "",
              f"- protocol sha256 `{protocol.sha256[:16]}…`; SESOI {protocol.raw['sesoi_pts']} pts; "
              f"BCa {n_resamples} resamples; Holm at α = {protocol.stats['alpha']} over all {len(family)} comparisons",
-             f"- tracks: {', '.join(tracks)}; sealed test evals only; final labels", "",
+             f"- cells (from the protocol): {', '.join('/'.join(c) for c in cells)}; sealed test evals only; "
+             "final labels", "",
              *_family_table(family), ""]
     text = "\n".join(lines)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(text)
-    log.append(track, {"kind": "report", "tracks": tracks, "split": "test", "families": "pre-registered",
+    log.append(track, {"kind": "report", "cells": ["/".join(c) for c in cells], "split": "test", "families": "pre-registered",
                        "primary": [c.arm for c in family], "result": {c.arm: {"label": c.label, "p_holm": c.p_adj} for c in family},
                        "artifacts": [{"path": str(out), "sha256": log.file_sha256(out)}], "status": "kept"},
                protocol, log_dir)
