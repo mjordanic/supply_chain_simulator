@@ -18,34 +18,58 @@ simulator's own recursion, run on every path. A candidate's score is the mean
 change in equity over the horizon, stock left at the end valued at unit cost.
 Paths are shared by all candidates, so their differences are not sampling noise
 between candidates.
+
+Knobs (the defaults are the original planner):
+
+- ``rho``: path coherence. Each product's path shares one Gaussian shock
+  across days with equicorrelation ``rho`` in normal-score space (a Gaussian
+  copula), so every day keeps its marginal quantiles while lead-time sums
+  widen; a learned forecast's errors are mostly level errors shared by days.
+- ``service_max``: extends the service grid with 0.998, 0.999 and 0.9995 up to
+  this cap; the per-day newsvendor ratio reaches 0.9993 here.
+- ``level_paths``: draw that many separate paths only for the reorder and
+  order-up-to quantiles, so a high service level is not the largest of 64 sums.
+  The candidates are still scored on the ``n_paths`` paths.
+
+The forecaster's ``levels`` (default ``QUANTILES``) are its quantile levels.
 """
 
 from __future__ import annotations
 
 import numpy as np
+from scipy.stats import norm
 
 from src.perfect_supplier.forecast import QUANTILES
 from src.perfect_supplier.sim import Decision, Obs
 
 REVIEWS = (1, 2, 3, 4, 5, 7, 10, 14, 21)
 SERVICE = (0.5, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995)
+TAIL_SERVICE = (0.998, 0.999, 0.9995)
 
 
-def sample_paths(quantiles: np.ndarray, n_paths: int, rng: np.random.Generator) -> np.ndarray:
-    """Demand paths ``(n_paths, H, P)`` by inverse-CDF on the piecewise-linear quantiles.
+def sample_paths(
+    quantiles: np.ndarray, n_paths: int, rng: np.random.Generator, levels: np.ndarray = QUANTILES, rho: float = 0.0
+) -> np.ndarray:
+    """Demand paths ``(n_paths, H, P)`` by inverse-CDF on the piecewise-linear quantiles at ``levels``.
 
-    Days are drawn independently. Levels below the first and above the last
-    quantile take the end values.
+    With ``rho == 0`` days are drawn independently; otherwise through a
+    Gaussian copula with equicorrelation ``rho`` across the days of a product.
+    Levels below the first and above the last quantile take the end values.
     """
     H, P, _ = quantiles.shape
-    return paths_from_uniforms(quantiles, rng.random((n_paths, H, P)))
+    if rho == 0:
+        u = rng.random((n_paths, H, P))
+    else:
+        z = np.sqrt(rho) * rng.standard_normal((n_paths, 1, P)) + np.sqrt(1 - rho) * rng.standard_normal((n_paths, H, P))
+        u = norm.cdf(z)
+    return paths_from_uniforms(quantiles, u, levels)
 
 
-def paths_from_uniforms(quantiles: np.ndarray, u: np.ndarray) -> np.ndarray:
-    """Inverse-CDF of the piecewise-linear quantiles ``(H, P, Q)`` at uniforms ``u`` ``(M, H, P)``."""
+def paths_from_uniforms(quantiles: np.ndarray, u: np.ndarray, levels: np.ndarray = QUANTILES) -> np.ndarray:
+    """Inverse-CDF of the piecewise-linear quantiles ``(H, P, Q)`` at ``levels``, at uniforms ``u`` ``(M, H, P)``."""
     H, P, Q = quantiles.shape
-    idx = np.clip(np.searchsorted(QUANTILES, u) - 1, 0, Q - 2)
-    lo, hi = QUANTILES[idx], QUANTILES[idx + 1]
+    idx = np.clip(np.searchsorted(levels, u) - 1, 0, Q - 2)
+    lo, hi = levels[idx], levels[idx + 1]
     w = np.clip((u - lo) / (hi - lo), 0, 1)
     qh = np.arange(H)[None, :, None]
     qp = np.arange(P)[None, None, :]
@@ -64,14 +88,18 @@ def _ration(want: np.ndarray, free: np.ndarray, budget: np.ndarray, unit_cost: f
     over = total > limit
     if not over.any():
         return want
-    share = want * (limit / np.maximum(total, 1))[:, :, None]
+    # Only the few (candidate, path) rows over their limit are rationed.
+    w, lim = want[over], limit[over]
+    share = w * (lim / np.maximum(total[over], 1))[:, None]
     out = np.floor(share)
-    rest = limit - out.sum(axis=2)
+    rest = lim - out.sum(axis=1)
     # Largest remainders first; ties go to the lower product index, as in the sim.
-    order = np.argsort(-(share - out), axis=2, kind="stable")
-    rank = np.argsort(order, axis=2, kind="stable")
-    out += rank < rest[:, :, None]
-    return np.where(over[:, :, None], out, want)
+    order = np.argsort(-(share - out), axis=1, kind="stable")
+    rank = np.argsort(order, axis=1, kind="stable")
+    out += rank < rest[:, None]
+    want = want.copy()
+    want[over] = out
+    return want
 
 
 class Planner:
@@ -84,25 +112,34 @@ class Planner:
         reviews: tuple[int, ...] = REVIEWS,
         service: tuple[float, ...] = SERVICE,
         seed: int = 0,
+        rho: float = 0.0,
+        service_max: float | None = None,
+        level_paths: int = 0,
     ):
         self.forecaster = forecaster
         self.name = name or f"planner_{forecaster.name}"
         self.n_paths = n_paths
         self.seed = seed
+        self.rho, self.level_paths = rho, level_paths
+        if service_max is not None:
+            service = tuple(z for z in (*service, *TAIL_SERVICE) if z <= service_max)
         cands = [(r, z) for r in reviews for z in service]
         self.review = np.array([c[0] for c in cands])
         self.z = np.array([c[1] for c in cands])
 
     def decide(self, obs: Obs) -> Decision:
         rng = np.random.default_rng([self.seed, obs.day])
+        levels = getattr(self.forecaster, "levels", QUANTILES)
         if hasattr(self.forecaster, "paths"):
             paths = self.forecaster.paths(obs, self.n_paths, rng)  # (M, H, P)
+            extra = self.forecaster.paths(obs, self.level_paths, rng) if self.level_paths else None
             mean_7d = paths[:, :7].mean(axis=0).sum(axis=0)
         else:
             quantiles = self.forecaster(obs)  # (H, P, Q)
-            paths = sample_paths(quantiles, self.n_paths, rng)  # (M, H, P)
-            mean_7d = quantiles[:7, :, QUANTILES.tolist().index(0.5)].sum(axis=0)
-        score, first_order = self.imagine(obs, paths)
+            paths = sample_paths(quantiles, self.n_paths, rng, levels, self.rho)  # (M, H, P)
+            extra = sample_paths(quantiles, self.level_paths, rng, levels, self.rho) if self.level_paths else None
+            mean_7d = quantiles[:7, :, list(levels).index(0.5)].sum(axis=0)
+        score, first_order = self.imagine(obs, paths, extra)
         best = int(np.argmax(score))
         orders_today = first_order.sum(axis=1) > 0
         info = {
@@ -153,42 +190,50 @@ class Planner:
                 up_to[k] = np.maximum(at_cover[z], at_lag[z])
         return reorder, up_to
 
-    def imagine(self, obs: Obs, paths: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Mean imagined equity change per candidate, and each candidate's order today."""
+    def imagine(
+        self, obs: Obs, paths: np.ndarray, level_paths: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Mean imagined equity change per candidate, and each candidate's order today.
+
+        The reorder and order-up-to quantiles come from ``level_paths`` when given, else from ``paths``.
+        """
         M, H, P = paths.shape
         C, L = len(self.review), obs.delivery_lag
-        reorder, targets = self._levels(paths, L)  # (C, H, P) each
+        reorder, targets = self._levels(paths if level_paths is None else level_paths, L)  # (C, H, P) each
         on_hand = np.broadcast_to(obs.on_hand.astype(float), (C, M, P)).copy()
+        # Sums over products as a matrix product: much faster than a reduce over a short last
+        # axis, and exact, since every summand is a whole number of units.
+        ones = np.ones(P)
         # Arrivals by horizon row: row k lands on day t + 1 + k.
-        arriving = np.zeros((C, M, H + L + 1, P))
-        arriving[:, :, : L - 1, :] = obs.pipeline[None, None].astype(float)
-        in_transit = arriving.sum(axis=2)
+        arriving = np.zeros((H + L + 1, C, M, P))
+        arriving[: L - 1] = obs.pipeline[:, None, None, :].astype(float)
+        in_transit = arriving.sum(axis=0)
         cash = np.full((C, M), float(obs.cash))
         start_equity = obs.cash + obs.unit_cost * float(obs.position.sum())
         first_order = np.zeros((C, P), dtype=np.int64)
-        demand = paths[None]  # (1, M, H, P)
+        demand = np.ascontiguousarray(paths.transpose(1, 0, 2))  # (H, M, P)
         for h in range(H):
             # Day t + h: rows h >= 1 sell first; row 0 (today) has already sold.
             if h > 0:
-                arrived = arriving[:, :, h - 1, :]
+                arrived = arriving[h - 1]
                 on_hand += arrived
                 in_transit -= arrived
-                sold = np.minimum(demand[:, :, h - 1, :], on_hand)
+                sold = np.minimum(demand[h - 1], on_hand)
                 on_hand -= sold
-                cash += obs.price * sold.sum(axis=2)
+                cash += obs.price * (sold @ ones)
             position = on_hand + in_transit  # (C, M, P)
-            due = (position < reorder[:, h, None, :]).any(axis=2)  # (C, M)
+            due = ((position < reorder[:, h, None, :]) @ ones) > 0  # (C, M)
             if due.any():
                 want = np.maximum(np.rint(targets[:, h, None, :] - position), 0) * due[:, :, None]
-                qty = _ration(want, obs.capacity - position.sum(axis=2), cash - obs.order_fee, obs.unit_cost)
-                units = qty.sum(axis=2)
+                qty = _ration(want, obs.capacity - position @ ones, cash - obs.order_fee, obs.unit_cost)
+                units = qty @ ones
                 cash -= obs.unit_cost * units + obs.order_fee * (units > 0)
-                arriving[:, :, h + L - 1, :] += qty
+                arriving[h + L - 1] += qty
                 in_transit += qty
                 if h == 0:
                     # Today's order is the same on every path; take path 0.
                     first_order = qty[:, 0, :].astype(np.int64)
-            cash -= obs.holding_rate * obs.unit_cost * on_hand.sum(axis=2)
-        stock = (on_hand + in_transit).sum(axis=2)
+            cash -= obs.holding_rate * obs.unit_cost * (on_hand @ ones)
+        stock = (on_hand + in_transit) @ ones
         equity = cash + obs.unit_cost * stock
         return (equity - start_equity).mean(axis=1), first_order
