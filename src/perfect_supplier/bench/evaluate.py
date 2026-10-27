@@ -17,7 +17,7 @@ from joblib import Parallel, delayed
 
 from src.perfect_supplier.bench import log
 from src.perfect_supplier.bench.arms import make_policy
-from src.perfect_supplier.bench.protocol import Protocol, check_test_gate, config_sha256
+from src.perfect_supplier.bench.protocol import Protocol, arm_sha256, check_test_gate, config_sha256
 from src.perfect_supplier.sim import simulate
 from src.perfect_supplier.world import sample_world
 
@@ -71,7 +71,8 @@ def evaluate(
     entry = {
         "kind": kind, "arms": [c["name"] for c in configs], "world_family": "perfect_supplier",
         "variant": variant, "split": split, "seeds": {"first": seeds[0], "count": len(seeds)},
-        "config": {c["name"]: config_sha256(c) for c in configs}, "rerun_reason": rerun_reason, "note": note,
+        "config": {c["name"]: config_sha256(c) for c in configs},
+        "arm_sha256": {c["name"]: arm_sha256(c) for c in configs}, "rerun_reason": rerun_reason, "note": note,
     }
     with log.logged_run(track, entry, protocol, log_dir):
         frame = run_episodes(configs, seeds, split, variant, protocol.workers())

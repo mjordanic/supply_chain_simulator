@@ -91,6 +91,11 @@ def test_frozen_config_runs_once_then_needs_a_rerun_reason(proto, tmp_path):
              rerun_reason="checking reproducibility")
     kept = [r for r in log.read("t", logs) if r["status"] == "kept"]
     assert [r["rerun_reason"] for r in kept] == [None, "checking reproducibility"]
+    # The same arm under a new name is still the same arm.
+    renamed = {**EOQ, "name": "eoq_joint_b"}
+    freeze(renamed, "test", proto, frozen)
+    with pytest.raises(GateError, match="rerun reason"):
+        evaluate([renamed], "test", 2, "base", tmp_path / "o5", proto, "t", log_dir=logs, frozen_path=frozen)
     # A changed config is a different hash, so it is not frozen.
     with pytest.raises(GateError, match="not frozen"):
         evaluate([{**EOQ, "params": {**EOQ["params"], "service_z": 2.0}}], "test", 2, "base", tmp_path / "o4",
@@ -239,7 +244,9 @@ def test_report_averages_training_seeds_and_adds_a_two_level_section(proto, tmp_
 def _scores_dir(path, arms):
     """A synthetic eval directory: ``arms`` maps name -> (config, scores)."""
     path.mkdir(parents=True)
-    rows = [{"world_seed": 9_000_000 + i, "arm": a, "score": s[i], "variant": "base", "split": "test"}
+    rows = [{"world_seed": 9_000_000 + i, "arm": a, "score": s[i], "variant": "base", "split": "test",
+             "total_demand": 1000.0, "price": 20.0, "unit_cost": 10.0, "lost_units": 1, "fees": 50.0,
+             "holding_cost": 30.0, "order_days": 50, "fill_rate_demand": 0.99, "mean_on_hand": 70.0}
             for a, (_, s) in arms.items() for i in range(len(s))]
     pd.DataFrame(rows).to_parquet(path / "scores.parquet")
     (path / "arms.json").write_text(json.dumps([c for c, _ in arms.values()]))
@@ -297,3 +304,32 @@ def test_pooled_primary_refuses_a_cell_without_a_primary_arm(proto, tmp_path):
     with pytest.raises(ValueError, match="T2/perfect_supplier/base: direct"):
         write_pooled_primary(_with_cells(proto, tmp_path, [("T2", "base")]), tmp_path / "p.md", "T2",
                              log_dir=tmp_path / "log")
+
+
+def test_git_state_hashes_untracked_files(tmp_path, monkeypatch):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a"],
+                   check=True)
+    monkeypatch.setattr(log, "REPO", tmp_path)
+    assert log.git_state()["git_dirty_diff_sha256"] is None
+    (tmp_path / "new_forecaster.py").write_text("y = 2\n")
+    first = log.git_state()["git_dirty_diff_sha256"]
+    assert first is not None
+    (tmp_path / "new_forecaster.py").write_text("y = 3\n")
+    assert log.git_state()["git_dirty_diff_sha256"] not in (None, first)
+
+
+def test_report_with_an_explicit_reference_needs_no_tuned_textbook_arm(proto, tmp_path):
+    rng = np.random.default_rng(2)
+    ref = rng.uniform(0.9, 0.97, 50)
+    _scores_dir(tmp_path / "s", {
+        "direct": ({"name": "direct", "kind": "planner", "params": {"forecaster": "direct"}}, ref),
+        "jepa": ({"name": "jepa", "kind": "planner", "params": {"forecaster": "jepa"}},
+                 ref + 0.001 + rng.normal(0, 0.002, 50))})
+    text = write_report(tmp_path / "s", proto, tmp_path / "r.md", "t", reference="direct", primary=["jepa"],
+                        secondary=[], strata=[], log_dir=tmp_path / "log")
+    assert "reference: `direct`\n" in text and "| jepa − direct |" in text

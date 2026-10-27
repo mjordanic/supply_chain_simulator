@@ -37,6 +37,11 @@ def config_sha256(config: dict) -> str:
     return sha256_bytes(json.dumps(config, sort_keys=True, separators=(",", ":")).encode())
 
 
+def arm_sha256(config: dict) -> str:
+    """What the arm is, whatever it is called: the config hash without its name."""
+    return config_sha256({k: v for k, v in config.items() if k != "name"})
+
+
 @dataclass(frozen=True)
 class Protocol:
     raw: dict
@@ -129,7 +134,8 @@ def check_test_gate(
 
     Non-sealed splits always pass. On a sealed split every config must be
     frozen under the current protocol, and an (arm, variant) that already has
-    a test-eval log line needs ``rerun_reason``.
+    a test-eval log line, under its name or under another name with the same
+    :func:`arm_sha256`, needs ``rerun_reason``.
     """
     if not protocol.is_sealed(split):
         return
@@ -141,7 +147,8 @@ def check_test_gate(
         if frozen[sha]["protocol_sha256"] != protocol.sha256:
             raise GateError(f"refusing {split} run: arm {config['name']!r} was frozen under another protocol")
         seen = [r for r in previous_test_runs
-                if config["name"] in r.get("arms", []) and r.get("variant") == variant and r.get("status") == "kept"]
+                if (config["name"] in r.get("arms", []) or arm_sha256(config) in r.get("arm_sha256", {}).values())
+                and r.get("variant") == variant and r.get("status") == "kept"]
         if seen and not rerun_reason:
             raise GateError(
                 f"refusing {split} run: arm {config['name']!r} already has {len(seen)} test run(s) on {variant!r}; "

@@ -129,6 +129,7 @@ def write_report(
     level, alpha, sesoi = st["level"], st["alpha"], protocol.sesoi
     comp = protocol.raw["comparisons"]
     exploratory = reference is not None or primary is not None or secondary is not None
+    by_tune_score = reference is None
     reference = reference or best_textbook(configs)
     by_role = arms_by_role(configs)
     if primary is None:
@@ -154,7 +155,7 @@ def write_report(
         f"- protocol sha256 `{protocol.sha256[:16]}…`; SESOI {protocol.raw['sesoi_pts']} pts; "
         f"BCa {n_resamples} resamples; Holm at α = {alpha}",
         f"- reference: `{reference}`" + (" (best tune score among tuned textbook arms)"
-                                          if reference == best_textbook(configs) else ""),
+                                          if by_tune_score else ""),
         "- families: " + ("**exploratory**, chosen by the caller; not the pre-registered ones" if exploratory
                           else "pre-registered (`comparisons` in the protocol)"),
         "- margin capture is the primary metric; cost reduction is `1 − (1 − s_arm)/(1 − s_ref)`, a ratio of means",

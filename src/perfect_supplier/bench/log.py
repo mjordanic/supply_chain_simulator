@@ -31,7 +31,12 @@ def _git(*args: str) -> bytes:
 
 
 def git_state() -> dict:
+    """HEAD and a hash of everything that differs from it: tracked changes plus untracked, non-ignored files."""
     diff = _git("diff", "HEAD")
+    for name in _git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0"):
+        path = REPO / name.decode()
+        if name and path.is_file():
+            diff += b"\0untracked\0" + name + b"\0" + path.read_bytes()
     return {
         "git_sha": _git("rev-parse", "HEAD").decode().strip() or None,
         "git_dirty_diff_sha256": sha256_bytes(diff) if diff else None,

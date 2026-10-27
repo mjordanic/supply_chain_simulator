@@ -25,21 +25,14 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import norm
 
+from src.perfect_supplier.experiment import NeverOrder
 from src.perfect_supplier.forecast import HORIZON, QUANTILES, MovingAverageForecaster, OracleForecaster
 from src.perfect_supplier.planner import Planner
-from src.perfect_supplier.sim import Decision
 from src.perfect_supplier.textbook import FAMILIES, EoqParams, EoqPolicy, TextbookParams, TextbookPolicy
 from src.perfect_supplier.world import World
 
 TEXTBOOK_KINDS = (*FAMILIES, "eoq", "eoq_joint", "param_eoq_joint")
 KINDS = (*TEXTBOOK_KINDS, "never_order", "planner", "seasonal_ets")
-
-
-class NeverOrder:
-    name = "never_order"
-
-    def decide(self, obs) -> Decision:
-        return Decision(np.zeros(obs.n_products, dtype=np.int64))
 
 
 class SeasonalEtsForecaster:
