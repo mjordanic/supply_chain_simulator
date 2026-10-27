@@ -15,6 +15,7 @@ uncertain, and only demand is learned. Inventory mechanics are exact.
 | `data.py` | partitioned parquet storage and loaders |
 | `experiment.py` | `collect`, `fit`, `tune`, `eval`, `shadow` commands |
 | `analysis.py` | paired tables and plots for notebook 15 |
+| `bench/` | the pre-registered evaluation harness every new experiment runs through (ADR 0034, `bench/README.md`) |
 
 ```
 uv run python -m src.perfect_supplier collect --n-worlds 2000

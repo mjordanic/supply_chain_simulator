@@ -612,6 +612,13 @@ _Avoid_: world model. The inventory mechanics are not what this buyer learns.
 **Margin capture** (the perfect-supplier `score`)
 Change in **equity** over the episode divided by `(price − unit_cost) × total demand`. 1.0 would sell every demanded unit with no fee and no holding cost. Ranks arms world by world.
 
+**Cost reduction** (co-reported with margin capture, ADR 0034)
+`1 − (1 − s_arm) / (1 − s_ref)` on mean scores: the share of the reference arm's lost margin (lost sales, fees, holding) that an arm removes.
+
+**Sealed test block** (`experiments/protocol.yaml`, ADR 0034)
+World seeds 9,000,000–9,000,999. The harness runs them only for arm configs listed in `experiments/frozen.json`, once per arm and variant unless a rerun reason is logged. A **burnt** seed range (the old eval block, shadow runs, audit diagnostics) has been looked at and is never reported as held-out.
+_Avoid_: eval set, for the old 3,000,000 block. It is a dev set now.
+
 **Equity**
 Cash plus on-hand at catalog unit cost plus in-transit at catalog unit cost. The perfect-supplier replenishment experiment ranks a policy on the change in equity over the episode. Holding cost has already left cash, so stock left at the horizon is worth its cost and was not free to hold.
 _Avoid_: net profit. Net profit is the cash change only: revenue − order cost − holding cost − order fees.
@@ -681,6 +688,7 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0031](docs/adr/0031-supply-side-scarcity.md) — Replenishment episodes have several factories per SKU, a sampled markup, demand-relative supply, and differing lead times. Realised supplier fill rate is on the run log. Routing stays outside the learned action. **Accepted.** Amends ADR 0013 rule 3 for those episodes.
 - [ADR 0032](docs/adr/0032-binding-tightness.md) — Tuning episodes size shop capacity and opening cash from separate tightness factors times episode demand. Both factors are per-seed columns. **Accepted.** Replaces ADR 0009 decision (d) for those episodes. RL keeps log-uniform scale draws.
 - [ADR 0033](docs/adr/0033-perfect-supplier-experiment.md) — Simpler replenishment experiment: one perfect supplier, a lean simulator with engine parity, a JEPA demand forecaster under an exact-recursion planner, textbook rules tuned once across worlds. **Accepted.**
+- [ADR 0034](docs/adr/0034-pre-registered-evaluation-harness.md) — Perfect-supplier claims go through `src/perfect_supplier/bench/` under `experiments/protocol.yaml`: sealed test block 9,000,000–9,000,999 behind a frozen-config gate, textbook budgets at least 4× the learned budget, BCa + Holm paired statistics, every run logged. **Accepted.**
 
 ## Flagged ambiguities
 

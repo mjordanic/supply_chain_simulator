@@ -1,0 +1,144 @@
+# Pre-registered evaluation protocol for the perfect-supplier experiments.
+#
+# Approved by the captain on 2026-10-27 (plan approval for the sc-jepa audit,
+# decisions D1-D3). Frozen before any tuning. Change it only through a logged
+# amendment: edit, bump `version`, and append a `kind: amendment` line to the
+# track's log saying why. Every log line records this file's sha256.
+
+version: 3  # 2: pre-registered comparison families and stopping rules; 3: the primary cells (amendments, before any test-block look)
+
+world_families:
+  perfect_supplier:
+    variants: [base, one_product, no_fee]
+  # Track T1's hidden demand regimes; the world sampler lands with T1.
+  hidden_regimes:
+    variants: [base]
+
+metrics:
+  # Margin capture, the simulator's `score`, paired by world.
+  primary: margin_capture
+  # 1 - (1 - s_arm) / (1 - s_ref), as a ratio of means.
+  co_reported: cost_reduction
+  secondary:
+    [lost_sales_share, fee_share, holding_share, order_days, fill_rate_demand, mean_on_hand, cvar10_diff]
+
+# Smallest effect of interest, in points of margin capture.
+sesoi_pts: 0.10
+
+statistics:
+  alpha: 0.05          # Holm across the primary family, and within the secondary family
+  bh_q: 0.10           # Benjamini-Hochberg over strata (exploratory)
+  bootstrap: BCa
+  resamples: 10000
+  level: 0.95
+  tost_level: 0.90     # equivalent: the 90% interval lies inside +-SESOI
+
+# Comparison families, fixed before any tuning; the report reads them from here.
+# An arm's role is its planner forecaster (oracle, moving_average, jepa, direct)
+# or its kind (seasonal_ets). Arms sharing a `seed_group` (one config per
+# training seed) count as one arm, averaged over the training seeds.
+comparisons:
+  primary:
+    # One comparison per (track x world family) and learned arm: the arm minus
+    # the textbook arm with the best tune score (never chosen on eval worlds).
+    # Holm at `statistics.alpha` across the whole primary family.
+    arms: [jepa, direct]
+    reference: best_textbook_by_tune_score
+    # The headline cells, one per (track, world family) with its variant.
+    # The pooled report takes its cells only from here; a test eval of any
+    # other (track, world family, variant) is an ablation, outside the family.
+    # T3 and T4 are not approved to run and are left out.
+    cells:
+      - {track: T2-consolidation, world_family: perfect_supplier, variant: base}   # 4 products, order fee
+      - {track: T2-consolidation, world_family: perfect_supplier, variant: no_fee}
+      - {track: T2-consolidation, world_family: perfect_supplier, variant: one_product}
+      - {track: T1-hidden-regimes, world_family: hidden_regimes, variant: base}
+    correction: holm
+  secondary:
+    # JEPA minus direct, minus the planner with a classical forecaster, minus the oracle. Holm within the family.
+    pairs: [[jepa, direct], [jepa, seasonal_ets], [jepa, moving_average], [jepa, oracle]]
+    correction: holm
+  strata:
+    # Exploratory, BH at `statistics.bh_q`.
+    keys: [holding_rate, cv, delivery_lag]
+    correction: bh
+  labels:
+    superior: Holm-adjusted lower bound > 0
+    practically_superior: superior and the estimate >= SESOI
+    equivalent: the 90% interval lies inside +-SESOI (TOST)
+    inferior: Holm-adjusted upper bound < 0
+    inconclusive: anything else
+
+# Gates a track must pass before it spends the next stage of compute.
+stopping_rules:
+  T1:
+    - {gate: G1, before: training, rule: "the oracle / Bayes planner beats the best textbook arm by >= 1 pt margin capture on dev"}
+    - {gate: G2, before: closed-loop runs, rule: "JEPA beats direct on the dev forecast metrics"}
+  T2: []  # no gate: the sealed test runs once the config is frozen
+  T3:
+    - {gate: oracle, before: training, rule: "the oracle planner beats tuned capped base-stock by >= SESOI on dev"}
+  # Enforced by the harness gate: one sealed test run per (arm, world family
+  # and variant); a second needs a logged --rerun-reason.
+  test_runs_per_arm: 1
+
+# Independent forecaster training seeds per learned arm.
+training_seeds: 3
+
+# Seeds are absolute world seeds; `sample_world(seed, split)` draws only from the seed.
+seed_blocks:
+  train: {first: 1000000, size: 2000}
+  tune: {first: 2000000, size: 4096}
+  dev: {first: 4000000, size: 500}
+  test: {first: 9000000, size: 1000, sealed: true}
+
+# Never reported as held-out, never reused by a tuner or an eval.
+burnt:
+  - {first: 3000000, last: 3000499, why: "old eval block, looked at over at least three development rounds"}
+  - {first: 3100000, last: 3199999, why: "shadow runs (3,100,000+)"}
+  - {first: 3200000, last: 3200199, why: "sc-jepa audit diagnostics (copula planner)"}
+  - {first: 12000000, last: 16999999, why: "engine-line seed blocks"}
+
+# Tuning budgets in closed-loop episodes on tune worlds (trials x worlds per trial).
+budgets:
+  learned: {trials: 48, worlds_per_trial: 32}
+  # Textbook families get at least `textbook_multiplier` x the learned budget.
+  textbook_multiplier: 4
+  textbook: {trials: 192, worlds_per_trial: 32}
+  # A contextual arm tunes every cell with the full textbook budget.
+
+# Search spaces, declared before tuning. [type, low, high(, log)] or [categorical, [choices]].
+search_spaces:
+  eoq:
+    service_z: [float, 0.0, 6.0]
+    demand_window: [int, 7, 56]
+    q_scale: [float, 0.25, 4.0, log]
+  eoq_joint:
+    service_z: [float, 0.0, 6.0]
+    demand_window: [int, 7, 56]
+    q_scale: [float, 0.25, 4.0, log]
+  # z = z_a + z_b * Phi^-1(m / (m + h)), m = price - unit_cost, h = holding_rate * unit_cost.
+  param_eoq_joint:
+    z_a: [float, -3.0, 3.0]
+    z_b: [float, 0.0, 2.0]
+    demand_window: [int, 7, 56]
+    q_scale: [float, 0.25, 4.0, log]
+  order_up_to: &engine
+    cover_horizon_ticks: [int, 0, 28]
+    safety_lead_pct_of_lag: [float, 0.0, 2.0]
+    stockout_safety_bonus_pct_of_lag: [float, 0.0, 1.5]
+    demand_window: [int, 2, 42]
+  reorder_point: *engine
+  periodic_order_up_to: &periodic
+    <<: *engine
+    review_interval: [int, 1, 14]
+  periodic_reorder: *periodic
+  planner:
+    n_paths: [categorical, [32, 64, 128]]
+  seasonal_ets:
+    n_paths: [categorical, [32, 64, 128]]
+    alpha: [float, 0.01, 0.5]
+    gamma: [float, 0.01, 0.5]
+
+compute:
+  # CPU is shared on this machine; PS_WORKERS overrides.
+  max_workers: 3
