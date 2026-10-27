@@ -288,9 +288,40 @@ def test_t1_workflow_collects_fits_and_scores_the_g2_gate(proto, tmp_path, monke
     t1.fit(tmp_path, [0], 60, proto, log_dir=logs)
     t1.fit_hmm(tmp_path, [2, 3], proto, log_dir=logs)
     text = t1.g2(tmp_path, [0], proto, 2, log_dir=logs)
-    assert "G2 passes" in text or "G2 fails" in text
+    assert "**G2 passes.**" in text or "**G2 fails.**" in text
     rows = log.read(t1.TRACK, logs)
     arms = [r["arm"] for r in rows]
     assert arms[:3] == ["behaviour_log"] * 3 and sorted(arms[3:5]) == ["direct-s0", "jepa-s0"] and arms[5:] == ["hmm", "G2"]
     assert all(r["status"] == "kept" and r["world_family"] == "hidden_regimes" for r in rows)
     assert rows[-1]["result"]["gate"] == "G2" and "lead_time" in rows[-1]["result"]["jepa_minus_direct"]
+    monkeypatch.setattr(t1, "SAMPLERS", ({"n_paths": 4}, {"n_paths": 4, "copula_rho": 0.5}))
+    configs = {c["name"]: c for c in t1.arms(tmp_path, [0], proto, n_worlds=1, log_dir=logs)}
+    assert configs["jepa-s0"]["seed_group"] == "jepa" and configs["jepa-s0"]["model"]["type"] == "joint"
+    assert configs["planner_hmm"]["params"]["n_paths"] == 4
+    assert [r["kind"] for r in log.read(t1.TRACK, logs)][-3:] == ["tune"] * 3
+
+
+@pytest.mark.parametrize("bayes, passes", [(0.966, True), (0.962, False)])
+def test_g1_needs_one_point_over_the_tune_reference_and_the_best_textbook_arm_on_dev(proto, tmp_path, bayes, passes):
+    import json
+
+    import pandas as pd
+
+    from src.perfect_supplier import t1
+    from src.perfect_supplier.bench import log
+
+    configs = [{"name": "a", "kind": "eoq_joint", "tune_score": 0.95}, {"name": "b", "kind": "eoq", "tune_score": 0.94},
+               {"name": "planner_bayes", "kind": "planner", "params": {"forecaster": "bayes"}},
+               {"name": "planner_oracle", "kind": "planner", "params": {"forecaster": "oracle"}}]
+    rng = np.random.default_rng(0)
+    noise = rng.normal(0, 1e-4, 50)
+    means = {"a": 0.950, "b": 0.955, "planner_bayes": bayes, "planner_oracle": 0.97}
+    rows = [{"arm": a, "world_seed": i, "score": v + noise[i]} for a, v in means.items() for i in range(50)]
+    pd.DataFrame(rows).to_parquet(tmp_path / "scores.parquet")
+    (tmp_path / "arms.json").write_text(json.dumps(configs))
+    text = t1.g1(tmp_path, proto, log_dir=tmp_path / "log")
+    assert ("**G1 passes.**" in text) == passes
+    (row,) = log.read(t1.TRACK, tmp_path / "log")
+    assert row["result"]["passed"] == passes
+    assert row["result"]["planner_bayes - best on dev"]["ref"] == "b"
+    assert row["result"]["planner_bayes - by tune score"]["ref"] == "a"

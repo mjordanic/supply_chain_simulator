@@ -1,10 +1,13 @@
 """Track T1 workflow on the ``hidden_regimes`` world family.
 
     T1="uv run python -m src.perfect_supplier.t1 --out <dir>"
+    $T1 g1 --scores <dev eval dir>   # gate G1 on a harness dev eval (Bayes / oracle planner vs textbook)
     $T1 collect                      # behaviour-policy shop banks: train, tune (HMM order), dev (G2)
     $T1 fit --seeds 0 1 2            # joint JEPA and direct, one model per training seed
     $T1 fit-hmm --states 2 3 4       # Baum-Welch on train sales; order chosen on the tune bank
     $T1 g2                           # dev forecast metrics, JEPA vs direct, the gate G2
+    $T1 arms --seeds 0 1 2           # planner arm configs; the sampler of each learned forecaster
+                                     # (native paths or a copula) picked on tune worlds
 
 Every step is a line in ``experiments/log/T1-hidden-regimes.jsonl``. The
 closed-loop steps (tune, eval, report, freeze) run through the harness CLI
@@ -45,6 +48,9 @@ BANKS = {"train": 2000, "tune": 200, "dev": 300}
 G2_EVERY = 7
 G2_PATHS = 256
 G2_LEVELS = (0.1, 0.5, 0.9, 0.95, 0.99)
+G1_PTS = 1.0
+G1_RULE = ("G1 passes when the known-model Bayes planner's mean dev margin capture beats both the protocol "
+           "reference (the textbook arm with the best tune score) and the best textbook arm on dev by >= 1.00 pt")
 G2_RULE = ("G2 passes when JEPA minus direct (each averaged over its training seeds) on the dev lead_time "
            "pinball has a world-paired 95% BCa interval entirely below 0, and the point estimates on daily and "
            "shop_lead_time are <= 0")
@@ -62,6 +68,44 @@ def _shop(seed: int, split: str, regimes: dict) -> tuple[np.ndarray, np.ndarray,
     sales = np.concatenate([demand[:HISTORY_DAYS], frame["sales"].to_numpy().reshape(-1, P)])
     cens = np.concatenate([np.zeros((HISTORY_DAYS, P), bool), frame["censored"].to_numpy(bool).reshape(-1, P)])
     return sales, cens, demand
+
+
+def g1(scores_dir: Path, protocol: Protocol, log_dir=log.LOG_DIR) -> str:
+    """Score gate G1 on a harness dev eval; one ``kind: gate`` log line."""
+    import pandas as pd
+
+    from src.perfect_supplier.bench.arms import TEXTBOOK_KINDS
+    from src.perfect_supplier.bench.evaluate import score_matrix
+    from src.perfect_supplier.bench.report import best_textbook
+
+    configs = json.loads((scores_dir / "arms.json").read_text())
+    m = score_matrix(pd.read_parquet(scores_dir / "scores.parquet"))
+    textbook = [c["name"] for c in configs if c["kind"] in TEXTBOOK_KINDS]
+    refs = {"by tune score": best_textbook(configs), "best on dev": m[textbook].mean().idxmax()}
+    lines = [f"# T1 gate G1 ({len(m)} dev worlds)", "", f"Rule (fixed before the run): {G1_RULE}.", "",
+             "| arm − reference | reference | diff, pts [95% BCa] | win rate |", "| --- | --- | --- | --- |"]
+    result = {}
+    for arm in ("planner_bayes", "planner_oracle"):
+        for how, ref in refs.items():
+            d = (m[arm] - m[ref]).to_numpy()
+            lo, hi = stats.bca_ci(d, level=0.95, n_resamples=protocol.stats["resamples"])
+            result[f"{arm} - {how}"] = {"ref": ref, "diff_pts": 100 * float(d.mean()), "ci95": [100 * lo, 100 * hi]}
+            lines.append(f"| {arm} − {how} | `{ref}` | {100 * d.mean():+.3f} [{100 * lo:+.3f}, {100 * hi:+.3f}] "
+                         f"| {(d > 0).mean():.0%} |")
+    passed = all(result[f"planner_bayes - {h}"]["diff_pts"] >= G1_PTS for h in refs)
+    lines += ["", "Mean margin capture: " + ", ".join(f"`{a}` {v:.4f}" for a, v in
+                                                       m.mean().sort_values(ascending=False).items()), "",
+              f"**G1 {'passes' if passed else 'fails'}.**", ""]
+    text = "\n".join(lines)
+    (scores_dir / "g1.md").write_text(text)
+    log.append(TRACK, {"kind": "gate", "arm": "G1", "world_family": FAMILY, "variant": "base", "split": "dev",
+                       "config": {"rule": G1_RULE, "scores": str(scores_dir),
+                                  "regimes": protocol.world_params(FAMILY)},
+                       "result": {"gate": "G1", "passed": passed, **result},
+                       "artifacts": [{"path": str(scores_dir / "g1.md"),
+                                      "sha256": log.file_sha256(scores_dir / "g1.md")}],
+                       "status": "kept"}, protocol, log_dir)
+    return text
 
 
 def collect(out: Path, protocol: Protocol, sizes: dict[str, int] = BANKS, log_dir=log.LOG_DIR) -> None:
@@ -235,10 +279,67 @@ def g2(out: Path, seeds: list[int], protocol: Protocol, n_worlds: int, log_dir=l
     return text
 
 
+SAMPLERS = ({}, {"copula_rho": 0.0}, {"copula_rho": 0.5})
+
+
+def _planner(name: str, fc: str, model: dict | None = None, **params) -> dict:
+    config = {"name": name, "kind": "planner", "variant": "base", "world_family": FAMILY,
+              "params": {"forecaster": fc, **params}}
+    return config | ({"model": model} if model else {})
+
+
+def pick_sampler(config: dict, protocol: Protocol, n_worlds: int = 32, log_dir=log.LOG_DIR) -> dict:
+    """The best of :data:`SAMPLERS` for a planner arm, by mean score on ``n_worlds`` tune worlds."""
+    from src.perfect_supplier.bench.evaluate import run_episodes
+
+    seeds = protocol.seeds("tune", n_worlds)
+    grid = [{**config, "name": f"{config['name']}-g{i}", "params": {**config["params"], **g}}
+            for i, g in enumerate(SAMPLERS)]
+    entry = {"kind": "tune", "arm": config["name"], "world_family": FAMILY, "variant": "base", "split": "tune",
+             "seeds": {"first": seeds[0], "count": n_worlds}, "config": {"base": config, "grid": SAMPLERS},
+             "budget": {"trials": len(SAMPLERS), "worlds_per_trial": n_worlds,
+                        "episodes": len(SAMPLERS) * n_worlds}}
+    with log.logged_run(TRACK, entry, protocol, log_dir):
+        frame = run_episodes(grid, seeds, "tune", "base", _workers(), FAMILY, protocol.world_params(FAMILY))
+        scores = frame.groupby("arm")["score"].mean()
+        best = int(np.argmax([scores[g["name"]] for g in grid]))
+        entry["result"] = {"metric": "margin_capture", "scores": {str(SAMPLERS[i]): float(scores[g["name"]])
+                                                                  for i, g in enumerate(grid)},
+                           "chosen": SAMPLERS[best]}
+    return SAMPLERS[best]
+
+
+def arms(out: Path, seeds: list[int], protocol: Protocol, n_worlds: int = 32, log_dir=log.LOG_DIR) -> list[dict]:
+    """Write ``arms/*.json``: JEPA and direct per training seed, the HMM, Bayes, oracle, and classical planners.
+
+    Each learned forecaster's sampler is picked on tune worlds with its
+    seed-0 model (JEPA, direct) or its one model (HMM), and kept for every seed.
+    """
+    from src.perfect_supplier.bench.arms import model_spec
+
+    (out / "arms").mkdir(parents=True, exist_ok=True)
+    configs = []
+    for fc in ("jepa", "direct"):
+        spec = lambda s: model_spec(out / "models" / f"{fc}-s{s}.pt", "joint")  # noqa: E731
+        chosen = pick_sampler(_planner(f"{fc}-s{seeds[0]}", fc, spec(seeds[0])), protocol, n_worlds, log_dir)
+        configs += [_planner(f"{fc}-s{s}", fc, spec(s), **chosen) | {"seed_group": fc} for s in seeds]
+    hmm = _planner("planner_hmm", "hmm", model_spec(out / "models" / "hmm.json", "hmm"))
+    hmm["params"].update(pick_sampler(hmm, protocol, n_worlds, log_dir))
+    configs += [hmm, _planner("planner_bayes", "bayes"), _planner("planner_oracle", "oracle"),
+                _planner("planner_moving_average", "moving_average"),
+                {"name": "seasonal_ets", "kind": "seasonal_ets", "variant": "base", "world_family": FAMILY,
+                 "params": {}}]
+    for c in configs:
+        (out / "arms" / f"{c['name']}.json").write_text(json.dumps(c, indent=1))
+    return configs
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m src.perfect_supplier.t1")
     parser.add_argument("--out", type=Path, required=True)
     sub = parser.add_subparsers(dest="command", required=True)
+    g1p = sub.add_parser("g1")
+    g1p.add_argument("--scores", type=Path, required=True)
     sub.add_parser("collect")
     f = sub.add_parser("fit")
     f.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
@@ -248,10 +349,15 @@ def main(argv: list[str] | None = None) -> None:
     g = sub.add_parser("g2")
     g.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     g.add_argument("--n-worlds", type=int, default=BANKS["dev"])
+    a = sub.add_parser("arms")
+    a.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
+    a.add_argument("--n-worlds", type=int, default=32)
     args = parser.parse_args(argv)
     protocol = Protocol.load()
     (args.out / "models").mkdir(parents=True, exist_ok=True)
-    if args.command == "collect":
+    if args.command == "g1":
+        print(g1(args.scores, protocol))
+    elif args.command == "collect":
         collect(args.out, protocol)
     elif args.command == "fit":
         fit(args.out, args.seeds, args.steps, protocol)
@@ -259,6 +365,9 @@ def main(argv: list[str] | None = None) -> None:
         fit_hmm(args.out, args.states, protocol)
     elif args.command == "g2":
         print(g2(args.out, args.seeds, protocol, args.n_worlds))
+    elif args.command == "arms":
+        for c in arms(args.out, args.seeds, protocol, args.n_worlds):
+            print(c["name"], c["params"])
 
 
 if __name__ == "__main__":
