@@ -7,7 +7,7 @@ for arms that share a ``seed_group``; strata (BH-adjusted, exploratory). Margin
 capture differences are in points; cost reduction sits next to each.
 
 The families and strata come from ``comparisons`` in the protocol. The reference
-is the textbook arm with the best tune score, so it is chosen on tuning data,
+is the textbook arm with the best selection score (else tune score), so it is chosen on tuning data,
 never on the worlds it is compared on. A reference, primary, or secondary
 family passed by the caller makes the report exploratory, and says so. Every
 report is a log line.
@@ -34,10 +34,12 @@ from src.perfect_supplier.bench.protocol import Protocol
 
 
 def best_textbook(configs: list[dict]) -> str:
+    """The tuned textbook arm with the best selection score (common tune worlds), else the best tune score."""
     tuned = [c for c in configs if c["kind"] in TEXTBOOK_KINDS and c.get("tune_score") is not None]
     if not tuned:
         raise ValueError("no tuned textbook arm with a tune score; pass the reference explicitly")
-    return max(tuned, key=lambda c: c["tune_score"])["name"]
+    key = "select_score" if all(c.get("select_score") is not None for c in tuned) else "tune_score"
+    return max(tuned, key=lambda c: c[key])["name"]
 
 
 def role(config: dict) -> str:
@@ -131,6 +133,8 @@ def write_report(
     exploratory = reference is not None or primary is not None or secondary is not None
     by_tune_score = reference is None
     reference = reference or best_textbook(configs)
+    basis = ("selection score on common tune worlds"
+             if any(c["name"] == reference and c.get("select_score") is not None for c in configs) else "tune score")
     by_role = arms_by_role(configs)
     if primary is None:
         primary = [a for r in comp["primary"]["arms"] for a in by_role.get(r, [])]
@@ -154,8 +158,7 @@ def write_report(
         f"{len(m)} worlds, seeds {m.index.min()}–{m.index.max()}, variant `{frame['variant'].iloc[0]}`",
         f"- protocol sha256 `{protocol.sha256[:16]}…`; SESOI {protocol.raw['sesoi_pts']} pts; "
         f"BCa {n_resamples} resamples; Holm at α = {alpha}",
-        f"- reference: `{reference}`" + (" (best tune score among tuned textbook arms)"
-                                          if by_tune_score else ""),
+        f"- reference: `{reference}`" + (f" (best {basis} among tuned textbook arms)" if by_tune_score else ""),
         "- families: " + ("**exploratory**, chosen by the caller; not the pre-registered ones" if exploratory
                           else "pre-registered (`comparisons` in the protocol)"),
         "- margin capture is the primary metric; cost reduction is `1 − (1 − s_arm)/(1 − s_ref)`, a ratio of means",
