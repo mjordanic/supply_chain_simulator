@@ -316,6 +316,10 @@ def test_git_state_hashes_untracked_files(tmp_path, monkeypatch):
                    check=True)
     monkeypatch.setattr(log, "REPO", tmp_path)
     assert log.git_state()["git_dirty_diff_sha256"] is None
+    (tmp_path / "experiments" / "log").mkdir(parents=True)
+    (tmp_path / "experiments" / "log" / "T2.jsonl").write_text("{}\n")
+    (tmp_path / "experiments" / "frozen.json").write_text("{}\n")
+    assert log.git_state()["git_dirty_diff_sha256"] is None
     (tmp_path / "new_forecaster.py").write_text("y = 2\n")
     first = log.git_state()["git_dirty_diff_sha256"]
     assert first is not None

@@ -20,6 +20,8 @@ from src.perfect_supplier.bench.protocol import EXPERIMENTS, Protocol, sha256_by
 
 LOG_DIR = EXPERIMENTS / "log"
 REPO = EXPERIMENTS.parent
+# The harness's own outputs, not the code that produced a run.
+HARNESS_STATE = (":(exclude)experiments/log", ":(exclude)experiments/frozen.json")
 
 
 def new_run_id() -> str:
@@ -31,9 +33,12 @@ def _git(*args: str) -> bytes:
 
 
 def git_state() -> dict:
-    """HEAD and a hash of everything that differs from it: tracked changes plus untracked, non-ignored files."""
-    diff = _git("diff", "HEAD")
-    for name in _git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0"):
+    """HEAD and a hash of everything that differs from it: tracked changes plus untracked, non-ignored files.
+
+    The experiment log and ``frozen.json`` are left out of both.
+    """
+    diff = _git("diff", "HEAD", "--", ".", *HARNESS_STATE)
+    for name in _git("ls-files", "--others", "--exclude-standard", "-z", "--", ".", *HARNESS_STATE).split(b"\0"):
         path = REPO / name.decode()
         if name and path.is_file():
             diff += b"\0untracked\0" + name + b"\0" + path.read_bytes()
