@@ -47,7 +47,10 @@ def log_path(track: str, log_dir: str | Path = LOG_DIR) -> Path:
 
 
 def append(track: str, entry: dict, protocol: Protocol, log_dir: str | Path = LOG_DIR) -> dict:
-    """Write ``entry`` with the run id, track, git state, and protocol hash filled in."""
+    """Write ``entry`` with the run id, track, git state, and protocol hash filled in.
+
+    Git state already in ``entry`` (captured when a run started) is kept.
+    """
     path = log_path(track, log_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -84,6 +87,7 @@ def logged_run(track: str, entry: dict, protocol: Protocol, log_dir: str | Path 
     The block fills ``entry`` in place (result, artifacts, note).
     """
     t0 = time.time()
+    entry.update(git_state())  # the code that runs, not the tree when the run ends
     try:
         yield entry
     except BaseException as exc:

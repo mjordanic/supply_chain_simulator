@@ -76,7 +76,7 @@ class Protocol:
         return self.raw["search_spaces"][kind]
 
     def is_sealed(self, split: str) -> bool:
-        return bool(self.raw["seed_blocks"][split].get("sealed", False))
+        return bool(self.raw["seed_blocks"].get(split, {}).get("sealed", False))
 
     def burnt(self, seed: int) -> str | None:
         for b in self.raw["burnt"]:

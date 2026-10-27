@@ -29,7 +29,7 @@ SUMMARY_COLUMNS = ["score", "total_demand", "lost_units", "fees", "holding_cost"
 def episode(config: dict, seed: int, split: str, variant: str) -> dict:
     world = sample_world(seed, split, variant=variant)
     summary = simulate(world, make_policy(config, world)).summary
-    return {"arm": config["name"], **{k: summary[k] for k in WORLD_COLUMNS + SUMMARY_COLUMNS}}
+    return {"arm": config["name"], "split": split, **{k: summary[k] for k in WORLD_COLUMNS + SUMMARY_COLUMNS}}
 
 
 def run_episodes(configs: list[dict], seeds: list[int], split: str, variant: str, workers: int) -> pd.DataFrame:

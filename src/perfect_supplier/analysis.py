@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from src.perfect_supplier.bench.stats import bca_ci, cost_reduction_stat
+
 LABELS = {
     "jepa": "JEPA planner",
     "direct": "direct-forecast planner",
@@ -31,10 +33,9 @@ LABELS = {
 }
 
 
-def bootstrap_ci(x: np.ndarray, n: int = 5000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
-    rng = np.random.default_rng(seed)
-    means = rng.choice(x, size=(n, len(x)), replace=True).mean(axis=1)
-    return float(np.quantile(means, alpha / 2)), float(np.quantile(means, 1 - alpha / 2))
+def bootstrap_ci(x: np.ndarray, n: int = 10_000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+    """BCa interval of the mean (the harness protocol's interval)."""
+    return bca_ci(x, level=1 - alpha, n_resamples=n, seed=seed)
 
 
 def _complete(m: pd.DataFrame) -> pd.DataFrame:
@@ -75,7 +76,10 @@ def paired_table(summary: pd.DataFrame, baseline: str, metric: str = "score", sp
 
 
 def pairwise(summary: pd.DataFrame, pairs: Sequence[tuple[str, str]], split: str = "eval") -> pd.DataFrame:
-    """Mean paired score difference ``a - b`` in points, its 95% CI, and a's win rate, per pair."""
+    """Mean paired score difference ``a - b`` in points, its 95% CI, a's win rate, and cost reduction, per pair.
+
+    Cost reduction is ``1 - (1 - s_a) / (1 - s_b)`` on mean scores: the share of b's lost margin that a removes.
+    """
     m = _complete(score_matrix(summary, split=split))
     rows = []
     for a, b in pairs:
@@ -83,7 +87,9 @@ def pairwise(summary: pd.DataFrame, pairs: Sequence[tuple[str, str]], split: str
         lo, hi = bootstrap_ci(d)
         rows.append(
             {"arm": a, "vs": b, "diff (pts)": d.mean() * 100, "ci low": lo * 100, "ci high": hi * 100,
-             "win rate": float((d > 0).mean()), "n_worlds": len(d)}
+             "win rate": float((d > 0).mean()),
+             "cost reduction (%)": 100 * float(cost_reduction_stat(m[a].to_numpy(), m[b].to_numpy())),
+             "n_worlds": len(d)}
         )
     return pd.DataFrame(rows)
 
