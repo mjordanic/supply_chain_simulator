@@ -63,7 +63,8 @@ $B eval --arms ... --split test --n-worlds 1000 --out runs/bench/test
 
 A `--split test` run is refused (and the refusal logged) unless every arm's
 config hash is in `experiments/frozen.json` under the current protocol. A
-second test run of the same (arm, variant) also needs `--rerun-reason`.
+second test run of the same (arm, variant) also needs `--rerun-reason`; the
+arm is matched by its config hash without `name` too, so a renamed copy counts.
 `PS_WORKERS` sets the process pool size (default 3 from the protocol).
 
 A single report's primary family is provisional: Holm runs within that report
