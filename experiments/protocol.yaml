@@ -5,14 +5,22 @@
 # amendment: edit, bump `version`, and append a `kind: amendment` line to the
 # track's log saying why. Every log line records this file's sha256.
 
-version: 3  # 2: pre-registered comparison families and stopping rules; 3: the primary cells (amendments, before any test-block look)
+version: 4  # 2: pre-registered comparison families and stopping rules; 3: the primary cells; 4: T1's hidden_regimes world parameters, the ets_eoq_joint arm, the hmm and bayes secondary pairs (amendments, before any test-block look)
 
 world_families:
   perfect_supplier:
     variants: [base, one_product, no_fee]
-  # Track T1's hidden demand regimes; the world sampler lands with T1.
+  # Track T1's hidden demand regimes (src/perfect_supplier/world.py): the base
+  # world's draws times one hidden shop-wide regime multiplier, a 3-state
+  # Markov chain. G1 may change `strength` (log-multiplier scale) on dev, before
+  # any training; each change is an amendment.
   hidden_regimes:
     variants: [base]
+    params:
+      mult: [0.6, 1.0, 1.6]          # per-regime mean multiplier, raised to `strength`
+      cv_scale: [1.2, 1.0, 0.8]      # per-regime scale on the world's noise cv
+      switch_prob: [0.016666666666666666, 0.05]  # per day, log-uniform per world (1/60 to 1/20)
+      strength: 1.0
 
 metrics:
   # Margin capture, the simulator's `score`, paired by world.
@@ -56,7 +64,9 @@ comparisons:
     correction: holm
   secondary:
     # JEPA minus direct, minus the planner with a classical forecaster, minus the oracle. Holm within the family.
-    pairs: [[jepa, direct], [jepa, seasonal_ets], [jepa, moving_average], [jepa, oracle]]
+    # T1 adds the planner with the Baum-Welch HMM filter (hmm) and the known-model Bayes filter (bayes);
+    # a pair whose arms a report lacks is left out, so T2's reports are unchanged.
+    pairs: [[jepa, direct], [jepa, seasonal_ets], [jepa, moving_average], [jepa, oracle], [jepa, hmm], [jepa, bayes]]
     correction: holm
   strata:
     # Exploratory, BH at `statistics.bh_q`.
@@ -116,6 +126,12 @@ search_spaces:
     service_z: [float, 0.0, 6.0]
     demand_window: [int, 7, 56]
     q_scale: [float, 0.25, 4.0, log]
+  # Joint EOQ on an exponentially smoothed rate (track T1); demand_window is the error-sd window.
+  ets_eoq_joint:
+    service_z: [float, 0.0, 6.0]
+    demand_window: [int, 7, 56]
+    q_scale: [float, 0.25, 4.0, log]
+    alpha: [float, 0.01, 0.6]
   # z = z_a + z_b * Phi^-1(m / (m + h)), m = price - unit_cost, h = holding_rate * unit_cost.
   param_eoq_joint:
     z_a: [float, -3.0, 3.0]

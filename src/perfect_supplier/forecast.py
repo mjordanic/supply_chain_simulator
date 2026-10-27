@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.stats import norm
 
-from src.perfect_supplier.world import HISTORY_DAYS, World, demand_mean_path, uniform_half_width
+from src.perfect_supplier.world import HISTORY_DAYS, World, demand_mean_path, noise_half_width
 
 QUANTILES = np.array([0.02, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.98])
 HORIZON = 35
@@ -29,16 +29,15 @@ class OracleForecaster:
 
     def __init__(self, world: World, horizon: int = HORIZON):
         self.mean = demand_mean_path(world)
-        self.half = uniform_half_width(world.cv)
+        self.half = noise_half_width(world)
         self.horizon = horizon
 
     def __call__(self, obs) -> np.ndarray:
         start = HISTORY_DAYS + obs.day + 1
-        mean = self.mean[start : start + self.horizon]
-        if len(mean) < self.horizon:  # past the episode end: hold the last level
-            mean = np.vstack([mean, np.repeat(mean[-1:], self.horizon - len(mean), axis=0)])
-        u = 1 - self.half + 2 * self.half * QUANTILES
-        return np.clip(mean[:, :, None] * u[None, None, :], 0, None)
+        rows = np.minimum(np.arange(start, start + self.horizon), len(self.mean) - 1)  # past the end: hold the last day
+        half = self.half[rows][:, None, None]
+        u = 1 - half + 2 * half * QUANTILES[None, None, :]
+        return np.clip(self.mean[rows][:, :, None] * u, 0, None)
 
 
 class MovingAverageForecaster:

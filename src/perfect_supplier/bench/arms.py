@@ -5,11 +5,13 @@ A config is ``{"name", "kind", "variant", "params", ...}``:
 - textbook kinds: the four engine rules (``order_up_to``, ``reorder_point``,
   ``periodic_order_up_to``, ``periodic_reorder``), ``eoq``, ``eoq_joint``, and
   ``param_eoq_joint`` (joint EOQ whose ``z`` is a parametric map of the
-  critical ratio). Adding ``"cell_keys"`` and ``"cells"`` makes any of them a
+  critical ratio), and ``ets_eoq_joint`` (joint EOQ on an exponentially
+  smoothed rate, track T1). Adding ``"cell_keys"`` and ``"cells"`` makes any of them a
   per-cell contextual arm: the params of the world's cell are used.
 - ``never_order``.
 - ``planner``: the exact-recursion planner with ``params["forecaster"]`` one of
-  ``oracle``, ``moving_average``, ``jepa``, ``direct``. ``jepa`` and ``direct``
+  ``oracle``, ``moving_average``, ``bayes`` (the known-model regime filter of a
+  ``hidden_regimes`` world), ``jepa``, ``direct``. ``jepa`` and ``direct``
   name a model file in ``config["model"]`` (path and sha256).
 - ``seasonal_ets``: the planner with :class:`SeasonalEtsForecaster`.
 
@@ -31,7 +33,7 @@ from src.perfect_supplier.planner import Planner
 from src.perfect_supplier.textbook import FAMILIES, EoqParams, EoqPolicy, TextbookParams, TextbookPolicy
 from src.perfect_supplier.world import World
 
-TEXTBOOK_KINDS = (*FAMILIES, "eoq", "eoq_joint", "param_eoq_joint")
+TEXTBOOK_KINDS = (*FAMILIES, "eoq", "eoq_joint", "param_eoq_joint", "ets_eoq_joint")
 KINDS = (*TEXTBOOK_KINDS, "never_order", "planner", "seasonal_ets")
 
 
@@ -110,7 +112,7 @@ def make_policy(config: dict, world: World):
         return NeverOrder()
     if kind in FAMILIES:
         return TextbookPolicy(TextbookParams(family=kind, **params), name=name)
-    if kind in ("eoq", "eoq_joint", "param_eoq_joint"):
+    if kind in ("eoq", "eoq_joint", "param_eoq_joint", "ets_eoq_joint"):
         return EoqPolicy(_eoq_params(kind, params, world), name=name)
     if kind == "seasonal_ets":
         n_paths = params.pop("n_paths", 64)
@@ -121,6 +123,10 @@ def make_policy(config: dict, world: World):
             forecaster = OracleForecaster(world)
         elif fc == "moving_average":
             forecaster = MovingAverageForecaster()
+        elif fc == "bayes":
+            from src.perfect_supplier.regimes import BayesRegimeForecaster
+
+            forecaster = BayesRegimeForecaster(world)
         elif fc in ("jepa", "direct"):
             from src.perfect_supplier.jepa import JepaForecaster
 

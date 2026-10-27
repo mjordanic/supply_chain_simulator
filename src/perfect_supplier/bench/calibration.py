@@ -18,6 +18,7 @@ from joblib import Parallel, delayed
 
 from src.perfect_supplier.bench import log
 from src.perfect_supplier.bench.arms import make_policy
+from src.perfect_supplier.bench.evaluate import DEFAULT_FAMILY
 from src.perfect_supplier.bench.protocol import Protocol, config_sha256
 from src.perfect_supplier.planner import sample_paths
 from src.perfect_supplier.sim import simulate
@@ -27,9 +28,20 @@ LEVELS = (0.90, 0.95, 0.99)
 
 
 class _Recorder:
+    """Wraps the arm's forecaster; keeps its quantiles, or its own paths when it draws them."""
+
     def __init__(self, forecaster, every: int):
         self.forecaster, self.every, self.name = forecaster, every, forecaster.name
         self.seen: dict[int, np.ndarray] = {}
+        self.draws_paths = hasattr(forecaster, "paths")
+        if self.draws_paths:
+            self.paths = self._paths
+
+    def _paths(self, obs, n_paths, rng):
+        p = self.forecaster.paths(obs, n_paths, rng)
+        if obs.day % self.every == 0:
+            self.seen[obs.day] = p
+        return p
 
     def __call__(self, obs):
         q = self.forecaster(obs)
@@ -38,8 +50,9 @@ class _Recorder:
         return q
 
 
-def world_coverage(config: dict, seed: int, split: str, variant: str, every: int = 5) -> list[dict]:
-    world = sample_world(seed, split, variant=variant)
+def world_coverage(config: dict, seed: int, split: str, variant: str, every: int = 5,
+                   family: str = DEFAULT_FAMILY, regimes: dict | None = None) -> list[dict]:
+    world = sample_world(seed, split, variant=variant, family=family, regimes=regimes)
     policy = make_policy(config, world)
     if not hasattr(policy, "forecaster"):
         raise ValueError(f"arm {config['name']!r} has no forecaster to calibrate")
@@ -49,7 +62,7 @@ def world_coverage(config: dict, seed: int, split: str, variant: str, every: int
     rng = np.random.default_rng([seed, 7])
     rows = []
     for day, q in recorder.seen.items():
-        paths = sample_paths(q, policy.n_paths, rng)  # (M, H, P)
+        paths = q if recorder.draws_paths else sample_paths(q, policy.n_paths, rng)  # (M, H, P)
         M = len(paths)
         for span_name, span in (("lag", world.delivery_lag), ("lag+7", world.delivery_lag + 7)):
             if day + span >= world.n_days:
@@ -78,17 +91,19 @@ def coverage_table(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def calibrate(config: dict, split: str, n_worlds: int, variant: str, protocol: Protocol, track: str,
-              out: str | Path, *, offset: int = 0, every: int = 5, log_dir: str | Path = log.LOG_DIR) -> pd.DataFrame:
+              out: str | Path, *, offset: int = 0, every: int = 5, family: str = DEFAULT_FAMILY,
+              log_dir: str | Path = log.LOG_DIR) -> pd.DataFrame:
     seeds = protocol.seeds(split, n_worlds, offset)
     if protocol.is_sealed(split):
         raise ValueError("calibration is a dev diagnostic; it never runs on the sealed split")
     out = Path(out)
-    entry = {"kind": "diagnostic", "arm": config["name"], "world_family": "perfect_supplier", "variant": variant,
+    entry = {"kind": "diagnostic", "arm": config["name"], "world_family": family, "variant": variant,
              "split": split, "seeds": {"first": seeds[0], "count": len(seeds)},
              "config_sha256": config_sha256(config), "note": f"lead-time calibration, a decision every {every} days"}
     with log.logged_run(track, entry, protocol, log_dir):
         parts = Parallel(n_jobs=protocol.workers())(
-            delayed(world_coverage)(config, s, split, variant, every) for s in seeds)
+            delayed(world_coverage)(config, s, split, variant, every, family, protocol.world_params(family))
+            for s in seeds)
         rows = pd.DataFrame([r for p in parts for r in p])
         out.mkdir(parents=True, exist_ok=True)
         rows.to_parquet(out / f"calibration-{config['name']}.parquet", index=False)

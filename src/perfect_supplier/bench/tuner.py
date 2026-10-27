@@ -6,7 +6,9 @@ joblib process pool that stays up for the whole study. The trial count and
 worlds per trial come from the protocol budget of the arm's kind; the search
 space from its ``search_spaces`` entry. With ``cell_keys`` every cell of those
 world fields is tuned on its own tune worlds with the full budget and the
-result is a contextual arm.
+result is a contextual arm. ``family`` picks the world family (its parameters
+from the protocol); an arm tuned on a family other than ``perfect_supplier``
+records it as ``world_family``.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from joblib import Parallel, delayed
 
 from src.perfect_supplier.bench import log
 from src.perfect_supplier.bench.arms import cell_of
-from src.perfect_supplier.bench.evaluate import episode
+from src.perfect_supplier.bench.evaluate import DEFAULT_FAMILY, episode
 from src.perfect_supplier.bench.protocol import Protocol, config_sha256
 from src.perfect_supplier.world import sample_world
 
@@ -39,14 +41,16 @@ def suggest(trial: optuna.Trial, space: dict) -> dict:
     return out
 
 
-def tune_worlds(protocol: Protocol, n: int, variant: str, cell_keys: list[str] | None) -> dict[str, list[int]]:
+def tune_worlds(protocol: Protocol, n: int, variant: str, cell_keys: list[str] | None,
+                family: str = DEFAULT_FAMILY) -> dict[str, list[int]]:
     """Tune seeds per cell, in block order; one cell ``"all"`` without ``cell_keys``."""
     if not cell_keys:
         return {"all": protocol.seeds("tune", n)}
     block = protocol.raw["seed_blocks"]["tune"]["size"]
     cells: dict[str, list[int]] = {}
     for seed in protocol.seeds("tune", block):
-        c = cells.setdefault(cell_of(sample_world(seed, "tune", variant=variant), cell_keys), [])
+        world = sample_world(seed, "tune", variant=variant, family=family, regimes=protocol.world_params(family))
+        c = cells.setdefault(cell_of(world, cell_keys), [])
         if len(c) < n:
             c.append(seed)
     short = {c: len(s) for c, s in cells.items() if len(s) < n}
@@ -65,16 +69,20 @@ def tune(
     *,
     cell_keys: list[str] | None = None,
     base_config: dict | None = None,
+    family: str = DEFAULT_FAMILY,
     log_dir: str | Path = log.LOG_DIR,
 ) -> dict:
     """Tune one arm; write ``<name>.json`` (the arm config) and the trial tables under ``out``."""
     budget = protocol.budget(kind)
     space = protocol.search_space(kind)
     base = {"params": {}, **(base_config or {}), "name": name, "kind": kind, "variant": variant}
+    if family != DEFAULT_FAMILY:
+        base["world_family"] = family
+    regimes = protocol.world_params(family)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    cells = tune_worlds(protocol, budget["worlds_per_trial"], variant, cell_keys)
-    entry = {"kind": "tune", "arm": name, "world_family": "perfect_supplier", "variant": variant, "split": "tune",
+    cells = tune_worlds(protocol, budget["worlds_per_trial"], variant, cell_keys, family)
+    entry = {"kind": "tune", "arm": name, "world_family": family, "variant": variant, "split": "tune",
              "config": {"kind": kind, "cell_keys": cell_keys, "space": space, "base": base},
              "seeds": {c: {"first": s[0], "count": len(s)} for c, s in cells.items()},
              "budget": {**budget, "episodes": budget["trials"] * budget["worlds_per_trial"], "cells": len(cells)}}
@@ -84,7 +92,7 @@ def tune(
 
             def objective(trial, seeds=seeds):
                 config = {**base, "params": {**base["params"], **suggest(trial, space)}}
-                scores = pool(delayed(episode)(config, s, "tune", variant) for s in seeds)
+                scores = pool(delayed(episode)(config, s, "tune", variant, family, regimes) for s in seeds)
                 return float(np.mean([r["score"] for r in scores]))
 
             optuna.logging.set_verbosity(optuna.logging.WARNING)

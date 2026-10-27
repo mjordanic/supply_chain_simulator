@@ -8,7 +8,7 @@ from pathlib import Path
 
 from src.perfect_supplier.bench import log
 from src.perfect_supplier.bench.protocol import PROTOCOL_PATH, Protocol, config_sha256, freeze
-from src.perfect_supplier.world import VARIANTS
+from src.perfect_supplier.world import FAMILIES, VARIANTS
 
 
 def _configs(paths: list[Path]) -> list[dict]:
@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m src.perfect_supplier.bench")
     parser.add_argument("--protocol", type=Path, default=PROTOCOL_PATH)
     parser.add_argument("--track", default="H0-harness", help="log file experiments/log/<track>.jsonl")
+    parser.add_argument("--world-family", choices=FAMILIES, default="perfect_supplier",
+                        help="world family for eval, tune, calibrate (its parameters come from the protocol)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     li = sub.add_parser("import-legacy", help="arm configs from a runs/perfect-supplier* root")
@@ -93,14 +95,15 @@ def main(argv: list[str] | None = None) -> None:
         from src.perfect_supplier.bench.evaluate import evaluate
 
         frame = evaluate(_configs(args.arms), args.split, args.n_worlds, args.variant, args.out, protocol,
-                         args.track, offset=args.offset, rerun_reason=args.rerun_reason, note=args.note)
+                         args.track, offset=args.offset, rerun_reason=args.rerun_reason, note=args.note,
+                         family=args.world_family)
         print(frame.groupby("arm")["score"].mean().round(4).to_string())
     elif args.command == "tune":
         from src.perfect_supplier.bench.tuner import tune
 
         base = json.loads(args.base_config.read_text()) if args.base_config else None
         config = tune(args.kind, args.name, args.variant, protocol, args.track, args.out,
-                      cell_keys=args.cell_keys, base_config=base)
+                      cell_keys=args.cell_keys, base_config=base, family=args.world_family)
         print(json.dumps(config, indent=1))
     elif args.command == "freeze":
         for config in _configs(args.arms):
@@ -114,7 +117,7 @@ def main(argv: list[str] | None = None) -> None:
 
         (config,) = _configs([args.arm])
         table = calibrate(config, args.split, args.n_worlds, args.variant, protocol, args.track, args.out,
-                          offset=args.offset)
+                          offset=args.offset, family=args.world_family)
         print(table.to_string())
     elif args.command == "report":
         from src.perfect_supplier.bench.report import write_report

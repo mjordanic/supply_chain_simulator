@@ -13,6 +13,15 @@ Demand for product ``p`` on day ``t`` is::
 piecewise-constant multiplier that jumps at Poisson times. ``weekday`` is a
 shop-wide day-of-week profile with mean 1.
 
+The ``hidden_regimes`` family (track T1) multiplies every product's mean by
+one shop-wide regime multiplier, ``regime_mult[r_t]``, and scales the noise cv
+by ``regime_cv[r_t]``. ``r_t`` is a hidden Markov chain over ``K = 3``
+regimes that leaves its state with probability ``switch_prob`` per day, to
+one of the others uniformly. The idiosyncratic per-product level shifts stay.
+A ``regimes`` dict (from ``world_families.hidden_regimes.params`` in the
+protocol) overrides :data:`REGIME_DEFAULTS`; ``strength`` scales the log
+multipliers.
+
 A ``variant`` removes the order fee as a source of difference between
 policies. ``one_product`` keeps product 0 of the base world (same lag, cv,
 holding rate, demand path); the fee then buys one product's order, so
@@ -48,6 +57,14 @@ LEVEL_CLIP = (0.5, 2.0)
 SPLIT_SEED_OFFSET = {"train": 1_000_000, "tune": 2_000_000, "eval": 3_000_000}
 
 VARIANTS = ("base", "one_product", "no_fee")
+FAMILIES = ("perfect_supplier", "hidden_regimes")
+
+REGIME_DEFAULTS = {
+    "mult": (0.6, 1.0, 1.6),
+    "cv_scale": (1.2, 1.0, 0.8),
+    "switch_prob": (1 / 60, 1 / 20),  # per day, log-uniform per world
+    "strength": 1.0,
+}
 
 
 @dataclass(frozen=True)
@@ -68,6 +85,10 @@ class World:
     price: float = PRICE
     order_fee: float = ORDER_FEE
     variant: str = "base"
+    family: str = "perfect_supplier"
+    regime_mult: tuple[float, ...] = ()
+    regime_cv: tuple[float, ...] = ()
+    switch_prob: float = 0.0
 
     @property
     def n_products(self) -> int:
@@ -86,14 +107,24 @@ def world_seed(split: str, index: int) -> int:
     return SPLIT_SEED_OFFSET[split] + int(index)
 
 
-def sample_world(seed: int, split: str = "train", n_days: int = EPISODE_DAYS, variant: str = "base") -> World:
+def sample_world(
+    seed: int,
+    split: str = "train",
+    n_days: int = EPISODE_DAYS,
+    variant: str = "base",
+    family: str = "perfect_supplier",
+    regimes: dict | None = None,
+) -> World:
     """Draw the economics and opening state of one world from ``seed``.
 
     Every variant draws the base world's random numbers, so a seed gives the
-    same lag, cv, holding rate, and product-0 demand in every variant.
+    same lag, cv, holding rate, and product-0 demand in every variant. The
+    ``hidden_regimes`` family draws them too and adds its regime parameters.
     """
     if variant not in VARIANTS:
         raise ValueError(f"unknown variant {variant!r}")
+    if family not in FAMILIES:
+        raise ValueError(f"unknown world family {family!r}")
     rng = np.random.default_rng([seed, 0])
     lag = int(rng.integers(LAG_RANGE[0], LAG_RANGE[1] + 1))
     lo, hi = np.log(MEAN_RANGE)
@@ -107,6 +138,19 @@ def sample_world(seed: int, split: str = "train", n_days: int = EPISODE_DAYS, va
     on_hand = tuple(int(round(m * lag)) for m in means)
     capacity = int(round((2 * lag + 14) * total))
     cash = UNIT_COST * (lag + 7) * total
+    regime: dict = {}
+    if family == "hidden_regimes":
+        spec = {**REGIME_DEFAULTS, **(regimes or {})}
+        mult = tuple(float(m) ** float(spec["strength"]) for m in spec["mult"])
+        lo_p, hi_p = np.log(spec["switch_prob"])
+        regime = {
+            "regime_mult": mult,
+            "regime_cv": tuple(float(c) for c in spec["cv_scale"]),
+            "switch_prob": float(np.exp(np.random.default_rng([seed, 3]).uniform(lo_p, hi_p))),
+        }
+        # Shelf and opening cash scale with the busiest regime so neither binds.
+        capacity = int(round(capacity * max(mult)))
+        cash *= max(mult)
     return World(
         world_seed=int(seed),
         split=split,
@@ -122,7 +166,31 @@ def sample_world(seed: int, split: str = "train", n_days: int = EPISODE_DAYS, va
         capacity=capacity,
         order_fee=0.0 if variant == "no_fee" else ORDER_FEE,
         variant=variant,
+        family=family,
+        **regime,
     )
+
+
+def regime_path(world: World) -> np.ndarray:
+    """Hidden regime index per day, shape ``(HISTORY_DAYS + n_days,)``; zeros outside ``hidden_regimes``."""
+    total_days = HISTORY_DAYS + world.n_days
+    K = len(world.regime_mult)
+    if K == 0:
+        return np.zeros(total_days, dtype=np.int64)
+    rng = np.random.default_rng([world.world_seed, 4])
+    out = np.empty(total_days, dtype=np.int64)
+    current = int(rng.integers(K))
+    for t in range(total_days):
+        if t and rng.random() < world.switch_prob:
+            current = (current + 1 + int(rng.integers(K - 1))) % K
+        out[t] = current
+    return out
+
+
+def regime_transition(world: World) -> np.ndarray:
+    """``(K, K)`` regime transition matrix."""
+    K, p = len(world.regime_mult), world.switch_prob
+    return (1 - p) * np.eye(K) + p / (K - 1) * (1 - np.eye(K))
 
 
 def weekday_profile(world: World) -> np.ndarray:
@@ -135,6 +203,14 @@ def demand_mean_path(world: World) -> np.ndarray:
 
     Row ``HISTORY_DAYS`` is episode day 0. This is the oracle forecast.
     """
+    mean = base_mean_path(world)
+    if world.regime_mult:
+        mean = mean * np.asarray(world.regime_mult)[regime_path(world)][:, None]
+    return mean
+
+
+def base_mean_path(world: World) -> np.ndarray:
+    """:func:`demand_mean_path` without the regime multiplier."""
     rng = np.random.default_rng([world.world_seed, 1])
     total_days = HISTORY_DAYS + world.n_days
     # Levels for all base products are drawn so product p's path does not
@@ -157,10 +233,19 @@ def uniform_half_width(cv: float) -> float:
     return cv * np.sqrt(3.0)
 
 
+def noise_half_width(world: World) -> np.ndarray:
+    """Half-width of the mean-1 uniform noise per day, shape ``(HISTORY_DAYS + n_days,)``."""
+    a = np.full(HISTORY_DAYS + world.n_days, uniform_half_width(world.cv))
+    if world.regime_cv:
+        a = a * np.asarray(world.regime_cv)[regime_path(world)]
+    return a
+
+
 def demand_path(world: World) -> np.ndarray:
     """Integer demand, shape ``(HISTORY_DAYS + n_days, n_products)``."""
     mean = demand_mean_path(world)
     rng = np.random.default_rng([world.world_seed, 2])
-    a = uniform_half_width(world.cv)
-    u = rng.uniform(1 - a, 1 + a, (mean.shape[0], N_PRODUCTS))[:, : world.n_products]
+    a = noise_half_width(world)[:, None]
+    # Unit uniforms scaled per day, so the base family draws the same numbers as before.
+    u = 1 + a * rng.uniform(-1, 1, (mean.shape[0], N_PRODUCTS))[:, : world.n_products]
     return np.rint(np.clip(mean * u, 0, None)).astype(np.int64)

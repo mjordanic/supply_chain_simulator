@@ -4,7 +4,10 @@
 ``scores.parquet`` (one row per world and arm: the score, the cost breakdown,
 and the world's parameters) plus ``arms.json`` (the configs) under ``out``.
 Worlds come from :meth:`Protocol.seeds`, and a sealed split passes
-:func:`check_test_gate` first. The run is one log line.
+:func:`check_test_gate` first. The run is one log line. ``family`` picks the
+world family; its parameters come from the protocol, and an arm configured for
+another family (``config["world_family"]``, default ``perfect_supplier``) is
+refused.
 """
 
 from __future__ import annotations
@@ -21,20 +24,24 @@ from src.perfect_supplier.bench.protocol import Protocol, arm_sha256, check_test
 from src.perfect_supplier.sim import simulate
 from src.perfect_supplier.world import sample_world
 
-WORLD_COLUMNS = ["world_seed", "variant", "delivery_lag", "holding_rate", "cv", "weekly_amp", "order_fee"]
+WORLD_COLUMNS = ["world_seed", "variant", "delivery_lag", "holding_rate", "cv", "weekly_amp", "order_fee",
+                 "switch_prob"]
+DEFAULT_FAMILY = "perfect_supplier"
 SUMMARY_COLUMNS = ["score", "total_demand", "lost_units", "fees", "holding_cost", "order_days",
                    "fill_rate_demand", "mean_on_hand", "price", "unit_cost"]
 
 
-def episode(config: dict, seed: int, split: str, variant: str) -> dict:
-    world = sample_world(seed, split, variant=variant)
+def episode(config: dict, seed: int, split: str, variant: str, family: str = DEFAULT_FAMILY,
+            regimes: dict | None = None) -> dict:
+    world = sample_world(seed, split, variant=variant, family=family, regimes=regimes)
     summary = simulate(world, make_policy(config, world)).summary
     return {"arm": config["name"], "split": split, **{k: summary[k] for k in WORLD_COLUMNS + SUMMARY_COLUMNS}}
 
 
-def run_episodes(configs: list[dict], seeds: list[int], split: str, variant: str, workers: int) -> pd.DataFrame:
+def run_episodes(configs: list[dict], seeds: list[int], split: str, variant: str, workers: int,
+                 family: str = DEFAULT_FAMILY, regimes: dict | None = None) -> pd.DataFrame:
     tasks = [(c, s) for c in configs for s in seeds]
-    rows = Parallel(n_jobs=workers)(delayed(episode)(c, s, split, variant) for c, s in tasks)
+    rows = Parallel(n_jobs=workers)(delayed(episode)(c, s, split, variant, family, regimes) for c, s in tasks)
     return pd.DataFrame(rows)
 
 
@@ -50,6 +57,7 @@ def evaluate(
     offset: int = 0,
     rerun_reason: str | None = None,
     note: str = "",
+    family: str = DEFAULT_FAMILY,
     log_dir: str | Path = log.LOG_DIR,
     frozen_path: str | Path | None = None,
 ) -> pd.DataFrame:
@@ -60,6 +68,9 @@ def evaluate(
     for config in configs:
         if config.get("variant", variant) != variant:
             raise ValueError(f"arm {config['name']!r} was configured for variant {config['variant']!r}, not {variant!r}")
+        if config.get("world_family", DEFAULT_FAMILY) != family:
+            raise ValueError(f"arm {config['name']!r} was configured for world family "
+                             f"{config.get('world_family', DEFAULT_FAMILY)!r}, not {family!r}")
         try:
             check_test_gate(protocol, split, [config], variant, previous, rerun_reason, **gate_kw)
         except Exception as exc:
@@ -69,13 +80,13 @@ def evaluate(
             raise
     out = Path(out)
     entry = {
-        "kind": kind, "arms": [c["name"] for c in configs], "world_family": "perfect_supplier",
+        "kind": kind, "arms": [c["name"] for c in configs], "world_family": family,
         "variant": variant, "split": split, "seeds": {"first": seeds[0], "count": len(seeds)},
         "config": {c["name"]: config_sha256(c) for c in configs},
         "arm_sha256": {c["name"]: arm_sha256(c) for c in configs}, "rerun_reason": rerun_reason, "note": note,
     }
     with log.logged_run(track, entry, protocol, log_dir):
-        frame = run_episodes(configs, seeds, split, variant, protocol.workers())
+        frame = run_episodes(configs, seeds, split, variant, protocol.workers(), family, protocol.world_params(family))
         out.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(out / "scores.parquet", index=False)
         (out / "arms.json").write_text(json.dumps(configs, indent=1))

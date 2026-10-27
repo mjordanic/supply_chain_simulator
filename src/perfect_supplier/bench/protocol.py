@@ -77,6 +77,10 @@ class Protocol:
         b = self.raw["budgets"]
         return dict(b["learned"] if kind in LEARNED_KINDS else b["textbook"])
 
+    def world_params(self, family: str) -> dict:
+        """The declared parameters of a world family (``regimes`` for ``sample_world``)."""
+        return dict(self.raw["world_families"][family].get("params") or {})
+
     def search_space(self, kind: str) -> dict:
         return self.raw["search_spaces"][kind]
 
