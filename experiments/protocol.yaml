@@ -5,7 +5,7 @@
 # amendment: edit, bump `version`, and append a `kind: amendment` line to the
 # track's log saying why. Every log line records this file's sha256.
 
-version: 3  # 2: pre-registered comparison families and stopping rules; 3: the primary cells (amendments, before any test-block look)
+version: 4  # 2: pre-registered comparison families and stopping rules; 3: the primary cells; 4: T2 planner search spaces, learned contextual budget, reference selection (amendments, before any test-block look)
 
 world_families:
   perfect_supplier:
@@ -104,7 +104,12 @@ budgets:
   # Textbook families get at least `textbook_multiplier` x the learned budget.
   textbook_multiplier: 4
   textbook: {trials: 192, worlds_per_trial: 32}
-  # A contextual arm tunes every cell with the full textbook budget.
+  # A contextual textbook arm tunes every cell with the full textbook budget.
+  # A contextual learned arm spreads the learned budget over its cells
+  # (48 trials / 3 holding-rate cells = 16 trials x 32 worlds per cell), so
+  # it never spends more than the learned budget in all.
+  # The reference arm is the textbook arm with the best selection score: the
+  # mean on one common block of tune worlds that no tuner used (bench select).
 
 # Search spaces, declared before tuning. [type, low, high(, log)] or [categorical, [choices]].
 search_spaces:
@@ -132,10 +137,15 @@ search_spaces:
     <<: *engine
     review_interval: [int, 1, 14]
   periodic_reorder: *periodic
-  planner:
-    n_paths: [categorical, [32, 64, 128]]
+  # Planner knobs (T2): path coherence rho, the service-grid cap, and separate
+  # paths for the reorder / order-up-to quantiles. n_paths stays at 64:
+  # level_paths covers the resolution of high service levels.
+  planner: &planner
+    rho: [float, 0.0, 0.95]
+    service_max: [categorical, [0.995, 0.999, 0.9995]]
+    level_paths: [categorical, [0, 1024]]
   seasonal_ets:
-    n_paths: [categorical, [32, 64, 128]]
+    <<: *planner
     alpha: [float, 0.01, 0.5]
     gamma: [float, 0.01, 0.5]
 

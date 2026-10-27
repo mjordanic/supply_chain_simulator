@@ -49,6 +49,12 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument("--base-config", type=Path, default=None, help="fixed fields (model, forecaster) for the arm")
     t.add_argument("--out", type=Path, required=True)
 
+    sl = sub.add_parser("select", help="score tuned textbook arms on common tune worlds; writes select_score")
+    sl.add_argument("--arms", type=Path, nargs="+", required=True, help="one config per file, updated in place")
+    sl.add_argument("--variant", choices=VARIANTS, default="base")
+    sl.add_argument("--offset", type=int, required=True, help="into the tune block, past every tuner's seeds")
+    sl.add_argument("--n-worlds", type=int, required=True)
+
     ft = sub.add_parser("fit", help="train one learned forecaster for one training seed")
     ft.add_argument("--root", type=Path, required=True, help="behaviour log of the protocol's train block")
     ft.add_argument("--arm", choices=("jepa", "direct"), required=True)
@@ -110,6 +116,14 @@ def main(argv: list[str] | None = None) -> None:
         config = tune(args.kind, args.name, args.variant, protocol, args.track, args.out,
                       cell_keys=args.cell_keys, base_config=base)
         print(json.dumps(config, indent=1))
+    elif args.command == "select":
+        from src.perfect_supplier.bench.tuner import select
+
+        configs = [json.loads(p.read_text()) for p in args.arms]
+        for path, config in zip(args.arms, select(configs, protocol, args.track, args.variant, offset=args.offset,
+                                                  n_worlds=args.n_worlds)):
+            path.write_text(json.dumps(config, indent=1))
+            print(f"{config['name']}: select {config['select_score']:.5f} tune {config.get('tune_score')}")
     elif args.command == "fit":
         from src.perfect_supplier.bench.fit import fit_model
 

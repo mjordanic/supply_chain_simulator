@@ -5,8 +5,12 @@ another (seeded TPE, reproducible) and the worlds inside a trial run on a
 joblib process pool that stays up for the whole study. The trial count and
 worlds per trial come from the protocol budget of the arm's kind; the search
 space from its ``search_spaces`` entry. With ``cell_keys`` every cell of those
-world fields is tuned on its own tune worlds with the full budget and the
-result is a contextual arm.
+world fields is tuned on its own tune worlds and the result is a contextual
+arm: a textbook arm gets its full budget in every cell, a learned arm spreads
+its budget over the cells, so it never spends more than the learned budget.
+
+:func:`select` scores tuned textbook arms on one common block of tune worlds
+that no tuner used, so the reference is chosen on equal footing.
 """
 
 from __future__ import annotations
@@ -21,8 +25,8 @@ from joblib import Parallel, delayed
 
 from src.perfect_supplier.bench import log
 from src.perfect_supplier.bench.arms import cell_of
-from src.perfect_supplier.bench.evaluate import episode
-from src.perfect_supplier.bench.protocol import Protocol, config_sha256
+from src.perfect_supplier.bench.evaluate import episode, run_episodes
+from src.perfect_supplier.bench.protocol import LEARNED_KINDS, Protocol, config_sha256
 from src.perfect_supplier.world import sample_world
 
 def suggest(trial: optuna.Trial, space: dict) -> dict:
@@ -74,10 +78,12 @@ def tune(
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     cells = tune_worlds(protocol, budget["worlds_per_trial"], variant, cell_keys)
+    n_trials = budget["trials"] // len(cells) if kind in LEARNED_KINDS else budget["trials"]
     entry = {"kind": "tune", "arm": name, "world_family": "perfect_supplier", "variant": variant, "split": "tune",
              "config": {"kind": kind, "cell_keys": cell_keys, "space": space, "base": base},
              "seeds": {c: {"first": s[0], "count": len(s)} for c, s in cells.items()},
-             "budget": {**budget, "episodes": budget["trials"] * budget["worlds_per_trial"], "cells": len(cells)}}
+             "budget": {**budget, "trials_per_cell": n_trials,
+                        "episodes": n_trials * budget["worlds_per_trial"] * len(cells), "cells": len(cells)}}
     best: dict[str, dict] = {}
     with log.logged_run(track, entry, protocol, log_dir), Parallel(n_jobs=protocol.workers()) as pool:
         for i, (cell, seeds) in enumerate(cells.items()):
@@ -89,7 +95,7 @@ def tune(
 
             optuna.logging.set_verbosity(optuna.logging.WARNING)
             study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=0))
-            study.optimize(objective, n_trials=budget["trials"], n_jobs=1)
+            study.optimize(objective, n_trials=n_trials, n_jobs=1)
             trials = study.trials_dataframe()
             trials["best_so_far"] = trials["value"].cummax()  # the tuning curve
             trials["cell"] = cell
@@ -111,6 +117,35 @@ def tune(
                            "cells": {c: b["tune_score"] for c, b in best.items()}}
         entry["artifacts"] = [{"path": str(p), "sha256": log.file_sha256(p)} for p in sorted(out.glob(f"{name}*"))]
     return config
+
+
+def select(
+    configs: list[dict],
+    protocol: Protocol,
+    track: str,
+    variant: str,
+    *,
+    offset: int,
+    n_worlds: int,
+    log_dir: str | Path = log.LOG_DIR,
+) -> list[dict]:
+    """Each config with ``select_score``: its mean score on ``n_worlds`` tune worlds from ``offset``.
+
+    Tune scores come from each arm's own tuning worlds (per cell for a
+    contextual arm), so they do not compare across arms; the report picks
+    the reference by ``select_score`` when every candidate has one. Pick an
+    ``offset`` past every seed a tuner used.
+    """
+    seeds = protocol.seeds("tune", n_worlds, offset)
+    entry = {"kind": "select", "arms": [c["name"] for c in configs], "world_family": "perfect_supplier",
+             "variant": variant, "split": "tune", "seeds": {"first": seeds[0], "count": len(seeds)},
+             "config": {c["name"]: config_sha256(c) for c in configs}}
+    with log.logged_run(track, entry, protocol, log_dir):
+        means = run_episodes(configs, seeds, "tune", variant, protocol.workers()).groupby("arm")["score"].mean()
+        out = [{**c, "select_score": float(means[c["name"]]),
+                "select": {"split": "tune", "first": seeds[0], "count": len(seeds)}} for c in configs]
+        entry["result"] = {"metric": "margin_capture", "select_scores": {c["name"]: c["select_score"] for c in out}}
+    return out
 
 
 def tuning_curve(out: str | Path, name: str) -> pd.DataFrame:

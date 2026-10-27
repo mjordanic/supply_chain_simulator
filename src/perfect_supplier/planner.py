@@ -35,7 +35,7 @@ The forecaster's ``levels`` (default ``QUANTILES``) are its quantile levels.
 from __future__ import annotations
 
 import numpy as np
-from scipy.stats import norm
+from scipy.special import ndtr
 
 from src.perfect_supplier.forecast import HORIZON, QUANTILES
 from src.perfect_supplier.sim import Decision, Obs
@@ -59,7 +59,7 @@ def sample_paths(
         u = rng.random((n_paths, H, P))
     else:
         z = np.sqrt(rho) * rng.standard_normal((n_paths, 1, P)) + np.sqrt(1 - rho) * rng.standard_normal((n_paths, H, P))
-        u = norm.cdf(z)
+        u = ndtr(z)
     idx = np.clip(np.searchsorted(levels, u) - 1, 0, Q - 2)
     lo, hi = levels[idx], levels[idx + 1]
     w = np.clip((u - lo) / (hi - lo), 0, 1)
@@ -147,22 +147,26 @@ class Planner:
         order-up-to level covers ``t + h + 1 .. t + h + R + lag - 1``.
         """
         M, H, P = paths.shape
-        csum = np.concatenate([np.zeros((M, 1, P)), np.cumsum(paths, axis=1)], axis=1)  # (M, H+1, P)
+        # Paths are whole units, so sums are exact integers.
+        csum = np.concatenate([np.zeros((M, 1, P), np.int32), np.cumsum(paths.astype(np.int32), axis=1)], axis=1)
+        # int16 sorts with a radix sort, several times faster, when every sum fits.
+        dtype = np.int16 if csum.max(initial=0) < 2**15 else np.int32
         rows = np.arange(H)
 
         def quantiles(span: int) -> dict[float, np.ndarray]:
             end = np.minimum(rows + span, H)
-            covered = csum[:, end, :] - csum[:, rows, :]  # (M, H, P)
+            covered = (csum[:, end, :] - csum[:, rows, :]).astype(dtype, copy=False)  # (M, H, P)
+            covered = np.sort(covered, axis=0, kind="stable")
             # Short windows near the horizon end: scale up to the full span.
-            days = (end - rows)[None, :, None]
-            covered = np.sort(covered * (span / np.maximum(days, 1)), axis=0)
+            scale = span / np.maximum(end - rows, 1)[:, None]
             out = {}
             for z in np.unique(self.z):
                 # Empirical z-quantile, linear between order statistics.
                 pos = z * (M - 1)
                 lo = int(np.floor(pos))
                 hi = min(lo + 1, M - 1)
-                out[z] = covered[lo] + (pos - lo) * (covered[hi] - covered[lo])
+                c_lo, c_hi = covered[lo] * scale, covered[hi] * scale
+                out[z] = c_lo + (pos - lo) * (c_hi - c_lo)
             return out
 
         reorder = np.empty((len(self.review), H, P))
