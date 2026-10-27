@@ -91,6 +91,8 @@ def main(argv: list[str] | None = None) -> None:
 
     pp = sub.add_parser("pooled-primary", help="Holm once over the protocol's primary cells' test evals")
     pp.add_argument("--out", type=Path, required=True)
+    pp.add_argument("--partial", action="store_true",
+                    help="before every declared cell has a test eval: missing comparisons count as p = 1")
 
     b = sub.add_parser("backfill", help="write the historical results as kind=historical log lines")
     b.add_argument("--snapshot", type=Path, required=True, help="copy of the captain's runs/ (read-only)")
@@ -157,7 +159,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "pooled-primary":
         from src.perfect_supplier.bench.report import write_pooled_primary
 
-        print(write_pooled_primary(protocol, args.out, args.track))
+        print(write_pooled_primary(protocol, args.out, args.track, partial=args.partial))
     elif args.command == "backfill":
         from src.perfect_supplier.bench.backfill import backfill
 

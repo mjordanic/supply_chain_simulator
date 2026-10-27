@@ -181,8 +181,12 @@ def compare(arm: np.ndarray, ref: np.ndarray, names: tuple[str, str], sesoi: flo
 
 
 def decide(family: list[Comparison], diffs: list[np.ndarray], sesoi: float, *, alpha: float = 0.05,
-           n_resamples: int = 10_000, seed: int = 0) -> list[Comparison]:
+           n_resamples: int = 10_000, seed: int = 0, family_size: int | None = None) -> list[Comparison]:
     """Holm across ``family`` and the protocol label of each comparison.
+
+    ``family_size`` larger than ``len(family)`` counts comparisons not yet
+    run as p = 1, last in the step-down: every adjusted p and interval is
+    then an upper bound on (as wide as) the one the full family will give.
 
     The k-th smallest p-value (paired t) gets a BCa interval at level
     ``1 - alpha / (m - k + 1)``, Holm's step-down level; the step-down stops
@@ -194,8 +198,8 @@ def decide(family: list[Comparison], diffs: list[np.ndarray], sesoi: float, *, a
     - inferior: adjusted upper bound < 0
     - inconclusive: anything else
     """
-    m = len(family)
-    p_adj = holm([c.p_t for c in family])
+    m = family_size or len(family)
+    p_adj = holm([c.p_t for c in family] + [1.0] * (m - len(family)))
     order = np.argsort([c.p_t for c in family], kind="stable")
     stopped = False
     for k, i in enumerate(order):
