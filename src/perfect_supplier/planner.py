@@ -1,7 +1,9 @@
 """Model-predictive buyer for the perfect-supplier shop.
 
 Each day the planner asks a forecaster for demand quantiles over the next
-``HORIZON`` days and draws ``n_paths`` demand paths from them. Every candidate
+``HORIZON`` days and draws ``n_paths`` demand paths from them. A forecaster
+with a ``paths(obs, n_paths, rng)`` method draws the paths itself, so they can
+be coherent across days and products (a hidden regime, a shared level error). Every candidate
 is a joint reorder-point plan ``(cover R, service quantile z)``. On any
 imagined day where some product's inventory position is below the
 ``z``-quantile of its demand over the next ``lag`` days (what must be on hand
@@ -22,7 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.perfect_supplier.forecast import HORIZON, QUANTILES
+from src.perfect_supplier.forecast import QUANTILES
 from src.perfect_supplier.sim import Decision, Obs
 
 REVIEWS = (1, 2, 3, 4, 5, 7, 10, 14, 21)
@@ -35,8 +37,13 @@ def sample_paths(quantiles: np.ndarray, n_paths: int, rng: np.random.Generator) 
     Days are drawn independently. Levels below the first and above the last
     quantile take the end values.
     """
+    H, P, _ = quantiles.shape
+    return paths_from_uniforms(quantiles, rng.random((n_paths, H, P)))
+
+
+def paths_from_uniforms(quantiles: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """Inverse-CDF of the piecewise-linear quantiles ``(H, P, Q)`` at uniforms ``u`` ``(M, H, P)``."""
     H, P, Q = quantiles.shape
-    u = rng.random((n_paths, H, P))
     idx = np.clip(np.searchsorted(QUANTILES, u) - 1, 0, Q - 2)
     lo, hi = QUANTILES[idx], QUANTILES[idx + 1]
     w = np.clip((u - lo) / (hi - lo), 0, 1)
@@ -88,8 +95,13 @@ class Planner:
 
     def decide(self, obs: Obs) -> Decision:
         rng = np.random.default_rng([self.seed, obs.day])
-        quantiles = self.forecaster(obs)  # (H, P, Q)
-        paths = sample_paths(quantiles, self.n_paths, rng)  # (M, H, P)
+        if hasattr(self.forecaster, "paths"):
+            paths = self.forecaster.paths(obs, self.n_paths, rng)  # (M, H, P)
+            mean_7d = paths[:, :7].mean(axis=0).sum(axis=0)
+        else:
+            quantiles = self.forecaster(obs)  # (H, P, Q)
+            paths = sample_paths(quantiles, self.n_paths, rng)  # (M, H, P)
+            mean_7d = quantiles[:7, :, QUANTILES.tolist().index(0.5)].sum(axis=0)
         score, first_order = self.imagine(obs, paths)
         best = int(np.argmax(score))
         orders_today = first_order.sum(axis=1) > 0
@@ -100,7 +112,7 @@ class Planner:
             "score": float(score[best]),
             "score_best_wait": float(score[~orders_today].max()) if (~orders_today).any() else np.nan,
             "score_best_order": float(score[orders_today].max()) if orders_today.any() else np.nan,
-            "forecast_mean_7d": quantiles[:7, :, QUANTILES.tolist().index(0.5)].sum(axis=0),
+            "forecast_mean_7d": mean_7d,
         }
         return Decision(first_order[best], info)
 

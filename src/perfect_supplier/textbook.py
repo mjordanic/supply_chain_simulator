@@ -96,6 +96,7 @@ class EoqParams:
     q_scale: float = 1.0
     joint: bool = False
     family: str = "eoq"
+    alpha: float | None = None  # ETS rate: simple exponential smoothing instead of the window mean
 
 
 class EoqPolicy:
@@ -117,17 +118,36 @@ class EoqPolicy:
     where ``Q_i = q_scale * d_i * T`` and ``T = sqrt(2 * fee / (holding_rate *
     unit_cost * sum(d)))`` is the common EOQ cycle. That is the planner's
     ordering pattern without the forecast. With one product both modes agree.
+
+    ``alpha`` set: ``d`` is the simple-exponential-smoothing level of sales
+    (started from the first 7 days) and ``sd`` the standard deviation of its
+    one-step errors over the last ``demand_window`` days.
     """
 
     def __init__(self, params: EoqParams, name: str | None = None):
         self.params = params
         self.name = name or "eoq"
+        self._level, self._errors = None, []
+
+    def _ets(self, sales: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Level and one-step error sd, updated with the rows not seen yet."""
+        if self._level is None or len(sales) < len(self._errors) + 7:
+            self._level, self._errors = sales[:7].mean(axis=0).astype(float), []
+        for y in sales[7 + len(self._errors) :]:
+            e = y - self._level
+            self._errors.append(e)
+            self._level = self._level + self.params.alpha * e
+        errors = np.asarray(self._errors[-self.params.demand_window :])
+        return self._level.copy(), errors.std(axis=0, ddof=1)
 
     def decide(self, obs: Obs) -> Decision:
         p, lag = self.params, obs.delivery_lag
-        recent = obs.sales[-p.demand_window :]
-        rate = recent.mean(axis=0)
-        sd = recent.std(axis=0, ddof=1)
+        if p.alpha is None:
+            recent = obs.sales[-p.demand_window :]
+            rate = recent.mean(axis=0)
+            sd = recent.std(axis=0, ddof=1)
+        else:
+            rate, sd = self._ets(obs.sales)
         s = rate * lag + p.service_z * sd * np.sqrt(lag)
         h = obs.holding_rate * obs.unit_cost
         if p.joint:
