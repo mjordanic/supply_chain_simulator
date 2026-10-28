@@ -1,0 +1,2563 @@
+{
+ "configs": {
+  "004f811b5dfd608b5ad7279abebf5493ee2810e2416612f04bf85e3c106f1ca0": {
+   "arm": "ctx2_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 18,
+     "episodes": 110592,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate",
+     "delivery_lag"
+    ],
+    "cells": {
+     "(0.000685, 2.0)": {
+      "demand_window": 20,
+      "q_scale": 1.2497031820351974,
+      "service_z": 0.7985951006411333
+     },
+     "(0.000685, 3.0)": {
+      "demand_window": 22,
+      "q_scale": 2.943301556195776,
+      "service_z": 1.780741205574924
+     },
+     "(0.000685, 4.0)": {
+      "demand_window": 21,
+      "q_scale": 0.9999033967238649,
+      "service_z": 1.521409972841937
+     },
+     "(0.000685, 5.0)": {
+      "demand_window": 20,
+      "q_scale": 1.8885253689235109,
+      "service_z": 1.2452009459269622
+     },
+     "(0.000685, 6.0)": {
+      "demand_window": 17,
+      "q_scale": 1.0104338490043978,
+      "service_z": 1.5741308715486468
+     },
+     "(0.000685, 7.0)": {
+      "demand_window": 20,
+      "q_scale": 3.082178767253613,
+      "service_z": 1.7657754497550668
+     },
+     "(0.00274, 2.0)": {
+      "demand_window": 20,
+      "q_scale": 1.9059878358883813,
+      "service_z": 1.3504408455702213
+     },
+     "(0.00274, 3.0)": {
+      "demand_window": 38,
+      "q_scale": 0.9005652122156226,
+      "service_z": 1.4131276951099554
+     },
+     "(0.00274, 4.0)": {
+      "demand_window": 13,
+      "q_scale": 1.0587015824189108,
+      "service_z": 1.2957019756843269
+     },
+     "(0.00274, 5.0)": {
+      "demand_window": 21,
+      "q_scale": 0.9602553046926637,
+      "service_z": 1.8438849968961772
+     },
+     "(0.00274, 6.0)": {
+      "demand_window": 11,
+      "q_scale": 1.1471854910718275,
+      "service_z": 1.5034730660296227
+     },
+     "(0.00274, 7.0)": {
+      "demand_window": 14,
+      "q_scale": 1.51707875410797,
+      "service_z": 1.558550369214502
+     },
+     "(0.01, 2.0)": {
+      "demand_window": 19,
+      "q_scale": 0.925484681298938,
+      "service_z": 0.8800291429907715
+     },
+     "(0.01, 3.0)": {
+      "demand_window": 17,
+      "q_scale": 1.0293970026188193,
+      "service_z": 0.945142742272986
+     },
+     "(0.01, 4.0)": {
+      "demand_window": 26,
+      "q_scale": 1.0668523269355406,
+      "service_z": 0.9560183109267596
+     },
+     "(0.01, 5.0)": {
+      "demand_window": 17,
+      "q_scale": 1.0801058810387048,
+      "service_z": 1.1288772968393475
+     },
+     "(0.01, 6.0)": {
+      "demand_window": 20,
+      "q_scale": 1.0297057329897952,
+      "service_z": 1.4274728343708711
+     },
+     "(0.01, 7.0)": {
+      "demand_window": 15,
+      "q_scale": 1.0065232828064006,
+      "service_z": 1.2301494084804956
+     }
+    },
+    "kind": "eoq_joint",
+    "name": "ctx2_eoq_joint",
+    "params": {},
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9245769970270404,
+    "tune_score": 0.9249621328957284,
+    "variant": "one_product"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "04410301d29842c7fdb3175a6d26fd85520dd92ce37c29e6589d8c4809adea06": {
+   "arm": "planner_moving_average",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "moving_average",
+      "level_paths": 1024,
+      "rho": 0.2513278314993956,
+      "service_max": 0.995,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "forecaster": "moving_average",
+      "level_paths": 1024,
+      "rho": 0.2513278314993956,
+      "service_max": 0.995,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "forecaster": "moving_average",
+      "level_paths": 0,
+      "rho": 0.11236070457548655,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "planner",
+    "name": "planner_moving_average",
+    "params": {
+     "forecaster": "moving_average",
+     "tail_quantiles": true
+    },
+    "tune_score": 0.9235709038680756,
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "07514986cf085686b5bf4192883a81573813162a0543528f94b63c67948e9757": {
+   "arm": "tuned_periodic_order_up_to",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "periodic_order_up_to",
+    "name": "tuned_periodic_order_up_to",
+    "params": {
+     "cover_horizon_ticks": 1,
+     "demand_window": 30,
+     "review_interval": 1,
+     "safety_lead_pct_of_lag": 0.3653611177768845,
+     "stockout_safety_bonus_pct_of_lag": 0.6284538127710387
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9786482738141562,
+    "tune_score": 0.984778787161022,
+    "variant": "no_fee"
+   },
+   "kind": "periodic_order_up_to",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "0852bd22799f703002804d718542b541b0f1fd0ba029b7594811103e5629663b": {
+   "arm": "tuned_periodic_order_up_to",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "periodic_order_up_to",
+    "name": "tuned_periodic_order_up_to",
+    "params": {
+     "cover_horizon_ticks": 6,
+     "demand_window": 17,
+     "review_interval": 5,
+     "safety_lead_pct_of_lag": 0.38574129783844147,
+     "stockout_safety_bonus_pct_of_lag": 1.0673273708316573
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9322370064477702,
+    "tune_score": 0.9412722680905613,
+    "variant": "base"
+   },
+   "kind": "periodic_order_up_to",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "0fc7d5456544131be30561ef66fc98c7c8bfdfa0ebff5abef4e9aacba8f1ddfd": {
+   "arm": "tuned_reorder_point",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "reorder_point",
+    "name": "tuned_reorder_point",
+    "params": {
+     "cover_horizon_ticks": 19,
+     "demand_window": 35,
+     "safety_lead_pct_of_lag": 0.18056872666084894,
+     "stockout_safety_bonus_pct_of_lag": 0.41113189854608534
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9171351629995519,
+    "tune_score": 0.9237035462102481,
+    "variant": "one_product"
+   },
+   "kind": "reorder_point",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "130ceae120c39f89fd3a7a639549364f9c2a0aaf45287390185c3bdac2504770": {
+   "arm": "tuned_periodic_reorder",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "periodic_reorder",
+    "name": "tuned_periodic_reorder",
+    "params": {
+     "cover_horizon_ticks": 0,
+     "demand_window": 42,
+     "review_interval": 1,
+     "safety_lead_pct_of_lag": 0.5349764770034895,
+     "stockout_safety_bonus_pct_of_lag": 0.6089648963707972
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9786214729290936,
+    "tune_score": 0.984350032366667,
+    "variant": "no_fee"
+   },
+   "kind": "periodic_reorder",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "169e97fc434c28edb26558295352a5ecaecc7500373497c68b58feeaa9c6b749": {
+   "arm": "tuned_eoq",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "eoq",
+    "name": "tuned_eoq",
+    "params": {
+     "demand_window": 27,
+     "q_scale": 1.0121843177868917,
+     "service_z": 1.146945534510316
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9243009775422462,
+    "tune_score": 0.9308335742577847,
+    "variant": "one_product"
+   },
+   "kind": "eoq",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "20343db4e3e0493e5d49b807f8a53de0ffd40320c549cc2ad5677ab3d49a7950": {
+   "arm": "direct_s2",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.019043551015722526,
+      "service_max": 0.995
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.019043551015722526,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.01931774804368419,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "direct_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s2.pt",
+     "sha256": "0f51b229f6a38078df1fde2cc470f4f771b035b7f53c66d3b7140eceffd6fc55"
+    },
+    "name": "direct_s2",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "25342fc0c168602e61bb8b541a3b0630676df899905625ed975ab9dc164028cd": {
+   "arm": "direct_s2",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.29297854771023635,
+      "service_max": 0.999
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.16511865562729033,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.02520245164135599,
+      "service_max": 0.995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "direct_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s2.pt",
+     "sha256": "0f51b229f6a38078df1fde2cc470f4f771b035b7f53c66d3b7140eceffd6fc55"
+    },
+    "name": "direct_s2",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "2843a42024e69863393bb21ea7220a870363bf299523878c6632e84a1ae4cb9b": {
+   "arm": "jepa_s1",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.3025785958812186,
+      "service_max": 0.995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.1335366866034539,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.17064960565444465,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "jepa_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s1.pt",
+     "sha256": "ba179ddd2859bb527516b3907bd5120e50a95507b8af381ca3d38f7589994261"
+    },
+    "name": "jepa_s1",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "2c91d7ed10d9d786200f905ca2d2f3aad7722d08d9e4e804eaefff5f3fe0332f": {
+   "arm": "jepa_s0_plain",
+   "config": {
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s0.pt",
+     "sha256": "cf6278f7bc311bb98412b11d3d9fad19c9b708eaff7785be6ecb30e15646ecc3"
+    },
+    "name": "jepa_s0_plain",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "role": "ablation",
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "346d8bad74d0ed0cccd60a9d96c90e812aa9d18cddb7a8c77ecf591596b18865": {
+   "arm": "planner_moving_average",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "moving_average",
+      "level_paths": 1024,
+      "rho": 0.7652427208012573,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "forecaster": "moving_average",
+      "level_paths": 1024,
+      "rho": 0.5474882493796911,
+      "service_max": 0.995,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "forecaster": "moving_average",
+      "level_paths": 1024,
+      "rho": 0.3600964360275255,
+      "service_max": 0.995,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "planner",
+    "name": "planner_moving_average",
+    "params": {
+     "forecaster": "moving_average",
+     "tail_quantiles": true
+    },
+    "tune_score": 0.9831659378384764,
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "35e314e7a392d356968fe530a37aac9ab7905a1ca007458b4ace5b332224de79": {
+   "arm": "ctx_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 18432,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "demand_window": 17,
+      "q_scale": 3.0629096298973075,
+      "service_z": 1.37473805612783
+     },
+     "(0.00274,)": {
+      "demand_window": 12,
+      "q_scale": 1.0424035176993143,
+      "service_z": 1.5158631845535762
+     },
+     "(0.01,)": {
+      "demand_window": 15,
+      "q_scale": 1.0819730020272997,
+      "service_z": 1.2822725978689475
+     }
+    },
+    "kind": "eoq_joint",
+    "name": "ctx_eoq_joint",
+    "params": {},
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9245715251831574,
+    "tune_score": 0.9243879203213671,
+    "variant": "one_product"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "391947b088143439fd7eba51d54ee81e7fcf6504174d400a7ae8823c5a3f9054": {
+   "arm": "tuned_periodic_reorder",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "periodic_reorder",
+    "name": "tuned_periodic_reorder",
+    "params": {
+     "cover_horizon_ticks": 1,
+     "demand_window": 42,
+     "review_interval": 4,
+     "safety_lead_pct_of_lag": 1.3463113759387257,
+     "stockout_safety_bonus_pct_of_lag": 0.7624620330071021
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9313518280693404,
+    "tune_score": 0.9393928866591567,
+    "variant": "base"
+   },
+   "kind": "periodic_reorder",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "3e25d183ebbb2e6cb2460a0f818fa19770a38427dd20d9cf2a907dcd8d2ae297": {
+   "arm": "param_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "param_eoq_joint",
+    "name": "param_eoq_joint",
+    "params": {
+     "demand_window": 27,
+     "q_scale": 1.0000295946320092,
+     "z_a": 0.32967944116682124,
+     "z_b": 0.3194978080671256
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9247037684400873,
+    "tune_score": 0.9308636682696074,
+    "variant": "one_product"
+   },
+   "kind": "param_eoq_joint",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "470b92c6025b4fd5e835a9442624b21460a5da2b0af343d03a919f0b39dde51a": {
+   "arm": "param_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "param_eoq_joint",
+    "name": "param_eoq_joint",
+    "params": {
+     "demand_window": 18,
+     "q_scale": 1.04073162821253,
+     "z_a": 0.3129232265662919,
+     "z_b": 0.38294651312719363
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9570494501802356,
+    "tune_score": 0.9630078142294416,
+    "variant": "base"
+   },
+   "kind": "param_eoq_joint",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "49916ee205bb59ae196ddcfe2828c104ec84a2edddd82d65c5bfe6d9e2183cb2": {
+   "arm": "seasonal_ets",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "alpha": 0.02865309350388617,
+      "gamma": 0.20203294296178279,
+      "level_paths": 0,
+      "rho": 0.18148189487534633,
+      "service_max": 0.995,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "alpha": 0.07180466649105671,
+      "gamma": 0.020318774190485306,
+      "level_paths": 0,
+      "rho": 0.2075419474843049,
+      "service_max": 0.999,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "alpha": 0.07180466649105671,
+      "gamma": 0.020318774190485306,
+      "level_paths": 0,
+      "rho": 0.2075419474843049,
+      "service_max": 0.999,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "seasonal_ets",
+    "name": "seasonal_ets",
+    "params": {
+     "tail_quantiles": true
+    },
+    "tune_score": 0.9569235356177191,
+    "variant": "base"
+   },
+   "kind": "seasonal_ets",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "5526e4fcda77a6bfcd0ecb9dd4c29af8e0d281ed2d8bf30e18d9b40d8a6f773b": {
+   "arm": "jepa_s2",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.3025785958812186,
+      "service_max": 0.995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.1335366866034539,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.17064960565444465,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "jepa_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s2.pt",
+     "sha256": "147468d296143c397137a61337db332ad33b9ae4da55bd3285a0a6381cf35710"
+    },
+    "name": "jepa_s2",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "5c676cbf28e9364d4bac133624e69a74334bef1fc0f2dc8183b4c8ccc1ad2661": {
+   "arm": "ctx2_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 18,
+     "episodes": 110592,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate",
+     "delivery_lag"
+    ],
+    "cells": {
+     "(0.000685, 2.0)": {
+      "demand_window": 21,
+      "q_scale": 0.2986632194440378,
+      "service_z": 4.878740568780921
+     },
+     "(0.000685, 3.0)": {
+      "demand_window": 28,
+      "q_scale": 0.6860808915677509,
+      "service_z": 4.863781624686437
+     },
+     "(0.000685, 4.0)": {
+      "demand_window": 22,
+      "q_scale": 0.33114456509010604,
+      "service_z": 4.7588156826873345
+     },
+     "(0.000685, 5.0)": {
+      "demand_window": 21,
+      "q_scale": 1.062061983519707,
+      "service_z": 5.540840065775626
+     },
+     "(0.000685, 6.0)": {
+      "demand_window": 20,
+      "q_scale": 3.877343040947958,
+      "service_z": 5.0674815817417596
+     },
+     "(0.000685, 7.0)": {
+      "demand_window": 22,
+      "q_scale": 0.4087385768776871,
+      "service_z": 5.21456677713936
+     },
+     "(0.00274, 2.0)": {
+      "demand_window": 21,
+      "q_scale": 1.1235158286867712,
+      "service_z": 3.6987901119557076
+     },
+     "(0.00274, 3.0)": {
+      "demand_window": 21,
+      "q_scale": 1.1165168948010575,
+      "service_z": 3.9165913087728703
+     },
+     "(0.00274, 4.0)": {
+      "demand_window": 21,
+      "q_scale": 0.259023364448633,
+      "service_z": 3.887600343244842
+     },
+     "(0.00274, 5.0)": {
+      "demand_window": 13,
+      "q_scale": 0.725778303470482,
+      "service_z": 4.034888373676649
+     },
+     "(0.00274, 6.0)": {
+      "demand_window": 15,
+      "q_scale": 1.6396423590492106,
+      "service_z": 3.716216209021016
+     },
+     "(0.00274, 7.0)": {
+      "demand_window": 21,
+      "q_scale": 1.029862338722026,
+      "service_z": 3.5950105170682334
+     },
+     "(0.01, 2.0)": {
+      "demand_window": 22,
+      "q_scale": 2.9983808814139157,
+      "service_z": 2.895084001705173
+     },
+     "(0.01, 3.0)": {
+      "demand_window": 14,
+      "q_scale": 1.3869680853217894,
+      "service_z": 2.996749878471805
+     },
+     "(0.01, 4.0)": {
+      "demand_window": 21,
+      "q_scale": 0.3977202808528762,
+      "service_z": 2.8262214609453085
+     },
+     "(0.01, 5.0)": {
+      "demand_window": 14,
+      "q_scale": 1.8602598813245244,
+      "service_z": 2.8258391041897455
+     },
+     "(0.01, 6.0)": {
+      "demand_window": 20,
+      "q_scale": 2.8853450597277126,
+      "service_z": 2.5555192824015087
+     },
+     "(0.01, 7.0)": {
+      "demand_window": 22,
+      "q_scale": 1.4588833917711685,
+      "service_z": 2.6446606459524924
+     }
+    },
+    "kind": "eoq_joint",
+    "name": "ctx2_eoq_joint",
+    "params": {},
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9837433707951382,
+    "tune_score": 0.9832878428032363,
+    "variant": "no_fee"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "61b8fd55059d2ee5083c9573eff60bc3ad3fdeece09b0abeac0a0127c3e95369": {
+   "arm": "jepa_s0_plain",
+   "config": {
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s0.pt",
+     "sha256": "cf6278f7bc311bb98412b11d3d9fad19c9b708eaff7785be6ecb30e15646ecc3"
+    },
+    "name": "jepa_s0_plain",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "role": "ablation",
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "6311ca6f6dd8c2d9f5c5a8908da7a869236246136209db34fe083d71dc8dfdb8": {
+   "arm": "direct_s0",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.7113873660247985,
+      "service_max": 0.999
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.2546353329775683,
+      "service_max": 0.995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.15883320994072575,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s0.pt",
+     "sha256": "f4890a20483f5b850ed4c0e4f35b8d1e2eecfc9f699f61520c5156aeff2f87ed"
+    },
+    "name": "direct_s0",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "tune_score": 0.9858446237460972,
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "6a015e18c589e37d415a9b1b11f8b7a50a3ee37ed71ee953932822ba51ffae9d": {
+   "arm": "tuned_eoq",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "eoq",
+    "name": "tuned_eoq",
+    "params": {
+     "demand_window": 15,
+     "q_scale": 1.2654145512733495,
+     "service_z": 3.6955993631153246
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9822918173709195,
+    "tune_score": 0.9870788678871211,
+    "variant": "no_fee"
+   },
+   "kind": "eoq",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "6ca6eda5b2760287512a909ce447edbf07e81708cfe0563482c186ee553f5b95": {
+   "arm": "tuned_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "eoq_joint",
+    "name": "tuned_eoq_joint",
+    "params": {
+     "demand_window": 22,
+     "q_scale": 1.0331860728386428,
+     "service_z": 1.250117183200924
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9568882834480573,
+    "tune_score": 0.9627321672481289,
+    "variant": "base"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "6d50b3fa9cebcac55481227f304c14fdb0a27c9930162794afeed543868acb38": {
+   "arm": "seasonal_ets",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "alpha": 0.11308745492618204,
+      "gamma": 0.07317388585087811,
+      "level_paths": 1024,
+      "rho": 0.3415325055450967,
+      "service_max": 0.999,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "alpha": 0.11234961048646899,
+      "gamma": 0.08904166376364817,
+      "level_paths": 0,
+      "rho": 0.29965693337797467,
+      "service_max": 0.999,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "alpha": 0.11308745492618204,
+      "gamma": 0.07317388585087811,
+      "level_paths": 1024,
+      "rho": 0.3415325055450967,
+      "service_max": 0.999,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "seasonal_ets",
+    "name": "seasonal_ets",
+    "params": {
+     "tail_quantiles": true
+    },
+    "tune_score": 0.9242164118314288,
+    "variant": "one_product"
+   },
+   "kind": "seasonal_ets",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "71a254e023f2a386b04612248781f95f9ffbf1671021403d4e9b6bbb80291f02": {
+   "arm": "seasonal_ets",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "alpha": 0.3777614116426663,
+      "gamma": 0.1682635474058375,
+      "level_paths": 1024,
+      "rho": 0.5589410716412232,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "alpha": 0.11308745492618204,
+      "gamma": 0.07317388585087811,
+      "level_paths": 1024,
+      "rho": 0.3415325055450967,
+      "service_max": 0.999,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "alpha": 0.09976050018776417,
+      "gamma": 0.15461298571390145,
+      "level_paths": 1024,
+      "rho": 0.27728759281948245,
+      "service_max": 0.999,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "seasonal_ets",
+    "name": "seasonal_ets",
+    "params": {
+     "tail_quantiles": true
+    },
+    "tune_score": 0.9845036801131825,
+    "variant": "no_fee"
+   },
+   "kind": "seasonal_ets",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "74d228a96917bf2186676dfd1b80bff652428833eae1e376e73b182b25fea76f": {
+   "arm": "planner_oracle",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "oracle",
+      "level_paths": 1024,
+      "rho": 0.23099931707066737,
+      "service_max": 0.995,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "forecaster": "oracle",
+      "level_paths": 1024,
+      "rho": 0.05640492640707606,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "forecaster": "oracle",
+      "level_paths": 0,
+      "rho": 0.02520245164135599,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "planner",
+    "name": "planner_oracle",
+    "params": {
+     "forecaster": "oracle",
+     "tail_quantiles": true
+    },
+    "tune_score": 0.990470565578085,
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "7abf4107090ef6c5c93b9362886df50340ff8978586872e44f89de74128b030d": {
+   "arm": "tuned_order_up_to",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "order_up_to",
+    "name": "tuned_order_up_to",
+    "params": {
+     "cover_horizon_ticks": 0,
+     "demand_window": 21,
+     "safety_lead_pct_of_lag": 0.8495288865884653,
+     "stockout_safety_bonus_pct_of_lag": 0.0912345416499463
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9773088121280649,
+    "tune_score": 0.984014836048547,
+    "variant": "no_fee"
+   },
+   "kind": "order_up_to",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "7aebd046c2bf204558a5a1f048ba8897c050b458dfb76270e0185907b81e5b0e": {
+   "arm": "jepa_s0",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.019043551015722526,
+      "service_max": 0.9995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.11236070457548655,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.02520245164135599,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s0.pt",
+     "sha256": "cf6278f7bc311bb98412b11d3d9fad19c9b708eaff7785be6ecb30e15646ecc3"
+    },
+    "name": "jepa_s0",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "tune_score": 0.9589947408556473,
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "81ec6f94ca8c830af28e9ef40a9006fb48b3d5abfba597997c934494bd97fe51": {
+   "arm": "jepa_s1",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.019043551015722526,
+      "service_max": 0.9995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.11236070457548655,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.02520245164135599,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "jepa_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s1.pt",
+     "sha256": "ba179ddd2859bb527516b3907bd5120e50a95507b8af381ca3d38f7589994261"
+    },
+    "name": "jepa_s1",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "8567809fa9d9324e602ce9c8e5cb4f1082fdff5956b6f9505d103281be4f50ab": {
+   "arm": "direct_s1",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.7113873660247985,
+      "service_max": 0.999
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.2546353329775683,
+      "service_max": 0.995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.15883320994072575,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "direct_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s1.pt",
+     "sha256": "dd0198f269b556229069ab263b52dd164e1eb13e456f98d5e4a771a59cc3254f"
+    },
+    "name": "direct_s1",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "8706e22c95a3ce4fd9e6923f02c1a182d33a78a7631c40850800425d68829a9c": {
+   "arm": "direct_s2",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.7113873660247985,
+      "service_max": 0.999
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.2546353329775683,
+      "service_max": 0.995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.15883320994072575,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "direct_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s2.pt",
+     "sha256": "0f51b229f6a38078df1fde2cc470f4f771b035b7f53c66d3b7140eceffd6fc55"
+    },
+    "name": "direct_s2",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "8e2edd6163ec1322d4cb46c07b6e8c506d840271c7f56869049dcfa1b1552a75": {
+   "arm": "ctx_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 18432,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "demand_window": 16,
+      "q_scale": 0.5912365467350372,
+      "service_z": 5.344436923518113
+     },
+     "(0.00274,)": {
+      "demand_window": 21,
+      "q_scale": 1.837495247018494,
+      "service_z": 3.6962963240383893
+     },
+     "(0.01,)": {
+      "demand_window": 21,
+      "q_scale": 2.469980926577114,
+      "service_z": 2.855407054520322
+     }
+    },
+    "kind": "eoq_joint",
+    "name": "ctx_eoq_joint",
+    "params": {},
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9836996326653475,
+    "tune_score": 0.9839737611024875,
+    "variant": "no_fee"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "996bece0b617b6accb8912a0c0b0f86064ae615be7d465555051df7942c0c040": {
+   "arm": "jepa_s0",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.6767691001682692,
+      "service_max": 0.9995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.23099931707066737,
+      "service_max": 0.995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.06426170855532154,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s0.pt",
+     "sha256": "cf6278f7bc311bb98412b11d3d9fad19c9b708eaff7785be6ecb30e15646ecc3"
+    },
+    "name": "jepa_s0",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "tune_score": 0.9858685630734634,
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "a776ffa2f9ab2f0e03a3f93e7151e0b0a194f36d5409db7190698177c508171c": {
+   "arm": "ctx_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 18432,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "demand_window": 9,
+      "q_scale": 0.9457077010602021,
+      "service_z": 1.4407684592283223
+     },
+     "(0.00274,)": {
+      "demand_window": 14,
+      "q_scale": 1.0398281334639288,
+      "service_z": 1.608678037569154
+     },
+     "(0.01,)": {
+      "demand_window": 23,
+      "q_scale": 1.0386616180227817,
+      "service_z": 1.0795769778602562
+     }
+    },
+    "kind": "eoq_joint",
+    "name": "ctx_eoq_joint",
+    "params": {},
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.957033075004644,
+    "tune_score": 0.9567090425066281,
+    "variant": "base"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "a94844c2af51ee3ec665d802ac27d4bb1d976fc9a61a9358edc0574864b9501e": {
+   "arm": "direct_s1",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.019043551015722526,
+      "service_max": 0.995
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.019043551015722526,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.01931774804368419,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "direct_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s1.pt",
+     "sha256": "dd0198f269b556229069ab263b52dd164e1eb13e456f98d5e4a771a59cc3254f"
+    },
+    "name": "direct_s1",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "a97eb484d3a5650c3c03fc153f450f380dacf53e588743c46bad2fb070af9cbc": {
+   "arm": "tuned_periodic_order_up_to",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "periodic_order_up_to",
+    "name": "tuned_periodic_order_up_to",
+    "params": {
+     "cover_horizon_ticks": 8,
+     "demand_window": 29,
+     "review_interval": 8,
+     "safety_lead_pct_of_lag": 0.8698634895151717,
+     "stockout_safety_bonus_pct_of_lag": 0.3492458685940216
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.8688309456740148,
+    "tune_score": 0.8744988096255205,
+    "variant": "one_product"
+   },
+   "kind": "periodic_order_up_to",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "a9d1d4715d4270ee365beed89e78da998208add9cc1d593de9cfe3448140ab25": {
+   "arm": "tuned_reorder_point",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "reorder_point",
+    "name": "tuned_reorder_point",
+    "params": {
+     "cover_horizon_ticks": 15,
+     "demand_window": 31,
+     "safety_lead_pct_of_lag": 0.285683440753296,
+     "stockout_safety_bonus_pct_of_lag": 0.31791350946662156
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9283626133285617,
+    "tune_score": 0.9367408777928676,
+    "variant": "base"
+   },
+   "kind": "reorder_point",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "acba7e621274cb882d45ca1b0cc2d873abca2cc5edf611d290caa7ba14bafc64": {
+   "arm": "jepa_s0_plain",
+   "config": {
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s0.pt",
+     "sha256": "cf6278f7bc311bb98412b11d3d9fad19c9b708eaff7785be6ecb30e15646ecc3"
+    },
+    "name": "jepa_s0_plain",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "role": "ablation",
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "aeab0acfcce64fa4e3a0592117e89d462a650e81f2c45243cecf4660d09dd6e9": {
+   "arm": "direct_s0",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.29297854771023635,
+      "service_max": 0.999
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.16511865562729033,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.02520245164135599,
+      "service_max": 0.995
+     }
+    },
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s0.pt",
+     "sha256": "f4890a20483f5b850ed4c0e4f35b8d1e2eecfc9f699f61520c5156aeff2f87ed"
+    },
+    "name": "direct_s0",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "tune_score": 0.9256532671763815,
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "b0aa6f368287877811c2a984820208742ef1c70d12e91c42bdec2398091a02fa": {
+   "arm": "planner_oracle",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "oracle",
+      "level_paths": 1024,
+      "rho": 0.23297561169421666,
+      "service_max": 0.995,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "forecaster": "oracle",
+      "level_paths": 0,
+      "rho": 0.15721757671665537,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "forecaster": "oracle",
+      "level_paths": 1024,
+      "rho": 0.1335366866034539,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "planner",
+    "name": "planner_oracle",
+    "params": {
+     "forecaster": "oracle",
+     "tail_quantiles": true
+    },
+    "tune_score": 0.9271353026335184,
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "b63d43454712e0bf065da089f75c3c16caa65a42261bc2edf93f594b6816c443": {
+   "arm": "jepa_s0",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.3025785958812186,
+      "service_max": 0.995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.1335366866034539,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.17064960565444465,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s0.pt",
+     "sha256": "cf6278f7bc311bb98412b11d3d9fad19c9b708eaff7785be6ecb30e15646ecc3"
+    },
+    "name": "jepa_s0",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "tune_score": 0.9253530833997837,
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "b7fa30f3d6ba73cfd3564dfef7a8582af4f795c038975008109c3dc45a36aaa6": {
+   "arm": "jepa_s2",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.6767691001682692,
+      "service_max": 0.9995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.23099931707066737,
+      "service_max": 0.995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.06426170855532154,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "jepa_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s2.pt",
+     "sha256": "147468d296143c397137a61337db332ad33b9ae4da55bd3285a0a6381cf35710"
+    },
+    "name": "jepa_s2",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "b803df128dd8e1663dfb82f33579ea1c9aaa032a8e443d1b302ee52b5405042f": {
+   "arm": "direct_s1",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.29297854771023635,
+      "service_max": 0.999
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.16511865562729033,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.02520245164135599,
+      "service_max": 0.995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "direct_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s1.pt",
+     "sha256": "dd0198f269b556229069ab263b52dd164e1eb13e456f98d5e4a771a59cc3254f"
+    },
+    "name": "direct_s1",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "variant": "one_product"
+   },
+   "kind": "planner",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "bab046297929a24f3fb935ac5896a07f638945373ad6ff8e42d5d872f11a1e5f": {
+   "arm": "tuned_reorder_point",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "reorder_point",
+    "name": "tuned_reorder_point",
+    "params": {
+     "cover_horizon_ticks": 2,
+     "demand_window": 41,
+     "safety_lead_pct_of_lag": 0.5142240365766568,
+     "stockout_safety_bonus_pct_of_lag": 0.30971257474900415
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9780591772599478,
+    "tune_score": 0.9833271401082699,
+    "variant": "no_fee"
+   },
+   "kind": "reorder_point",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "c24d61742d550cfd109891413ad1f4f6e172ccdf4cda83203361ebf3c01b0b0e": {
+   "arm": "tuned_periodic_reorder",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "periodic_reorder",
+    "name": "tuned_periodic_reorder",
+    "params": {
+     "cover_horizon_ticks": 20,
+     "demand_window": 37,
+     "review_interval": 1,
+     "safety_lead_pct_of_lag": 0.2704983090744967,
+     "stockout_safety_bonus_pct_of_lag": 0.07184906508326891
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9172234425235328,
+    "tune_score": 0.9237641111482637,
+    "variant": "one_product"
+   },
+   "kind": "periodic_reorder",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "c3837609d48ec87e7cb06b43a435c9f5997d39631c5f1f84f9e8a22fe83e80ab": {
+   "arm": "direct_s0",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "direct",
+      "level_paths": 1024,
+      "rho": 0.019043551015722526,
+      "service_max": 0.995
+     },
+     "(0.00274,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.019043551015722526,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "direct",
+      "level_paths": 0,
+      "rho": 0.01931774804368419,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/direct-s0.pt",
+     "sha256": "f4890a20483f5b850ed4c0e4f35b8d1e2eecfc9f699f61520c5156aeff2f87ed"
+    },
+    "name": "direct_s0",
+    "params": {
+     "forecaster": "direct"
+    },
+    "seed_group": "direct",
+    "tune_score": 0.9588217067194437,
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "cc284b0021bef34444634cdd217da78f2e8bb0f50e598c08c5ff697f46fa68c1": {
+   "arm": "param_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "param_eoq_joint",
+    "name": "param_eoq_joint",
+    "params": {
+     "demand_window": 15,
+     "q_scale": 3.1927971664767596,
+     "z_a": -1.4773771205017592,
+     "z_b": 1.923631116639517
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9835758459610324,
+    "tune_score": 0.9878282232746012,
+    "variant": "no_fee"
+   },
+   "kind": "param_eoq_joint",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "d0ac41d705594fc5d113899920163b03fb908f0d15aa62d1227d59644f517230": {
+   "arm": "tuned_order_up_to",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "order_up_to",
+    "name": "tuned_order_up_to",
+    "params": {
+     "cover_horizon_ticks": 17,
+     "demand_window": 28,
+     "safety_lead_pct_of_lag": 0.17955736724421872,
+     "stockout_safety_bonus_pct_of_lag": 0.33909771830219265
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9173332988170192,
+    "tune_score": 0.9240788127446552,
+    "variant": "one_product"
+   },
+   "kind": "order_up_to",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "d4bc7a5ecdc87798322dd8e94e4bc20fa032ab5022e261e280553b1b9e6ed54a": {
+   "arm": "ctx2_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 18,
+     "episodes": 110592,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate",
+     "delivery_lag"
+    ],
+    "cells": {
+     "(0.000685, 2.0)": {
+      "demand_window": 14,
+      "q_scale": 1.1267890626524188,
+      "service_z": 1.1898717599569997
+     },
+     "(0.000685, 3.0)": {
+      "demand_window": 14,
+      "q_scale": 1.2235683880913744,
+      "service_z": 1.3090303849363236
+     },
+     "(0.000685, 4.0)": {
+      "demand_window": 12,
+      "q_scale": 1.1276277332732298,
+      "service_z": 1.4759822955929571
+     },
+     "(0.000685, 5.0)": {
+      "demand_window": 14,
+      "q_scale": 1.034745565674993,
+      "service_z": 1.9487454928647157
+     },
+     "(0.000685, 6.0)": {
+      "demand_window": 10,
+      "q_scale": 0.9620805761881409,
+      "service_z": 1.3362896854572999
+     },
+     "(0.000685, 7.0)": {
+      "demand_window": 15,
+      "q_scale": 1.2592979594568494,
+      "service_z": 1.6075576869757944
+     },
+     "(0.00274, 2.0)": {
+      "demand_window": 20,
+      "q_scale": 1.1379611818040758,
+      "service_z": 1.0105585495685299
+     },
+     "(0.00274, 3.0)": {
+      "demand_window": 24,
+      "q_scale": 1.0938799778851422,
+      "service_z": 1.3086284504147805
+     },
+     "(0.00274, 4.0)": {
+      "demand_window": 22,
+      "q_scale": 1.048598667891803,
+      "service_z": 1.6206140397954119
+     },
+     "(0.00274, 5.0)": {
+      "demand_window": 20,
+      "q_scale": 1.1429600389023333,
+      "service_z": 1.5470902491987868
+     },
+     "(0.00274, 6.0)": {
+      "demand_window": 16,
+      "q_scale": 1.148719870857482,
+      "service_z": 1.5931052452403835
+     },
+     "(0.00274, 7.0)": {
+      "demand_window": 14,
+      "q_scale": 1.1428543823753954,
+      "service_z": 1.4046071959165825
+     },
+     "(0.01, 2.0)": {
+      "demand_window": 24,
+      "q_scale": 1.041066603281383,
+      "service_z": 0.7773169894403313
+     },
+     "(0.01, 3.0)": {
+      "demand_window": 13,
+      "q_scale": 1.0262134539843248,
+      "service_z": 1.0001531149089478
+     },
+     "(0.01, 4.0)": {
+      "demand_window": 20,
+      "q_scale": 0.9917236870373037,
+      "service_z": 1.207829586880048
+     },
+     "(0.01, 5.0)": {
+      "demand_window": 19,
+      "q_scale": 1.0576145820802771,
+      "service_z": 1.009362100973576
+     },
+     "(0.01, 6.0)": {
+      "demand_window": 25,
+      "q_scale": 1.1298818916418645,
+      "service_z": 1.0232649223996273
+     },
+     "(0.01, 7.0)": {
+      "demand_window": 25,
+      "q_scale": 1.1224122913670442,
+      "service_z": 1.2132293951448845
+     }
+    },
+    "kind": "eoq_joint",
+    "name": "ctx2_eoq_joint",
+    "params": {},
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9571348001714588,
+    "tune_score": 0.9564064008487563,
+    "variant": "base"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "ddba6372503d277be19a8dda150acc335c1b0ccde02e322188fba87c632fed4f": {
+   "arm": "tuned_order_up_to",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "order_up_to",
+    "name": "tuned_order_up_to",
+    "params": {
+     "cover_horizon_ticks": 12,
+     "demand_window": 26,
+     "safety_lead_pct_of_lag": 0.2751946335441897,
+     "stockout_safety_bonus_pct_of_lag": 0.39438503040603134
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9284668387035283,
+    "tune_score": 0.9366606829696856,
+    "variant": "base"
+   },
+   "kind": "order_up_to",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "df79518dbfb761575b10a02efde5015e3d00bee5e41797cc607b85bd7d8d7cb3": {
+   "arm": "planner_oracle",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "oracle",
+      "level_paths": 0,
+      "rho": 0.02520245164135599,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "forecaster": "oracle",
+      "level_paths": 0,
+      "rho": 0.0007849602264927875,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "forecaster": "oracle",
+      "level_paths": 0,
+      "rho": 0.02520245164135599,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "planner",
+    "name": "planner_oracle",
+    "params": {
+     "forecaster": "oracle",
+     "tail_quantiles": true
+    },
+    "tune_score": 0.9624597449787711,
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "e409d263f6b49098fb6eeed4ceb10030459a0ed197540f7d3d6a106b54d95c8f": {
+   "arm": "jepa_s1",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.6767691001682692,
+      "service_max": 0.9995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.23099931707066737,
+      "service_max": 0.995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 1024,
+      "rho": 0.06426170855532154,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "jepa_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s1.pt",
+     "sha256": "ba179ddd2859bb527516b3907bd5120e50a95507b8af381ca3d38f7589994261"
+    },
+    "name": "jepa_s1",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "variant": "no_fee"
+   },
+   "kind": "planner",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "e7477a8dad7f52ecafcf8eaee1d774179972a9824cddd586eeddc14f538a1326": {
+   "arm": "tuned_eoq",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "eoq",
+    "name": "tuned_eoq",
+    "params": {
+     "demand_window": 15,
+     "q_scale": 0.8132934075240855,
+     "service_z": 1.5718905673635195
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.938190514135189,
+    "tune_score": 0.9445533824110108,
+    "variant": "base"
+   },
+   "kind": "eoq",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "ebd8221a829d8c96616a97c7ed1636179f3e35ee89bd12feebd0cb568c80d23c": {
+   "arm": "jepa_s2",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.019043551015722526,
+      "service_max": 0.9995
+     },
+     "(0.00274,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.11236070457548655,
+      "service_max": 0.9995
+     },
+     "(0.01,)": {
+      "forecaster": "jepa",
+      "level_paths": 0,
+      "rho": 0.02520245164135599,
+      "service_max": 0.9995
+     }
+    },
+    "kind": "planner",
+    "knobs_from": "jepa_s0",
+    "model": {
+     "path": "/Users/mislavjordanic/Documents/projects/personal_projects/firstmate/data/sc-jepa-t2/models/jepa-s2.pt",
+     "sha256": "147468d296143c397137a61337db332ad33b9ae4da55bd3285a0a6381cf35710"
+    },
+    "name": "jepa_s2",
+    "params": {
+     "forecaster": "jepa"
+    },
+    "seed_group": "jepa",
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "ec0e7a3755d07dd59a949a801b2c4a233d3cc89fffa836495cbeec9bb2b1d5d6": {
+   "arm": "planner_moving_average",
+   "config": {
+    "budget": {
+     "cells": 3,
+     "episodes": 1536,
+     "trials": 48,
+     "trials_per_cell": 16,
+     "worlds_per_trial": 32
+    },
+    "cell_keys": [
+     "holding_rate"
+    ],
+    "cells": {
+     "(0.000685,)": {
+      "forecaster": "moving_average",
+      "level_paths": 1024,
+      "rho": 0.2513278314993956,
+      "service_max": 0.995,
+      "tail_quantiles": true
+     },
+     "(0.00274,)": {
+      "forecaster": "moving_average",
+      "level_paths": 1024,
+      "rho": 0.15430547242479475,
+      "service_max": 0.999,
+      "tail_quantiles": true
+     },
+     "(0.01,)": {
+      "forecaster": "moving_average",
+      "level_paths": 1024,
+      "rho": 0.15883320994072575,
+      "service_max": 0.9995,
+      "tail_quantiles": true
+     }
+    },
+    "kind": "planner",
+    "name": "planner_moving_average",
+    "params": {
+     "forecaster": "moving_average",
+     "tail_quantiles": true
+    },
+    "tune_score": 0.95646278136508,
+    "variant": "base"
+   },
+   "kind": "planner",
+   "note": "T2 final config (base): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "f57c3495cc9ba1675259e1f59c19b86659498b902d87992d7e08532c16b5054e": {
+   "arm": "tuned_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "eoq_joint",
+    "name": "tuned_eoq_joint",
+    "params": {
+     "demand_window": 15,
+     "q_scale": 1.2654145512733495,
+     "service_z": 3.6955993631153246
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9822918173709195,
+    "tune_score": 0.9870788678871211,
+    "variant": "no_fee"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (no_fee): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  },
+  "ff4ed47eb6c53135baf6be0e17f4ded20dec375b171cc684cb532d01cdd30f6e": {
+   "arm": "tuned_eoq_joint",
+   "config": {
+    "budget": {
+     "cells": 1,
+     "episodes": 6144,
+     "trials": 192,
+     "trials_per_cell": 192,
+     "worlds_per_trial": 32
+    },
+    "kind": "eoq_joint",
+    "name": "tuned_eoq_joint",
+    "params": {
+     "demand_window": 27,
+     "q_scale": 1.0121843177868917,
+     "service_z": 1.146945534510316
+    },
+    "select": {
+     "count": 1024,
+     "first": 2003072,
+     "split": "tune"
+    },
+    "select_score": 0.9243009775422462,
+    "tune_score": 0.9308335742577847,
+    "variant": "one_product"
+   },
+   "kind": "eoq_joint",
+   "note": "T2 final config (one_product): tuned on the tune split under protocol v4 budgets; dev looked at once (100 worlds) as a sanity check, no selection on it",
+   "protocol_sha256": "5b1785bc0d979360856c0c66c3877da32d8f3a6a28d1e5c7874dd1da9a8e2d96"
+  }
+ }
+}
