@@ -6,6 +6,8 @@
     $T1 fit --seeds 0 1 2            # joint JEPA and direct, one model per training seed
     $T1 fit-hmm --states 2 3 4       # Baum-Welch on train sales; order chosen on the tune bank
     $T1 g2                           # dev forecast metrics, JEPA vs direct, the gate G2
+    $T1 explore-fit                  # EXPLORATORY (after G2 failed): model variants, seed 0, train only
+    $T1 explore-score                # EXPLORATORY: one dev forecast re-score of the variants; no gate
     $T1 arms --seeds 0 1 2           # planner arm configs; the sampler of each learned forecaster
                                      # (native paths or a copula) picked on tune worlds
 
@@ -127,7 +129,23 @@ def collect(out: Path, protocol: Protocol, sizes: dict[str, int] = BANKS, log_di
         print(split, path, entry["result"], flush=True)
 
 
-def _fit_one(out: Path, arm: str, seed: int, steps: int, protocol: Protocol, log_dir) -> None:
+EXPLORE_NOTE = ("EXPLORATORY, after G2 failed: a post-failure look that cannot feed any T1 primary or secondary "
+                "claim, does not re-open G2, and leads to no closed-loop or sealed-test run")
+# Option B of the t1-gate decision: the remaining JEPA model budget, one training seed each.
+EXPLORE_VARIANTS = {
+    "jepa-ctx56": {"jepa": True, "long_weeks": 8},
+    "jepa-ctx112": {"jepa": True, "long_weeks": 16},
+    "jepa-ctx112-lw0.3": {"jepa": True, "long_weeks": 16, "latent_weight": 0.3},
+    "jepa-ctx112-lw0.1": {"jepa": True, "long_weeks": 16, "latent_weight": 0.1},
+    "jepa-ctx112-lw0.1-k6": {"jepa": True, "long_weeks": 16, "latent_weight": 0.1, "n_components": 6},
+    "direct-ctx56": {"jepa": False, "long_weeks": 8},
+    "direct-ctx112": {"jepa": False, "long_weeks": 16},
+    "direct-ctx112-k6": {"jepa": False, "long_weeks": 16, "n_components": 6},
+}
+
+
+def _fit_one(out: Path, arm: str, seed: int, steps: int, protocol: Protocol, log_dir,
+             overrides: dict | None = None, note: str = "") -> None:
     import torch
 
     from src.perfect_supplier import joint
@@ -137,9 +155,9 @@ def _fit_one(out: Path, arm: str, seed: int, steps: int, protocol: Protocol, log
     rng = np.random.default_rng(0)
     val = rng.random(len(bank.sales)) < 0.1  # the train block's own 10% for early stopping
     part = lambda m: joint.ShopBank(bank.sales[m], bank.censored[m], bank.demand[m], bank.world_seed[m])  # noqa: E731
-    config = joint.JointConfig(jepa=arm == "jepa", steps=steps, seed=seed)
+    config = joint.JointConfig(**{"jepa": arm == "jepa", **(overrides or {})}, steps=steps, seed=seed)
     name = f"{arm}-s{seed}"
-    entry = {"kind": "fit", "arm": name, "world_family": FAMILY, "variant": "base", "split": "train",
+    entry = {"kind": "fit", "arm": name, "world_family": FAMILY, "variant": "base", "split": "train", "note": note,
              "seeds": {"first": int(bank.world_seed[0]), "count": len(bank.world_seed)},
              "config": {"model": "joint", **{k: v for k, v in vars(config).items()}}}
     with log.logged_run(TRACK, entry, protocol, log_dir):
@@ -154,6 +172,12 @@ def fit(out: Path, seeds: list[int], steps: int, protocol: Protocol, log_dir=log
     jobs = [(arm, s) for s in seeds for arm in ("jepa", "direct")]
     Parallel(n_jobs=min(_workers(), len(jobs)))(delayed(_fit_one)(out, a, s, steps, protocol, log_dir)
                                                for a, s in jobs)
+
+
+def explore_fit(out: Path, steps: int, protocol: Protocol, log_dir=log.LOG_DIR) -> None:
+    Parallel(n_jobs=min(_workers(), len(EXPLORE_VARIANTS)))(
+        delayed(_fit_one)(out, name, 0, steps, protocol, log_dir, v, EXPLORE_NOTE)
+        for name, v in EXPLORE_VARIANTS.items())
 
 
 def fit_hmm(out: Path, states: list[int], protocol: Protocol, log_dir=log.LOG_DIR) -> None:
@@ -236,6 +260,52 @@ def _maker(kind: str, path: str | None = None):
     return make
 
 
+METRICS = ("daily", "lead_time", "shop_lead_time")
+
+
+def _forecast_metrics(forecasters: dict, bank, n: int, protocol: Protocol) -> dict[str, dict[str, np.ndarray]]:
+    rows = Parallel(n_jobs=_workers())(delayed(_world_metrics)(forecasters, bank, i, protocol) for i in range(n))
+    return {name: {m: np.array([r[name][m] for r in rows]) for m in METRICS} for name in forecasters}
+
+
+def explore_score(out: Path, protocol: Protocol, n_worlds: int, log_dir=log.LOG_DIR) -> str:
+    """The one exploratory dev re-score: every variant, the G2 seed-0 models, HMM and Bayes. No gate."""
+    from src.perfect_supplier.joint import ShopBank
+
+    bank = ShopBank.load(out / "bank-dev.npz")
+    n = min(n_worlds, len(bank.world_seed))
+    names = ["jepa-s0", "direct-s0", *[f"{v}-s0" for v in EXPLORE_VARIANTS]]
+    forecasters = {k: _maker(k.split("-")[0], str(out / "models" / f"{k}.pt")) for k in names}
+    forecasters |= {"hmm": _maker("hmm", str(out / "models" / "hmm.json")), "bayes": _maker("bayes")}
+    pairs = [("jepa-s0", "direct-s0"), ("jepa-ctx56-s0", "direct-ctx56-s0")] + [
+        (f"{v}-s0", "direct-ctx112-s0") for v in EXPLORE_VARIANTS if v.startswith("jepa-ctx112")] + [
+        ("jepa-ctx112-lw0.1-k6-s0", "direct-ctx112-k6-s0")]
+    entry = {"kind": "diagnostic", "arm": "explore-forecast", "world_family": FAMILY, "variant": "base",
+             "split": "dev", "seeds": {"first": int(bank.world_seed[0]), "count": n}, "note": EXPLORE_NOTE,
+             "config": {"variants": EXPLORE_VARIANTS, "every": G2_EVERY, "paths": G2_PATHS, "levels": G2_LEVELS,
+                        "models": {k: log.file_sha256(out / "models" / f"{k}.pt") for k in names}}}
+    with log.logged_run(TRACK, entry, protocol, log_dir):
+        per = _forecast_metrics(forecasters, bank, n, protocol)
+        lines = [f"# T1 exploratory forecast re-score ({n} dev shops) — NOT a gate", "",
+                 f"**{EXPLORE_NOTE}.** One training seed per variant, fitted on train only; scored once.", "",
+                 "Mean pinball over levels " + ", ".join(map(str, G2_LEVELS)) + ", scaled; lower is better.", "",
+                 "| forecaster | " + " | ".join(METRICS) + " |", "| --- |" + " --- |" * len(METRICS)]
+        lines += [f"| {k} | " + " | ".join(f"{per[k][m].mean():.5f}" for m in METRICS) + " |" for k in forecasters]
+        lines += ["", "| JEPA − direct (lead_time) | mean | 95% BCa | JEPA better in |", "| --- | --- | --- | --- |"]
+        result = {}
+        for a, b in pairs:
+            d = per[a]["lead_time"] - per[b]["lead_time"]
+            lo, hi = stats.bca_ci(d, level=0.95, n_resamples=protocol.stats["resamples"])
+            result[f"{a} - {b}"] = {"diff": float(d.mean()), "ci95": [float(lo), float(hi)]}
+            lines.append(f"| {a} − {b} | {d.mean():+.5f} | [{lo:+.5f}, {hi:+.5f}] | {(d < 0).mean():.0%} |")
+        text = "\n".join(lines) + "\n"
+        (out / "explore.md").write_text(text)
+        entry["result"] = {"lead_time_jepa_minus_direct": result,
+                           "means": {k: {m: float(v[m].mean()) for m in METRICS} for k, v in per.items()}}
+        entry["artifacts"] = [{"path": str(out / "explore.md"), "sha256": log.file_sha256(out / "explore.md")}]
+    return text
+
+
 def g2(out: Path, seeds: list[int], protocol: Protocol, n_worlds: int, log_dir=log.LOG_DIR) -> str:
     from src.perfect_supplier.joint import ShopBank
 
@@ -250,9 +320,8 @@ def g2(out: Path, seeds: list[int], protocol: Protocol, n_worlds: int, log_dir=l
                  "rule": G2_RULE, "every": G2_EVERY, "paths": G2_PATHS, "levels": G2_LEVELS,
                  "models": {k: log.file_sha256(out / "models" / f"{k}.pt") for k in forecasters if "-s" in k}}}
     with log.logged_run(TRACK, entry, protocol, log_dir):
-        rows = Parallel(n_jobs=_workers())(delayed(_world_metrics)(forecasters, bank, i, protocol) for i in range(n))
-        metrics = ("daily", "lead_time", "shop_lead_time")
-        per = {name: {m: np.array([r[name][m] for r in rows]) for m in metrics} for name in forecasters}
+        per = _forecast_metrics(forecasters, bank, n, protocol)
+        metrics = METRICS
         for a in ("jepa", "direct"):
             per[a] = {m: np.mean([per[f"{a}-s{s}"][m] for s in seeds], axis=0) for m in metrics}
         lines = [f"# T1 gate G2: dev forecast metrics ({n} dev shops, behaviour policies, vs true demand)", "",
@@ -349,6 +418,10 @@ def main(argv: list[str] | None = None) -> None:
     g = sub.add_parser("g2")
     g.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     g.add_argument("--n-worlds", type=int, default=BANKS["dev"])
+    ef = sub.add_parser("explore-fit")
+    ef.add_argument("--steps", type=int, default=12_000)
+    es = sub.add_parser("explore-score")
+    es.add_argument("--n-worlds", type=int, default=BANKS["dev"])
     a = sub.add_parser("arms")
     a.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     a.add_argument("--n-worlds", type=int, default=32)
@@ -365,6 +438,10 @@ def main(argv: list[str] | None = None) -> None:
         fit_hmm(args.out, args.states, protocol)
     elif args.command == "g2":
         print(g2(args.out, args.seeds, protocol, args.n_worlds))
+    elif args.command == "explore-fit":
+        explore_fit(args.out, args.steps, protocol)
+    elif args.command == "explore-score":
+        print(explore_score(args.out, protocol, args.n_worlds))
     elif args.command == "arms":
         for c in arms(args.out, args.seeds, protocol, args.n_worlds):
             print(c["name"], c["params"])

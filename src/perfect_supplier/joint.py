@@ -10,7 +10,11 @@ is the whole shop on one decision day ``t``:
 - long-run level: per product, ``log`` of its context mean over its mean
   since the history began (plus their average), which says whether the shop
   is busier than usual;
-- future: the next ``window`` days of every product, in the context's form.
+- future: the next ``window`` days of every product, in the context's form;
+- optional longer history (``long_weeks > 0``): per product, the ``log`` of
+  each of its last ``long_weeks`` weekly means over its long-run mean, read by
+  the predictor and the head (not the encoder, whose input must match the
+  future window's for the EMA target).
 
 The JEPA target is the EMA encoder's embedding of the joint future window;
 the predictor maps the context embedding and the long-run level to it, with
@@ -50,6 +54,7 @@ class JointConfig:
     embed_dim: int = 64
     hidden: int = 256
     n_components: int = 3
+    long_weeks: int = 0
     jepa: bool = True
     latent_weight: float = 1.0
     var_weight: float = 1.0
@@ -75,7 +80,7 @@ class JointModel(nn.Module):
         super().__init__()
         self.config = config
         w, P, d, h, K = config.window, config.n_products, config.embed_dim, config.hidden, config.n_components
-        n_level = P + 1
+        n_level = P + 1 + config.long_weeks * P
         self.encoder = _mlp(2 * w * P + 7, h, d)
         head_in = d + n_level + 7
         if config.jepa:
@@ -194,11 +199,30 @@ def features(sales: np.ndarray, censored: np.ndarray, cumsum_end: np.ndarray, en
     return context.astype(np.float32), np.concatenate([level, level.mean(axis=1, keepdims=True)], 1), scale
 
 
-def make_batch(bank: ShopBank, s: np.ndarray, e: np.ndarray, window: int) -> dict[str, torch.Tensor]:
+def weekly_level(cumsum: np.ndarray, end: np.ndarray, weeks: int) -> np.ndarray:
+    """``(B, weeks * P)``: log of each of the last ``weeks`` weekly means over the long-run mean.
+
+    ``cumsum`` is ``(B, L + 1, P)`` (row ``i`` sums rows ``0..i - 1``); week 0
+    is rows ``end - 6 .. end``. A week before the history began is 0.
+    """
+    B = len(end)
+    idx = np.maximum(end[:, None] + 1 - 7 * np.arange(weeks + 1)[None, :], 0)  # (B, weeks + 1)
+    c = cumsum[np.arange(B)[:, None], idx]  # (B, weeks + 1, P)
+    days = (idx[:, :-1] - idx[:, 1:])[:, :, None]
+    mean = (c[:, :-1] - c[:, 1:]) / np.maximum(days, 1)
+    long_run = cumsum[np.arange(B), end + 1] / (end[:, None] + 1.0)
+    out = np.where(days > 0, np.log((mean + 1.0) / (long_run[:, None] + 1.0)), 0.0)
+    return out.reshape(B, -1)
+
+
+def make_batch(bank: ShopBank, s: np.ndarray, e: np.ndarray, window: int,
+               long_weeks: int = 0) -> dict[str, torch.Tensor]:
     ctx_idx = e[:, None] + np.arange(-window + 1, 1)[None, :]
     fut_idx = e[:, None] + np.arange(1, window + 1)[None, :]
     context, level, scale = features(bank.sales[s[:, None], ctx_idx], bank.censored[s[:, None], ctx_idx],
                                      bank.cumsum[s, e + 1], e, window)
+    if long_weeks:
+        level = np.concatenate([level, weekly_level(bank.cumsum[s], e, long_weeks)], axis=1)
     fut_s = bank.sales[s[:, None], fut_idx] / scale[:, None, :]
     fut_c = bank.censored[s[:, None], fut_idx]
     future = np.stack([fut_s, fut_c.astype(np.float32)], axis=-1).transpose(0, 2, 1, 3)
@@ -253,8 +277,9 @@ def evaluate(model: JointModel, bank: ShopBank, n: int = 4_000, seed: int = 1) -
     rng = np.random.default_rng(seed)
     s_all, e_all = bank.anchors(model.config.window)
     pick = rng.choice(len(s_all), size=min(n, len(s_all)), replace=False)
-    out = {k: float(v) for k, v in _losses(model, make_batch(bank, s_all[pick], e_all[pick],
-                                                             model.config.window)).items()}
+    c = model.config
+    out = {k: float(v) for k, v in _losses(model, make_batch(bank, s_all[pick], e_all[pick], c.window,
+                                                             c.long_weeks)).items()}
     model.train()
     return out
 
@@ -270,7 +295,7 @@ def fit(train: ShopBank, val: ShopBank, config: JointConfig, log_path: str | Pat
     history, best, best_state = [], math.inf, None
     for step in range(1, config.steps + 1):
         pick = rng.integers(0, len(s_all), config.batch_size)
-        losses = _losses(model, make_batch(train, s_all[pick], e_all[pick], config.window))
+        losses = _losses(model, make_batch(train, s_all[pick], e_all[pick], config.window, config.long_weeks))
         opt.zero_grad()
         losses["total"].backward()
         nn.utils.clip_grad_norm_(params, 1.0)
@@ -323,6 +348,9 @@ class JointForecaster:
         cens = obs.censored[-w:][None]
         end = np.array([len(obs.sales) - 1])
         context, level, scale = features(sales, cens, obs.sales.sum(axis=0)[None].astype(np.float64), end, w)
+        if self.model.config.long_weeks:
+            cumsum = np.concatenate([np.zeros((1, obs.sales.shape[1])), np.cumsum(obs.sales, axis=0)])[None]
+            level = np.concatenate([level, weekly_level(cumsum, end, self.model.config.long_weeks)], axis=1)
         out = self.model(torch.as_tensor(context), torch.as_tensor(level, dtype=torch.float32),
                          torch.as_tensor((end + 1) % 7))
         return out[:3], scale[0]

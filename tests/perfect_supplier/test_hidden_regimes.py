@@ -294,6 +294,11 @@ def test_t1_workflow_collects_fits_and_scores_the_g2_gate(proto, tmp_path, monke
     assert arms[:3] == ["behaviour_log"] * 3 and sorted(arms[3:5]) == ["direct-s0", "jepa-s0"] and arms[5:] == ["hmm", "G2"]
     assert all(r["status"] == "kept" and r["world_family"] == "hidden_regimes" for r in rows)
     assert rows[-1]["result"]["gate"] == "G2" and "lead_time" in rows[-1]["result"]["jepa_minus_direct"]
+    t1.explore_fit(tmp_path, 60, proto, log_dir=logs)
+    text = t1.explore_score(tmp_path, proto, 1, log_dir=logs)
+    assert "NOT a gate" in text and "jepa-ctx112-lw0.1-s0 − direct-ctx112-s0" in text
+    explore = [r for r in log.read(t1.TRACK, logs) if "EXPLORATORY" in (r.get("note") or "")]
+    assert len(explore) == len(t1.EXPLORE_VARIANTS) + 1 and all(r["split"] in ("train", "dev") for r in explore)
     monkeypatch.setattr(t1, "SAMPLERS", ({"n_paths": 4}, {"n_paths": 4, "copula_rho": 0.5}))
     configs = {c["name"]: c for c in t1.arms(tmp_path, [0], proto, n_worlds=1, log_dir=logs)}
     assert configs["jepa-s0"]["seed_group"] == "jepa" and configs["jepa-s0"]["model"]["type"] == "joint"
@@ -325,3 +330,21 @@ def test_g1_needs_one_point_over_the_tune_reference_and_the_best_textbook_arm_on
     assert row["result"]["passed"] == passes
     assert row["result"]["planner_bayes - best on dev"]["ref"] == "b"
     assert row["result"]["planner_bayes - by tune score"]["ref"] == "a"
+
+
+def test_joint_model_reads_weekly_levels_from_a_longer_history():
+    from src.perfect_supplier import joint
+
+    bank = _demand_bank(range(1_000_000, 1_000_004), "train")
+    s, e = np.array([0, 1]), np.array([HISTORY_DAYS + 120, HISTORY_DAYS])
+    batch = joint.make_batch(bank, s, e, 35, long_weeks=16)
+    assert batch["level"].shape == (2, 5 + 16 * 4)
+    # Week 0 of shop 0 is its last 7 days: log((mean + 1) / (long-run mean + 1)).
+    last7 = bank.sales[0, e[0] - 6 : e[0] + 1].mean(axis=0)
+    long_run = bank.sales[0, : e[0] + 1].mean(axis=0)
+    np.testing.assert_allclose(batch["level"][0, 5:9].numpy(), np.log((last7 + 1) / (long_run + 1)), rtol=1e-5)
+    config = joint.JointConfig(long_weeks=16, steps=60, eval_every=60, batch_size=32, hidden=32, embed_dim=8)
+    model = joint.fit(bank, bank, config)
+    fc = joint.JointForecaster(model)
+    w = sample_world(4_000_010, "dev", family="hidden_regimes")
+    assert fc.paths(_uncensored_obs(w, 3), 8, np.random.default_rng(0)).shape == (8, 35, 4)
