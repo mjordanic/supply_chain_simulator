@@ -15,6 +15,9 @@ uncertain, and only demand is learned. Inventory mechanics are exact.
 | `data.py` | partitioned parquet storage and loaders |
 | `experiment.py` | `collect`, `fit`, `tune`, `eval`, `shadow` commands |
 | `analysis.py` | paired tables and plots for notebook 15 |
+| `joint.py` | track T1: multi-product JEPA / direct forecaster over the whole shop |
+| `regimes.py` | track T1: known-model Bayes regime filter and Baum-Welch HMM forecasters |
+| `t1.py` | track T1 workflow: banks, fits, gates G1/G2 (result: `experiments/reports/T1-hidden-regimes.md`) |
 | `bench/` | the pre-registered evaluation harness every new experiment runs through (ADR 0034, `bench/README.md`) |
 
 ```
