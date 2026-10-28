@@ -61,6 +61,11 @@ $B freeze --arms arms/base/jepa.json runs/bench/tune/ctx_eoq_joint.json --note "
 $B eval --arms ... --split test --n-worlds 1000 --out runs/bench/test
 ```
 
+`--world-family hidden_regimes` (track T1) runs `eval`, `tune` and `calibrate` on the hidden-regime
+world family, with its parameters from `world_families.hidden_regimes.params` in the protocol; an arm
+configured for another family is refused. T1's own steps (behaviour banks, model fits, gates G1/G2) are
+`uv run python -m src.perfect_supplier.t1`; its result is `experiments/reports/T1-hidden-regimes.md`.
+
 A `--split test` run is refused (and the refusal logged) unless every arm's
 config hash is in `experiments/frozen.json` under the current protocol. A
 second test run of the same (arm, variant) also needs `--rerun-reason`; the
