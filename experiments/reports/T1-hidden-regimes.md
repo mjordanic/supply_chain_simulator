@@ -104,38 +104,40 @@ the gap is the cost of a fixed context window against a recursive belief.
 **Post-failure exploratory look (captain's option B): it cannot feed any T1 primary or secondary claim,
 does not re-open G2, and led to no closed-loop or sealed-test run.** Eight variants on the remaining JEPA
 model budget, one training seed each, fitted on train only, dev forecasts re-scored once
-(`t1 explore-fit`, `t1 explore-score`; `T1/explore-forecast.md`). Longer context = the last 8 or 16 weekly means per
-product over its long-run mean, read by the predictor and head.
+(`t1 explore-fit`, `t1 explore-score`; `T1/explore-forecast.md`). The "ctx56"/"ctx112" variants keep the
+35-day encoder window and add the last 8 or 16 weekly means per product over its long-run mean, read by the
+predictor and head ("+ 8 / 16 weekly means" below). A longer encoder window itself (56–112 days) was not tested.
 
 | forecaster (seed 0) | daily | lead time | shop total |
 | --- | --- | --- | --- |
 | JEPA, 35 days (G2 model) | 0.487 | 0.445 | 0.416 |
 | direct, 35 days (G2 model) | 0.471 | 0.427 | 0.397 |
-| JEPA, 56 days | 0.489 | 0.445 | 0.417 |
-| JEPA, 112 days | 0.499 | 0.455 | 0.428 |
-| JEPA, 112 days, latent weight 0.3 | 0.499 | 0.453 | 0.424 |
-| JEPA, 112 days, latent weight 0.1 | 0.486 | 0.446 | 0.417 |
-| JEPA, 112 days, latent weight 0.1, K = 6 | 0.520 | 0.462 | 0.430 |
-| direct, 56 days | 0.470 | 0.421 | 0.391 |
-| direct, 112 days | 0.471 | 0.426 | 0.396 |
-| direct, 112 days, K = 6 | 0.491 | 0.432 | 0.398 |
+| JEPA, 35 days + 8 weekly means | 0.489 | 0.445 | 0.417 |
+| JEPA, 35 days + 16 weekly means | 0.499 | 0.455 | 0.428 |
+| JEPA, 35 days + 16 weekly means, latent weight 0.3 | 0.499 | 0.453 | 0.424 |
+| JEPA, 35 days + 16 weekly means, latent weight 0.1 | 0.486 | 0.446 | 0.417 |
+| JEPA, 35 days + 16 weekly means, latent weight 0.1, K = 6 | 0.520 | 0.462 | 0.430 |
+| direct, 35 days + 8 weekly means | 0.470 | 0.421 | 0.391 |
+| direct, 35 days + 16 weekly means | 0.471 | 0.426 | 0.396 |
+| direct, 35 days + 16 weekly means, K = 6 | 0.491 | 0.432 | 0.398 |
 | HMM | 0.359 | 0.299 | 0.245 |
 | Bayes (known model) | 0.221 | 0.146 | 0.139 |
 
 | JEPA − matching direct, lead time | mean | 95% BCa |
 | --- | --- | --- |
 | 35 days | +0.018 | [+0.011, +0.030] |
-| 56 days | +0.024 | [+0.014, +0.041] |
-| 112 days | +0.029 | [+0.019, +0.046] |
-| 112 days, latent weight 0.3 (vs direct 112) | +0.026 | [+0.017, +0.043] |
-| 112 days, latent weight 0.1 (vs direct 112) | +0.020 | [+0.012, +0.033] |
-| 112 days, latent weight 0.1, K = 6 (vs direct 112, K = 6) | +0.030 | [+0.017, +0.052] |
+| + 8 weekly means | +0.024 | [+0.014, +0.041] |
+| + 16 weekly means | +0.029 | [+0.019, +0.046] |
+| + 16 weekly means, latent weight 0.3 (vs direct + 16) | +0.026 | [+0.017, +0.043] |
+| + 16 weekly means, latent weight 0.1 (vs direct + 16) | +0.020 | [+0.012, +0.033] |
+| + 16 weekly means, latent weight 0.1, K = 6 (vs direct + 16, K = 6) | +0.030 | [+0.017, +0.052] |
 
 - JEPA is worse than its matching direct in every variant; a smaller latent weight shrinks the gap but
   never reverses it, and JEPA's latent loss still rises during training in every variant (to 3.09–3.24).
-- Longer context does not close the gap to the HMM: the best learned forecaster (direct, 56 days, lead
-  time 0.421) is still 41% worse than the HMM (0.299). K = 6 lowers val NLL (2.57–2.59 vs 2.69–2.73) but
-  worsens every pinball metric.
+- Weekly long-horizon summaries do not close the gap to the HMM: the best learned forecaster (direct,
+  35 days + 8 weekly means, lead time 0.421) is still 41% worse than the HMM (0.299). Whether a longer
+  encoder window (56–112 days) would close it was not tested and remains an open follow-up. K = 6 lowers
+  val NLL (2.57–2.59 vs 2.69–2.73) but worsens every pinball metric.
 - Nothing here is striking enough to act on; it strengthens findings (ii) and (iii) as exploratory
   evidence only.
 
@@ -147,6 +149,8 @@ product over its long-run mean, read by the predictor and head.
 - **Not supported:** any closed-loop learned-arm claim on hidden regimes, any sealed-test label. The T1 primary
   cell has no test eval, so `pooled-primary` will report it missing; the pooled family needs a
   decision on dropping the cell (a protocol amendment) once T2's cells are in.
+- **Open follow-up:** a longer encoder window (56–112 days) was not tested; the exploratory "ctx56"/"ctx112"
+  variants only add weekly-mean summaries to the 35-day window.
 
 ## Provenance and caveats
 

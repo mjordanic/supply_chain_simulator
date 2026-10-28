@@ -164,7 +164,8 @@ def _fit_one(out: Path, arm: str, seed: int, steps: int, protocol: Protocol, log
         model = joint.fit(part(~val), part(val), config, log_path=out / "models" / f"{name}_fit.json")
         path = out / "models" / f"{name}.pt"
         joint.save(model, path)
-        entry["result"] = {"val_nll": json.loads((out / "models" / f"{name}_fit.json").read_text())["history"][-1]}
+        history = json.loads((out / "models" / f"{name}_fit.json").read_text())["history"]
+        entry["result"] = {"val_nll": min(history, key=lambda h: h["nll"]), "last_eval": history[-1]}
         entry["artifacts"] = [{"path": str(path), "sha256": log.file_sha256(path)}]
 
 
