@@ -93,9 +93,8 @@ These are kept tool-agnostic the same way the skills are: the canonical files li
 `.agents/commands/implement-issues.md` and `.agents/agents/{wave-runner,issue-implementer}.md`,
 and are symlinked into `.claude/commands/` and `.claude/agents/` so Claude Code discovers them
 as a native `/`-command and subagents. Other coding assistants read the `.agents/` copies
-directly. (Unlike the skills — which are installed fresh via `npx skills@latest add
-mattpocock/skills` and git-ignored — these are project-local and committed to the repo:
-not part of the `mattpocock/skills` collection or its `skills-lock.json`.)
+directly. (Unlike `improve-codebase-architecture`, these are project-local and committed
+to the repo: not part of the `mattpocock/skills` collection or its `skills-lock.json`.)
 
 Questions are allowed only in Phases 0–1 (preflight + plan); from wave dispatch onward
 the run is fully unattended and resumable. Relies on the issue-tracker layout, the five
@@ -105,24 +104,11 @@ entries (local git/filesystem only; the remote-touching deny list stays intact).
 
 ## Agent skills (mattpocock/skills)
 
-The `mattpocock/skills` collection is installed **fresh** with the upstream
-installer, not vendored into this repo:
-
-```bash
-npx skills@latest add mattpocock/skills
-```
-
-That writes the skill bodies to `.agents/skills/`, symlinks each into
-`.claude/skills/` (so Claude Code discovers them as native `/`-invocable
-skills), drops Cursor copies under `.cursor/`, and records a `skills-lock.json`.
-All of those are git-ignored by default — re-run the command any time to pull
-the latest. To use a skill outside an agent, read `.agents/skills/<name>/SKILL.md`
+The skills in `.agents/skills/` are pinned copies committed to this repo, taken from
+`mattpocock/skills` at commit `a496f5513d4a4cf889bc48e189e579f4b0bdf6aa`: `tdd`,
+`diagnosing-bugs`, `codebase-design`, `domain-modeling`, `prototype`. `improve-codebase-architecture`
+was installed earlier with `npx skills@latest add mattpocock/skills` and is recorded in
+`skills-lock.json`. `.claude/skills` is a symlink to `.agents/skills/`, so Claude Code
+discovers them as native `/`-invocable skills. They are updated only on request, never
+automatically. To use a skill outside an agent, read `.agents/skills/<name>/SKILL.md`
 and follow it.
-
-Expected after install: diagnose, git-guardrails-claude-code, grill-me,
-grill-with-docs, handoff, improve-codebase-architecture, prototype,
-request-refactor-plan, setup-matt-pocock-skills, tdd, teach, to-issues, to-prd,
-triage, write-a-skill, writing-fragments, writing-shape, zoom-out.
-
-Note: `teach`, `zoom-out`, and `setup-matt-pocock-skills` are manual-only
-(`disable-model-invocation: true`) — invoke them explicitly.
