@@ -365,7 +365,7 @@ tests/         pytest suite
 
 ## Further reading
 
-- [CONTEXT.md](CONTEXT.md) — domain and architecture glossary
+- [GLOSSARY.md](GLOSSARY.md) — domain and architecture glossary
 - [notebooks/README.md](notebooks/README.md) — guided tour of the simulator (offline, no API key)
 - [docs/adr/](docs/adr/) — architecture decision records (0011 graph, 0018 demand-pull, 0020 M5 replay, 0021 variable-K RL, 0022 `RLNodePolicy`, 0023 Streamlit Cloud Run demo)
 - [github.com/mjordanic/supply_chain_simulator](https://github.com/mjordanic/supply_chain_simulator) — source, issues, and the capabilities this light web demo does not expose

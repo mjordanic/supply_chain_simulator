@@ -23,7 +23,7 @@ If a workspace path is not provided, default to the current working directory an
    - Issue ID = filename without `.md`.
    - Acceptance criteria (the `## Acceptance criteria` checklist).
    - Any testing notes.
-3. **Read the PRD** for surrounding context. Read `CONTEXT.md` and any `docs/adr/` entries that look relevant to the touched area.
+3. **Read the PRD** for surrounding context. Read `GLOSSARY.md` and any `docs/adr/` entries that look relevant to the touched area.
 4. **Explore** the code paths the issue actually touches. Don't pre-explore the whole repo.
 5. **Drive the implementation with `/tdd`** — vertical slices, red-green-refactor. One test → one piece of impl → repeat. Never bulk-write tests then bulk-write impl.
 6. **Run the feedback loop** before committing: `uv run pytest`. The suite must be green.
@@ -65,7 +65,7 @@ If a workspace path is not provided, default to the current working directory an
 
 - Use `uv` for ALL Python tooling — `uv run`, `uv add`, `uv sync`. Never `pip`, `python -m`, or `poetry`.
 - Stay within the workspace. Do **not** read, write, edit, or run commands outside it. Treat absolute paths the orchestrator gives you as anchors *inside* the workspace; if a path leaks outside, surface it as a `blocked` report.
-- Stay within scope. Do **not** edit files outside what the issue requires. Exception: updating `CONTEXT.md` or adding/updating an entry in `docs/adr/` is encouraged when the change is architecturally significant.
+- Stay within scope. Do **not** edit files outside what the issue requires. Exception: updating `GLOSSARY.md` or adding/updating an entry in `docs/adr/` is encouraged when the change is architecturally significant.
 - **One** commit. Subject prefix `<issue-id>:` is non-negotiable — without it, the orchestrator cannot reconcile after interruption.
 - **Commit trailer:** leave the commit unsigned — no `Co-Authored-By` / coding-assistant attribution. See AGENTS.md `## Git commits` for the canonical rule (it explicitly applies to subagents); don't restate it here so the two copies can't drift.
 - Do **not** cherry-pick a different issue if this one looks hard. Implement what was assigned, or report `failed` / `blocked` with diagnostics.

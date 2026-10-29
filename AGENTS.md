@@ -76,7 +76,7 @@ Five canonical triage roles, default strings, recorded as `Status:` lines in eac
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 ### Implementation orchestrator (project-local, not vendored)
 
