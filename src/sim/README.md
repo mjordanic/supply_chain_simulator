@@ -60,7 +60,7 @@ src/sim/
 - **Four-stream RNG split** — `world_rng` (market, events, demand draws), `allocation_rng` (per-phase buyer shuffle, ADR 0016), `policy_rng` (one per policy instance), and `init_rng` (one per node, step-0 state) never share state. This is what makes CRN comparison correct.
 - **DataExporter** — consumes the run log + scenario and writes parquet/JSON/PNG under `data/<setup-dir-name>/`.
 
-For full domain definitions see [`CONTEXT.md`](../../CONTEXT.md).
+For full domain definitions see [`GLOSSARY.md`](../../GLOSSARY.md).
 
 ## Running a setup directory
 
@@ -407,5 +407,5 @@ Consequences:
 
 ## Further reading
 
-- [`CONTEXT.md`](../../CONTEXT.md) — domain and architecture glossary
+- [`GLOSSARY.md`](../../GLOSSARY.md) — domain and architecture glossary
 - ADRs [0011](../../docs/adr/0011-multi-echelon-graph.md)–[0018](../../docs/adr/0018-lateral-links-demand-pull-scheduling.md) — the multi-echelon design decisions (latest: lateral links + demand-pull scheduling)

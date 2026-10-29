@@ -477,7 +477,7 @@ both batch scenario runs and RL episodes.
 
 ## Further reading
 
-- [`CONTEXT.md`](../../CONTEXT.md) — domain and architecture glossary
+- [`GLOSSARY.md`](../../GLOSSARY.md) — domain and architecture glossary
 - [ADR 0021](../../docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — variable-K design
   decisions (shared-weight actor, implicit assortment, Arbiter, self-describing checkpoints)
 - [ADR 0022](../../docs/adr/0022-rl-policy-as-first-class-intermediate-policy-eval-via-runner.md) — `RLNodePolicy`
