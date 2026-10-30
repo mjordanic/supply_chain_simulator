@@ -5,7 +5,7 @@ setup directories or a small synthetic catalog — no API key, no GPU. The analy
 companions (05a, 06a) and notebooks 10 and 13–15 read saved runs under the gitignored `runs/`
 directory, and the M5 notebooks need the raw Kaggle files under `data/m5/`; each says
 what it needs. Notebooks 09–14 are the earlier latent-replenishment study on the full
-engine (`src/jepa/`); 15 is the perfect-supplier experiment that followed it. Run any of them with:
+engine (`src/jepa/`); 15 is the perfect-supplier experiment that followed it, and 16 explores its track-T2 sealed-test result from committed fixtures. Run any of them with:
 
 ```bash
 uv run jupyter lab            # then open a notebook
@@ -36,6 +36,7 @@ regardless of where the kernel launches. Generated artifacts land under
 | 13 | [`13-jepa-training-log.ipynb`](13-jepa-training-log.ipynb) | Load the published **transition log** (`runs/jepa-replenishment/log/transitions.parquet`) with the fit's holdout split, and count reorders and arrivals per episode. |
 | 14 | [`14-jepa-validation-decisions.ipynb`](14-jepa-validation-decisions.ipynb) | Replay the latent fit's **validation episodes** and record, per observation, the order the planner and each textbook rule would send. Needs `runs/jepa-replenishment/`; about five minutes per episode. |
 | 15 | [`15-perfect-supplier.ipynb`](15-perfect-supplier.ipynb) | **Perfect-supplier** experiment (ADR 0033): the JEPA planner and its ablations vs tuned textbook and EOQ rules in a one-shop world where only demand is uncertain, plus the `one_product` and `no_fee` variants. Stored outputs are the pre-harness result; newer results are in `experiments/reports/`. Re-running needs `runs/perfect-supplier*/` (commands in `src/perfect_supplier/README.md`). |
+| 16 | [`16-perfect-supplier-t2.ipynb`](16-perfect-supplier-t2.ipynb) | **Perfect-supplier track T2**, the sealed-test result: arms and pooled means from `experiments/frozen.json` and the T2 log, a variant and arm-pair picker over the per-world test scores (paired difference, BCa interval, holding-rate / CV / lag strata), and a day-by-day re-simulation of one dev or tune world with frozen arms. Reads the small fixture set in `notebooks/fixtures/t2/` (test scores and the seed-0 models); set `T2_DATA_ROOT` to a full T2 data copy for the other seeds. Never re-runs the sealed test. |
 | M5 | [`m5_replay_example.ipynb`](m5_replay_example.ipynb) | End-to-end **M5 real-demand replay**: raw Kaggle files → quality report → invented upstream (factory + CA DC) → emitted CA shops → replay sinks → (s,S) policy run → exact-replay assertion → event-overlay plot → `PriceReplayPolicy` variant. Exits gracefully when raw files are absent. |
 
 Start at **00** for the core model, then branch wherever your interest is.
