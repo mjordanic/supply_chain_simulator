@@ -6,6 +6,7 @@ from pathlib import Path
 from random import Random
 
 from src.sim.distributions import Normal
+from src.sim.inspect import flow_frame
 from src.sim.node import DemandSinkNode
 from src.sim.setup_io import load_setup
 from src.web.compare import apply_knobs, run_crn_overlay, scorecard
@@ -136,7 +137,7 @@ def test_scorecard_reports_shop_1_kpis_and_crn_delta_vs_order_up_to():
     card = scorecard(logs, scenario)
     assert set(card["family"]) == {"order_up_to", "periodic_order_up_to"}
     for col in (
-        "service_level",
+        "fill_rate",
         "stockout_rate",
         "inventory_turnover",
         "net_profit",
@@ -150,6 +151,24 @@ def test_scorecard_reports_shop_1_kpis_and_crn_delta_vs_order_up_to():
     other = card.set_index("family").loc["periodic_order_up_to"]
     assert other["delta_net_profit"] == other["net_profit"] - anchor["net_profit"]
     assert (card["rejections"] >= 0).all()
+
+
+def test_fill_rate_is_shop_1_sales_over_sink_demand_target():
+    scenario = _knobbed_chain()
+    params = {**_POLICY_PARAMS, "review_interval": 7}
+    logs = run_crn_overlay(scenario, ["order_up_to", "periodic_order_up_to"], params)
+    card = scorecard(logs, scenario).set_index("family")
+
+    for family, log in logs.items():
+        ff = flow_frame(log)
+        sold = ff.loc[ff["node_id"] == "shop-1", "sales"].sum()
+        wanted = ff.loc[ff["node_id"] == "sink-1", "demand"].sum()
+        assert card.loc[family, "fill_rate"] == sold / wanted
+
+    # A periodic policy that starves shop-1 (R=7 on a 2-tick lag) must not
+    # read as perfect service.
+    assert card.loc["periodic_order_up_to", "fill_rate"] < 0.5
+    assert card.loc["periodic_order_up_to", "stockout_rate"] > 0.5
 
 
 _TWO_SUPPLIERS = _REPO_ROOT / "setups" / "demo_two_suppliers"
@@ -175,6 +194,26 @@ def test_demo_two_suppliers_loads_and_runs_with_shop_1_focal():
     assert logs["order_up_to"]["n_steps"] == 8
     last = logs["order_up_to"]["ticks"][-1]
     assert set(last["node_cash"]) == ids
+
+
+_TWO_SHOPS = _REPO_ROOT / "setups" / "two_factories_two_shops"
+
+
+def test_two_shops_runs_with_shop_1_focal_and_fill_rate_from_sink_1_only():
+    overlaid = apply_knobs(
+        load_setup(_TWO_SHOPS),
+        world_seed=42,
+        n_steps=20,
+        demand_mean=10.0,
+        cycle_amp=0.2,
+        disruption=False,
+    )
+    logs = run_crn_overlay(overlaid, ["order_up_to"], _POLICY_PARAMS)
+    ff = flow_frame(logs["order_up_to"])
+    sold = ff.loc[ff["node_id"] == "shop-1", "sales"].sum()
+    wanted = ff.loc[ff["node_id"] == "sink-1", "demand"].sum()
+    card = scorecard(logs, overlaid)
+    assert card.iloc[0]["fill_rate"] == sold / wanted
 
 
 def test_web_package_does_not_import_rl_tuning_or_llm():

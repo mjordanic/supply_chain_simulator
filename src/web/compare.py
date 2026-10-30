@@ -140,6 +140,21 @@ def _rejection_qty(run_log: dict[str, Any]) -> int:
     return total
 
 
+def _fill_rate(flow: pd.DataFrame, scenario: Any) -> float:
+    """Shop-1 units sold ÷ demand target of the sinks it supplies.
+
+    The engine's ``service_level`` divides by orders the shop actually saw,
+    which equals sales here, so it reads 1.0 even for a starved shop.
+    """
+    sink_ids = {
+        ni.node.id for ni in scenario.nodes if isinstance(ni.node, DemandSinkNode)
+    }
+    fed = {e.buyer_id for e in scenario.edges if e.supplier_id == FOCAL_NODE_ID}
+    wanted = flow.loc[flow["node_id"].isin(sink_ids & fed), "demand"].sum()
+    sold = flow.loc[flow["node_id"] == FOCAL_NODE_ID, "sales"].sum()
+    return float(sold / wanted) if wanted > 0 else float("nan")
+
+
 def scorecard(
     run_logs: dict[str, dict[str, Any]],
     scenario: Any,
@@ -165,14 +180,13 @@ def scorecard(
         shop_profit = profit[profit["node_id"] == FOCAL_NODE_ID]
         row: dict[str, Any] = {
             "family": family,
-            "service_level": float("nan"),
+            "fill_rate": _fill_rate(ff, scenario),
             "stockout_rate": float("nan"),
             "inventory_turnover": float("nan"),
             "net_profit": float("nan"),
             "rejections": _rejection_qty(run_log),
         }
         if not shop_kpis.empty:
-            row["service_level"] = float(shop_kpis.iloc[0]["service_level"])
             row["stockout_rate"] = float(shop_kpis.iloc[0]["stockout_rate"])
             row["inventory_turnover"] = float(shop_kpis.iloc[0]["inventory_turnover"])
         if not shop_profit.empty:

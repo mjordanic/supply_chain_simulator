@@ -26,6 +26,7 @@ COPY src/sim src/sim
 COPY src/web src/web
 COPY setups/three_node_chain setups/three_node_chain
 COPY setups/demo_two_suppliers setups/demo_two_suppliers
+COPY setups/two_factories_two_shops setups/two_factories_two_shops
 
 EXPOSE 8080
 
