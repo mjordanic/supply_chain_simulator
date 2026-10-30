@@ -473,7 +473,7 @@ src/
   tuning/      Optuna-based hyperparameter search
   rl/          PPO training stack + RLNodePolicy
 setups/        example setup directories (runnable graphs + fashion catalog)
-notebooks/     guided tour (00–06a), latent replenishment (09–14), perfect supplier (15), M5 replay example
+notebooks/     guided tour (00–06a), latent replenishment (09–14), perfect supplier (15–16), M5 replay example
 data/          scenario outputs
 runs/          tuning, RL, and latent-replenishment artifacts (not committed)
 docs/adr/      architecture decision records
