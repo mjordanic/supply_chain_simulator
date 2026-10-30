@@ -9,8 +9,10 @@ Use ``demand_multiplier(pid, region)`` instead, which is the
 surface consumed by ``DemandSinkNode.demand_target`` (ADR 0015).
 
 Replaces the previous ``src/environment/environment.py``. The
-demand/supply update math, seasonal multiplier, and cross-product factor
-are preserved verbatim. Two construction-shape changes vs. the old module:
+demand/supply shock update and the cross-product factor follow that
+module. The seasonal cycle does not: it is a read-time multiplier on the
+demand level (ADR 0030), not a term added into the level each tick.
+Two construction-shape changes vs. the old module:
 
 1. Randomness flows through an injected ``world_rng`` instead of the
    global ``random`` module.
@@ -145,24 +147,24 @@ class Market:
         self.date += timedelta(days=1)
 
     def update_market(self) -> None:
-        """Update each region's demand/supply with trend, shocks, and cycle.
+        """Update each region's demand/supply with trend and shocks.
 
-        RNG draw order per step (preserved verbatim): for each region,
+        The seasonal cycle is not part of this update. It is a read-time
+        multiplier in ``demand_multiplier`` so it cannot integrate into the
+        level or get clamped into the stored state.
+
+        RNG draw order per step (preserved): for each region,
         ``demand_shock`` then ``supply_shock``; then, if
         ``step % trend_update_interval == 0``, one ``trend`` draw at the
         end. Reordering breaks CRN identity for fixed ``world_seed`` runs.
         """
-        # Deterministic seasonal component, shared across all regions.
-        cycle = math.sin(2 * math.pi * self.step / self.wave_len)
         for region in self.regions:
             # Stochastic demand shock for this region.
             d_shock = float(self.params.demand_shock.sample(self.rng))
-            cycle_effect = self.wave_amp * cycle
             trend_effect = self.trend
             new_demand = (
                 self.market_state[region]["market_demand"] * trend_effect
                 + d_shock
-                + cycle_effect
             )
             # Clamp to [min_value, max_value] so successive shocks
             # can't drive the demand series to extremes.
@@ -260,10 +262,12 @@ class Market:
            the product's season and the current month.  Derived from the internal
            date (already advanced by ``tick_world`` before this is called).
         2. **Regional demand factor** — the region's current ``market_demand``
-           state, floored at ``demand_factor_min``.
+           level, floored at ``demand_factor_min``, times the read-time
+           seasonal cycle ``1 + cycle_amp * sin(2π * step / cycle_len)``.
+           The cycle is not written back into ``market_state``.
         3. **Active disruption multiplier** — disruption shocks are applied by
-           ``EventEngine`` directly to ``market_state`` so they are already
-           folded into the regional demand factor above.
+           ``EventEngine`` directly to ``market_state`` so they land on the
+           level and are then scaled by the cycle at this read.
 
         This method is the ``Market`` surface called by ``DemandSinkNode``
         demand-target composition (ADR 0015).  It does *not* consume
@@ -296,11 +300,16 @@ class Market:
         month = self.date.month
         seasonal = self.season_factor(season, month)
 
-        # 2. Regional demand factor — current market_demand for this region.
-        regional = max(
+        # 2. Regional demand factor — stored level, then the seasonal cycle.
+        # The sine uses the post-tick step, the same clock as ``self.date``.
+        level = max(
             self.params.demand_factor_min,
             self.market_state[region]["market_demand"],
         )
+        cycle = 1.0 + self.wave_amp * math.sin(
+            2.0 * math.pi * self.step / self.wave_len
+        )
+        regional = level * cycle
 
         return seasonal * regional
 

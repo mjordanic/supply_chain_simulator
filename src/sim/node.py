@@ -90,22 +90,27 @@ class Node(ABC):
 class FactoryNode(Node):
     """A factory that produces exactly one product each tick.
 
-    Factories are the lowest echelon (level 0). They sell at ``list_price``
-    which is always equal to ``unit_cost`` (ADR 0013: zero-margin factories).
+    Factories are the lowest echelon (level 0). Authored setups sell at
+    ``list_price == unit_cost`` (ADR 0013). The replenishment episode
+    sampler may set ``list_price`` above ``unit_cost`` (ADR 0031). The
+    engine does not force the two equal.
 
     Fields
     ------
     produces_product_id:
         The single product ID this factory manufactures.
     unit_cost:
-        Manufacturing cost per unit. ``list_price`` must equal this.
+        Manufacturing cost per unit. Production debits this. ``list_price``
+        equals it on an authored zero-margin factory, and may be higher when
+        a markup was set (ADR 0031).
     capacity_per_tick:
         Maximum units producible per tick. Scalar or Distribution (sampled
         at construction time from ``init_seed``).
     inventory:
         Current on-hand stock (units). Starts at 0 by default.
     list_price:
-        Selling price per unit. Must equal ``unit_cost`` (zero-margin).
+        Selling price per unit. Equal to ``unit_cost`` unless a markup
+        was authored (ADR 0031).
     """
 
     produces_product_id: str = ""
@@ -220,6 +225,7 @@ class DemandSinkNode(Node):
         market: "Market",
         catalog: "list[Ware]",
         world_rng: Random,
+        stage_factor: dict[str, float] | None = None,
     ) -> int:
         """Compute the demand target for this tick.
 
@@ -248,6 +254,11 @@ class DemandSinkNode(Node):
 
             demand_target = demand_dist.sample(world_rng)
                             * market.demand_multiplier(pid, region)
+                            * stage_factor[pid]
+
+        ``stage_factor`` is the lifecycle stage multiplier. ``None`` is 1
+        for every product, which is what an inert maturity lifecycle does
+        when ``stage_multipliers["maturity"]`` is 1.
 
         Only the value for ``self.product_id`` is returned as the integer
         demand target; the draws for all other pids advance ``world_rng`` to
@@ -295,7 +306,8 @@ class DemandSinkNode(Node):
             else:
                 base = 0.0
 
-            raw = base * market_mult
+            lifecycle = 1.0 if stage_factor is None else float(stage_factor.get(pid, 1.0))
+            raw = base * market_mult * lifecycle
             
             # Select only the demand for the product that the sink is bound to.
             if pid == self.product_id:

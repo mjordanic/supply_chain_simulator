@@ -291,10 +291,12 @@ Full reference: [`src/llm/README.md`](src/llm/README.md)
 ### Hyperparameter tuning (`src/tuning/`)
 
 An Optuna-based hyperparameter search for any policy. Each trial runs the policy across a fixed
-set of seeded episodes spanning two orders of magnitude in node capacity, optimising mean profit
-per opening dollar. The top winners are re-checked on a separate held-out seed set with bootstrap
-confidence intervals. All four textbook policies have ready-made search spaces (including
-multi-supplier routing knobs); custom policies need a ~10-line callback. A tuned policy is an
+set of seeded episodes whose shelf and opening cash are sampled tightness multiples of that
+episode's demand, optimising mean profit per opening dollar. The top winners are re-checked on a
+separate held-out seed set with bootstrap confidence intervals. All four textbook policies have
+ready-made search spaces. Routing and the minimum-order floor are pinned to cheapest-first
+routing and a zero floor, and the cold-start fraction is pinned at half of cash. Custom policies
+need a ~10-line callback. A tuned policy is an
 ordinary `IntermediatePolicy` — attach it to any node with `Runner(..., policy_overrides=...)`.
 
 ![Pareto front: profit vs service level](docs/images/tuning_pareto_front.png)
@@ -365,7 +367,7 @@ tests/         pytest suite
 
 ## Further reading
 
-- [CONTEXT.md](CONTEXT.md) — domain and architecture glossary
+- [GLOSSARY.md](GLOSSARY.md) — domain and architecture glossary
 - [notebooks/README.md](notebooks/README.md) — guided tour of the simulator (offline, no API key)
 - [docs/adr/](docs/adr/) — architecture decision records (0011 graph, 0018 demand-pull, 0020 M5 replay, 0021 variable-K RL, 0022 `RLNodePolicy`, 0023 Streamlit Cloud Run demo)
 - [github.com/mjordanic/supply_chain_simulator](https://github.com/mjordanic/supply_chain_simulator) — source, issues, and the capabilities this light web demo does not expose

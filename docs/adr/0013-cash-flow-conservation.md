@@ -12,7 +12,7 @@ The single-store simulator had implicit cash flow: `Store.balance` tracked a ret
 
 2. **Payment at allocation time.** When `execute_buy` is called (ADR 0012), cash transfers immediately: `buyer.cash -= qty_filled × list_price` and `seller.cash += qty_filled × list_price`. Payment happens at allocation time, not at delivery time. This ensures a buyer cannot claim more inventory than it can pay for (the cash-clamp in `execute_buy`).
 
-3. **Factories are zero-margin.** `FactoryNode.list_price == FactoryNode.unit_cost` by construction. The factory's cash balance is therefore a no-op bookkeeping field: it receives `qty_filled × unit_cost` from the buyer and "spends" it on manufacturing at the same rate. Factory margin is architecturally zero; if production economics become important in a future scenario, a new ADR is needed.
+3. **Factories are zero-margin.** Authored factories keep `FactoryNode.list_price == FactoryNode.unit_cost`. The factory's cash balance is then a no-op bookkeeping field: it receives `qty_filled × unit_cost` from the buyer and spends the same amount on manufacturing. Sampled replenishment factories are the exception (ADR 0031): `list_price` may include a markup, production still debits `unit_cost`, and the markup stays in factory cash.
 
 4. **Holding cost and order fee go to the void.** `IntermediateNode` holding cost and fixed order fee are charged against the node's balance but credited to no other node. They are not redistributed. This preserves the accounting convention from the single-store era and keeps cash conservation a per-trade property rather than a strict system-level invariant.
 
@@ -27,3 +27,4 @@ The single-store simulator had implicit cash flow: `Store.balance` tracked a ret
 - ADR 0011 — Multi-echelon graph (the node types whose cash fields are governed by these rules)
 - ADR 0012 — Central table + FCFS allocation (the `execute_buy` call where buyer-/seller+ cash transfer is executed)
 - ADR 0014 — Tick phasing (income_rate is credited to sinks during `consume_demand_sinks`, the final phase of each tick)
+- ADR 0031 — Replenishment episodes may list factories above `unit_cost`. Rule 3 remains the authored zero-margin default.

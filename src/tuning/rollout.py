@@ -60,7 +60,9 @@ def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, flo
     dict[str, float]
         Aggregate KPIs: ``service_level``, ``stockout_rate``,
         ``inventory_turnover``, ``mean_price_pct_of_msrp``,
-        ``revenue``, ``net_profit``.
+        ``revenue``, ``net_profit``, ``order_volume`` (units node ``S``
+        requested), and ``fill_rate`` (``global.supplier_fill_rate``,
+        NaN when the episode requested nothing from a factory).
     """
     from src.sim.runner import Runner
     from src.sim.inspect import (
@@ -100,6 +102,13 @@ def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, flo
     net_profit = float(s_pd["net_profit"].iloc[0]) if not s_pd.empty else 0.0
     revenue = float(s_pd["revenue"].iloc[0]) if not s_pd.empty else 0.0
 
+    order_volume = 0.0
+    for tick_log in run_log["ticks"]:
+        requested = (tick_log.get("node_orders") or {}).get("S") or {}
+        order_volume += float(sum(int(qty) for qty in requested.values()))
+    raw_fill = run_log["global"]["supplier_fill_rate"]
+    fill_rate = float("nan") if raw_fill is None else float(raw_fill)
+
     return {
         "service_level": service_level,
         "stockout_rate": stockout_rate,
@@ -107,6 +116,8 @@ def run_policy_episode(policy: Policy, spec: TuningEpisodeSpec) -> dict[str, flo
         "mean_price_pct_of_msrp": mean_price_pct_of_msrp,
         "revenue": revenue,
         "net_profit": net_profit,
+        "order_volume": order_volume,
+        "fill_rate": fill_rate,
     }
 
 

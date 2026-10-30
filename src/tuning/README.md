@@ -2,9 +2,10 @@
 
 An Optuna-based hyperparameter tuner for any `Policy` subclass. It frames tuning as a measurement
 instrument — *how much profit headroom exists above the published textbook defaults?* — rather than
-per-world baseline construction. Trials run the policy on a fixed CRN seed set with log-uniform
-domain randomisation across capacity and balance; the objective is mean `net_profit / initial_cash`
-(dimensionless, scale-comparable across two orders of magnitude of node size).
+per-world baseline construction. Trials run the policy on a fixed CRN seed set. Each episode
+samples a tightness factor for the shop's capacity and another for opening cash, both from that episode's
+demand (ADR 0032). The objective is mean `net_profit / initial_cash`
+(dimensionless, comparable across tightness).
 
 ## Contents
 
@@ -35,13 +36,13 @@ src/tuning/
 Custom policies write their own ~10-line trial-callback factory (`f(trial) -> Policy`) and pass
 it to `run_study`; the four bundled factories cover the textbook variants.
 
-The tuner runs on the **multi-echelon graph engine**: each trial builds a degenerate
-`factory → IntermediateNode("S") → sink-per-product` graph from the catalog and attaches the
+The tuner runs on the **multi-echelon graph engine**: each trial builds a
+`factories → IntermediateNode("S") → sink-per-product` graph from the catalog — several
+factories per SKU, with sampled markup and lead time (ADR 0031) — and attaches the
 candidate `MultiSupplierTextbookPolicy` to node `S`. The four bundled search spaces tune the
-shared textbook knobs plus two routing tunables — `per_supplier_min_order_floor` (int `[0, 10]`,
-the buyer-side min order per line) and `routing_strategy` (categorical: `cheapest_first` /
-`fill_rate_weighted`) — alongside each variant's own parameters (`Q`, `review_interval`, …). They
-surface as extra columns in `trials.parquet`.
+shared textbook knobs (`cover_horizon_ticks`, the two safety fractions) alongside each variant's
+own parameters (`Q`, `review_interval`). `per_supplier_min_order_floor` and `routing_strategy`
+are not columns: every trial is cheapest-first with a zero floor. `opening_budget_pct` is pinned at 0.50.
 
 ## Quickstart
 
@@ -81,8 +82,10 @@ runs/tuning/<study-name>/
   trials.parquet         one row per trial: kpis + sampled params
   per_seed.parquet       long format: one row per (trial, seed) with per-seed KPIs
   study.json             study metadata + search-space spec + best trial + git SHA
+                         + episode-distribution parameters
   holdout.parquet        top-K winners + published default re-evaluated on holdout seeds
   holdout_summary.json   bootstrap CIs + headline paired uplift (tuned − default)
+                         + git SHA + episode-distribution parameters
 ```
 
 `trials.parquet` columns: `trial_id`, `state`, `datetime_start`, `datetime_complete`,
@@ -90,7 +93,8 @@ runs/tuning/<study-name>/
 `mean_stockout_rate`, `mean_inventory_turnover`, `mean_revenue`, `mean_mean_price_pct_of_msrp`,
 plus one column per sampled hyperparameter.
 
-`per_seed.parquet` columns: `trial_id`, `seed`, `capacity`, `initial_cash`, `net_profit`,
+`per_seed.parquet` columns: `trial_id`, `seed`, `capacity`, `initial_cash`, `tightness`,
+`cash_tightness`, `net_profit`,
 `normalised_return`, `service_level`, `stockout_rate`, `inventory_turnover`, `revenue`,
 `mean_price_pct_of_msrp`.
 
@@ -142,13 +146,14 @@ study = run_study(
 
 ## Deploying a tuned policy in a multi-echelon graph
 
-Tuning optimises a single `IntermediateNode` in the degenerate 3-node
-`factory → "S" → sink-per-product` graph described above — **never your authored multi-echelon
+Tuning optimises a single `IntermediateNode` in the
+`factories → "S" → sink-per-product` graph described above — **never your authored multi-echelon
 scenario**. But the result is just an `OrderUpToPolicy` (an ordinary `IntermediatePolicy`), so
 deploying it into a real multi-echelon graph is a one-liner: **attach it to whichever node you
 want via `Runner`'s `policy_overrides`; every other node keeps its own policy.** Rebuild the
-tuned policy from the study's `best_params` with the same search-space factory (this maps the
-categorical `routing_strategy` string back to its callable, exactly as `confirm_top_k` does):
+tuned policy from the study's `best_params` with the same search-space factory (the same
+rebuild `confirm_top_k` does). Routing and the minimum-order floor stay the pinned
+cheapest-first, zero-floor settings even if an older `best_params` dict still names them:
 
 ```python
 import optuna
@@ -164,7 +169,7 @@ runner = Runner(scenario, policy_overrides={"shop-1": tuned})  # shop-2 keeps it
 run_log = runner.run()
 ```
 
-The tuned policy was searched across log-uniform capacity/balance randomisation and a randomised
+The tuned policy was searched across demand-relative tightness and a randomised
 SKU assortment (ADR 0009), so it is node-agnostic — the same kwargs drop onto a small shop or a
 flagship warehouse. It still decides only from *local* observation (its own inventory / cash /
 sales plus the central-table offers from its direct suppliers); there is no joint cross-node

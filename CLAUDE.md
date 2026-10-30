@@ -17,4 +17,4 @@ baselines, plus three add-ons: an LLM world generator, an Optuna hyperparameter 
 reinforcement-learning stack. It is a demo project — the goal is to be readable and easy to extend,
 not production-grade.
 
-Deep reference: `README.md`, `CONTEXT.md` (domain & architecture glossary), and `docs/adr/`.
+Deep reference: `README.md`, `GLOSSARY.md` (domain & architecture glossary), and `docs/adr/`.

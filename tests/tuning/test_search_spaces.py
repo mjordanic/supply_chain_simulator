@@ -6,9 +6,9 @@ Each bundled trial-callback factory is exercised with:
   - Boundary sweeps → construction succeeds at every range boundary so that
     silent range-narrowing in the factory is caught immediately.
 
-Issue 13: each factory now also samples ``per_supplier_min_order_floor`` (int
-[0, 10]) and ``routing_strategy`` (Categorical["cheapest_first",
-"fill_rate_weighted"]).
+Routing strategy and ``per_supplier_min_order_floor`` are pinned to
+cheapest-first routing and a zero floor. A trial dict that still
+carries the old keys does not change the constructed policy.
 
 We deliberately avoid running a real Optuna study here — factories are
 pure constructors and the Optuna machinery is tested by Optuna itself.
@@ -20,6 +20,8 @@ import optuna
 import pytest
 
 from src.sim.policy import (
+    MIN_ORDER_FLOOR,
+    OPENING_BUDGET_PCT,
     OrderUpToPolicy,
     PeriodicOrderUpToPolicy,
     PeriodicReorderPolicy,
@@ -73,30 +75,20 @@ def test_order_up_to_space_constructs():
     assert isinstance(policy, OrderUpToPolicy)
     assert policy.cover_horizon_ticks == 10
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.5)
-    assert policy.opening_budget_pct == pytest.approx(0.8)
+    assert policy.opening_budget_pct == pytest.approx(OPENING_BUDGET_PCT)
     assert policy.stockout_safety_bonus_pct_of_lag == pytest.approx(0.0)
-    assert policy.per_supplier_min_order_floor == 0
-
-
-def test_order_up_to_space_per_supplier_min_order_floor():
-    """per_supplier_min_order_floor is propagated to the policy."""
-    trial = _fixed(_base_shared(per_supplier_min_order_floor=5))
-    policy = order_up_to_space(trial)
-    assert policy.per_supplier_min_order_floor == 5
-
-
-def test_order_up_to_space_routing_strategy_cheapest_first():
-    """routing_strategy='cheapest_first' produces routing_strategy=None (default)."""
-    trial = _fixed(_base_shared(routing_strategy="cheapest_first"))
-    policy = order_up_to_space(trial)
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
     assert policy.routing_strategy is None
 
 
-def test_order_up_to_space_routing_strategy_fill_rate_weighted():
-    """routing_strategy='fill_rate_weighted' produces a callable routing_strategy."""
-    trial = _fixed(_base_shared(routing_strategy="fill_rate_weighted"))
+def test_order_up_to_space_ignores_a_trial_floor_and_routing_choice():
+    """The old routing and floor keys are not applied."""
+    trial = _fixed(
+        _base_shared(per_supplier_min_order_floor=5, routing_strategy="fill_rate_weighted")
+    )
     policy = order_up_to_space(trial)
-    assert callable(policy.routing_strategy)
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
+    assert policy.routing_strategy is None
 
 
 def test_order_up_to_space_no_min_qty_tuned():
@@ -121,22 +113,17 @@ def test_reorder_point_space_constructs():
     assert isinstance(policy, ReorderPointPolicy)
     assert policy.cover_horizon_ticks == 7
     assert policy.safety_lead_pct_of_lag == pytest.approx(1.0)
-    assert policy.opening_budget_pct == pytest.approx(0.8)
+    assert policy.opening_budget_pct == pytest.approx(OPENING_BUDGET_PCT)
     assert policy.Q == 15
 
 
-def test_reorder_point_space_per_supplier_min_order_floor():
-    """per_supplier_min_order_floor is propagated to the policy."""
-    trial = _fixed({**_base_shared(per_supplier_min_order_floor=3), "Q": 10})
+def test_reorder_point_space_ignores_a_trial_floor_and_routing_choice():
+    trial = _fixed(
+        {**_base_shared(per_supplier_min_order_floor=3, routing_strategy="fill_rate_weighted"), "Q": 10}
+    )
     policy = reorder_point_space(trial)
-    assert policy.per_supplier_min_order_floor == 3
-
-
-def test_reorder_point_space_routing_strategy():
-    """routing_strategy='fill_rate_weighted' is propagated."""
-    trial = _fixed({**_base_shared(routing_strategy="fill_rate_weighted"), "Q": 10})
-    policy = reorder_point_space(trial)
-    assert callable(policy.routing_strategy)
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
+    assert policy.routing_strategy is None
 
 
 def test_reorder_point_space_no_min_qty_tuned():
@@ -164,22 +151,20 @@ def test_periodic_order_up_to_space_constructs():
     assert isinstance(policy, PeriodicOrderUpToPolicy)
     assert policy.cover_horizon_ticks == 14
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.667)
-    assert policy.opening_budget_pct == pytest.approx(0.8)
+    assert policy.opening_budget_pct == pytest.approx(OPENING_BUDGET_PCT)
     assert policy.review_interval == 7
 
 
-def test_periodic_order_up_to_space_per_supplier_min_order_floor():
-    """per_supplier_min_order_floor is propagated."""
-    trial = _fixed({**_base_shared(per_supplier_min_order_floor=2), "review_interval": 7})
+def test_periodic_order_up_to_space_ignores_a_trial_floor_and_routing_choice():
+    trial = _fixed(
+        {
+            **_base_shared(per_supplier_min_order_floor=2, routing_strategy="fill_rate_weighted"),
+            "review_interval": 7,
+        }
+    )
     policy = periodic_order_up_to_space(trial)
-    assert policy.per_supplier_min_order_floor == 2
-
-
-def test_periodic_order_up_to_space_routing_strategy():
-    """routing_strategy='fill_rate_weighted' is propagated."""
-    trial = _fixed({**_base_shared(routing_strategy="fill_rate_weighted"), "review_interval": 7})
-    policy = periodic_order_up_to_space(trial)
-    assert callable(policy.routing_strategy)
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
+    assert policy.routing_strategy is None
 
 
 def test_periodic_order_up_to_space_no_min_qty_tuned():
@@ -204,22 +189,20 @@ def test_periodic_reorder_space_constructs():
     assert isinstance(policy, PeriodicReorderPolicy)
     assert policy.cover_horizon_ticks == 10
     assert policy.safety_lead_pct_of_lag == pytest.approx(0.5)
-    assert policy.opening_budget_pct == pytest.approx(0.8)
+    assert policy.opening_budget_pct == pytest.approx(OPENING_BUDGET_PCT)
     assert policy.review_interval == 5
 
 
-def test_periodic_reorder_space_per_supplier_min_order_floor():
-    """per_supplier_min_order_floor is propagated."""
-    trial = _fixed({**_base_shared(per_supplier_min_order_floor=7), "review_interval": 5})
+def test_periodic_reorder_space_ignores_a_trial_floor_and_routing_choice():
+    trial = _fixed(
+        {
+            **_base_shared(per_supplier_min_order_floor=7, routing_strategy="fill_rate_weighted"),
+            "review_interval": 5,
+        }
+    )
     policy = periodic_reorder_space(trial)
-    assert policy.per_supplier_min_order_floor == 7
-
-
-def test_periodic_reorder_space_routing_strategy():
-    """routing_strategy='fill_rate_weighted' is propagated."""
-    trial = _fixed({**_base_shared(routing_strategy="fill_rate_weighted"), "review_interval": 5})
-    policy = periodic_reorder_space(trial)
-    assert callable(policy.routing_strategy)
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
+    assert policy.routing_strategy is None
 
 
 def test_periodic_reorder_space_no_min_qty_tuned():
@@ -257,7 +240,8 @@ def test_order_up_to_space_boundary(params):
     assert isinstance(policy, OrderUpToPolicy)
     assert policy.cover_horizon_ticks == params["cover_horizon_ticks"]
     assert policy.safety_lead_pct_of_lag == pytest.approx(params["safety_lead_pct_of_lag"])
-    assert policy.per_supplier_min_order_floor == params["per_supplier_min_order_floor"]
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
+    assert policy.routing_strategy is None
 
 
 @pytest.mark.parametrize("q_val,params", [(1, _SHARED_LOW), (30, _SHARED_HIGH)])
@@ -267,7 +251,8 @@ def test_reorder_point_space_boundary(q_val, params):
     policy = reorder_point_space(_fixed(full))
     assert isinstance(policy, ReorderPointPolicy)
     assert policy.Q == q_val
-    assert policy.per_supplier_min_order_floor == params["per_supplier_min_order_floor"]
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
+    assert policy.routing_strategy is None
 
 
 @pytest.mark.parametrize("ri_val,params", [(1, _SHARED_LOW), (14, _SHARED_HIGH)])
@@ -277,7 +262,8 @@ def test_periodic_order_up_to_space_boundary(ri_val, params):
     policy = periodic_order_up_to_space(_fixed(full))
     assert isinstance(policy, PeriodicOrderUpToPolicy)
     assert policy.review_interval == ri_val
-    assert policy.per_supplier_min_order_floor == params["per_supplier_min_order_floor"]
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
+    assert policy.routing_strategy is None
 
 
 @pytest.mark.parametrize("ri_val,params", [(1, _SHARED_LOW), (14, _SHARED_HIGH)])
@@ -287,7 +273,8 @@ def test_periodic_reorder_space_boundary(ri_val, params):
     policy = periodic_reorder_space(_fixed(full))
     assert isinstance(policy, PeriodicReorderPolicy)
     assert policy.review_interval == ri_val
-    assert policy.per_supplier_min_order_floor == params["per_supplier_min_order_floor"]
+    assert policy.per_supplier_min_order_floor == MIN_ORDER_FLOOR
+    assert policy.routing_strategy is None
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +285,7 @@ def test_periodic_reorder_space_boundary(ri_val, params):
 def test_all_factories_use_documented_ranges():
     """All four factories construct without error at every range boundary.
 
-    Now includes ``per_supplier_min_order_floor`` [0, 10] and
-    ``routing_strategy`` Categorical["cheapest_first", "fill_rate_weighted"].
+    Routing and the min-order floor stay pinned at every boundary.
     """
     for params in (_SHARED_LOW, _SHARED_HIGH):
         p = order_up_to_space(_fixed(params))
@@ -342,3 +328,42 @@ def test_factories_importable_from_tuning_package():
     assert f2 is reorder_point_space
     assert f3 is periodic_order_up_to_space
     assert f4 is periodic_reorder_space
+
+
+class _Bounds:
+    """Records the inclusive range each ``suggest_*`` call was given."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, tuple[float, float]] = {}
+
+    def suggest_int(self, name: str, low: int, high: int, *args, **kwargs) -> int:
+        del args, kwargs
+        self.seen[name] = (int(low), int(high))
+        return int(low)
+
+    def suggest_float(self, name: str, low: float, high: float, *args, **kwargs) -> float:
+        del args, kwargs
+        self.seen[name] = (float(low), float(high))
+        return float(low)
+
+
+def test_factories_suggest_the_documented_ranges():
+    """Narrowing a constant must fail here. The numbers are the old literals."""
+    shared = _Bounds()
+    order_up_to_space(shared)
+    assert shared.seen["cover_horizon_ticks"] == (1, 30)
+    assert shared.seen["safety_lead_pct_of_lag"] == (0.0, 3.0)
+    assert shared.seen["stockout_safety_bonus_pct_of_lag"] == (0.0, 2.0)
+
+    reorder = _Bounds()
+    reorder_point_space(reorder)
+    assert reorder.seen["Q"] == (1, 30)
+
+    periodic = _Bounds()
+    periodic_order_up_to_space(periodic)
+    assert periodic.seen["review_interval"] == (1, 14)
+
+    both = _Bounds()
+    periodic_reorder_space(both)
+    assert both.seen["review_interval"] == (1, 14)
+    assert "Q" not in both.seen
