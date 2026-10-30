@@ -131,10 +131,6 @@ class Simulation:
         self._tick_purchases: list[dict] = []
         self._tick_sink_demand: dict[str, dict[str, int]] = {}
         self._tick_decision_state: dict[str, dict[str, dict]] = {}
-        # Filled lots still on the way: ``{buyer_id: {pid: [(order_tick, qty, lead)]}}``.
-        # Decision time is before this tick's fill, so the profile the policy
-        # reads is this ledger and not the order it is about to place.
-        self._in_transit_lots: dict[str, dict[str, list[tuple[int, int, int]]]] = {}
         # Stashed central table from ``tick_world()`` for use by ``tick_decide_and_settle()``.
         self._current_table: Any = None
         from src.sim.lifecycle_clock import LifecycleState
@@ -451,19 +447,6 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                 obs["observed_sales"] = sim._tick_sales.get(buyer.id, {})
                 direct_supplier_ids = sim.graph.suppliers_of(buyer.id)
                 obs["direct_supplier_ids"] = direct_supplier_ids
-                buyer_lots = sim._in_transit_lots.get(buyer.id, {})
-                obs["in_transit_lots"] = {
-                    pid: list(buyer_lots.get(pid, [])) for pid in buyer.inventory
-                }
-                # Nominal lead is the fastest direct edge. The learned buyer
-                # reads it the way the textbook buyer reads ``delivery_lags``.
-                obs["delivery_lags"] = {
-                    pid: float(
-                        min(sim.graph.lead_time(sid, buyer.id, pid) for sid in direct_supplier_ids)
-                    )
-                    for pid in buyer.inventory
-                    if direct_supplier_ids
-                }
                 if buyer.policy is not None:
                     action = buyer.policy.decide(obs, table)
                 else:
@@ -492,10 +475,6 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                             lead_time=lt,
                         )
                         buyer_orders[pid] = buyer_orders.get(pid, 0) + qty
-                        if result.qty_filled > 0:
-                            sim._in_transit_lots.setdefault(buyer.id, {}).setdefault(pid, []).append(
-                                (int(current_tick), int(result.qty_filled), int(lt))
-                            )
                         # Persist the realised purchase row for the flow log (ADR 0019).
                         sim._tick_purchases.append({
                             "buyer_id": buyer.id,

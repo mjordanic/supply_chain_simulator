@@ -14,7 +14,7 @@ Production per tick and opening inventory are sized from that SKU's expected dem
 
 `Runner.run()["global"]["supplier_fill_rate"]` is factory units filled divided by factory units requested. It is `None` when the episode requested nothing from a factory. The quantity is realised by the run, so it depends on the buyer.
 
-A buyer on these episodes stays ordering-only, as in the replenishment study (on branch `exp/perfect-supplier-lean`). It emits a quantity per SKU. The supplier split is cheapest-first with `per_supplier_min_order_floor` 0, the same fixed settings as the textbook anchor. This ADR does not make routing an action.
+A buyer on these episodes stays ordering-only. It emits a quantity per SKU. The supplier split is cheapest-first with `per_supplier_min_order_floor` 0, the textbook policies' pinned settings. This ADR does not make routing an action.
 
 ADR 0013 rule 3 still describes an authored factory whose `list_price` equals `unit_cost`: production debits `unit_cost`, and the sale credits the same amount. A sampled factory may list above `unit_cost`. Production still debits `unit_cost`. The markup stays in the factory's cash. `StaticFactoryPolicy` and the no-policy produce step keep the node's current `list_price` instead of writing `unit_cost` over it.
 
@@ -29,4 +29,3 @@ A fixed `episode_seed` still rebuilds the same graph. `world_seed` derivation is
 - ADR 0011 — Factory nodes and edges are the existing graph types
 - ADR 0012 — Partial fills are Allocation clamping the offer
 - ADR 0013 — Rule 3 remains the zero-margin authoring default; this ADR amends it for sampled replenishment factories
-- The replenishment study (on branch `exp/perfect-supplier-lean`) — Routing stays outside the learned action

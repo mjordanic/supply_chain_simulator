@@ -1,9 +1,9 @@
-"""The textbook anchor's cash check uses the supplier's price.
+"""The textbook policy's cash check uses the supplier's price.
 
 ``OrderUpToPolicy`` is constructed with the default ``unit_cost`` of 1.0.
 The offer on the table is the price cash actually leaves at. ``decide``
 is the whole path under test: Allocation is not called, so a request that
-costs more than cash at the offer price would be the clamp the anchor
+costs more than cash at the offer price would be the clamp the policy
 used to defer.
 """
 
