@@ -295,4 +295,4 @@ class CopulaSampler:
         H, P, _ = q.shape
         z = np.sqrt(self.rho) * rng.standard_normal((n_paths, 1, 1)) + np.sqrt(1 - self.rho) * rng.standard_normal(
             (n_paths, H, P))
-        return paths_from_uniforms(q, norm.cdf(z))
+        return paths_from_uniforms(q, norm.cdf(z), getattr(self.forecaster, "levels", QUANTILES))

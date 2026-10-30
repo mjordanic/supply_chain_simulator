@@ -6,13 +6,38 @@ The harness reports are in `experiments/reports/T2/`. The sealed test ran once p
 (arm, variant), with frozen configs only (`experiments/frozen.json`), and nothing was
 re-tuned or re-run after it.
 
+## Provenance
+
+- **Pre-rebase history.** The T2 results were produced on a history that was later
+  rebased onto T1 (`exp/perfect-supplier-lean` `c0394cf`, PR #6). That history stays
+  reachable through the annotated tag `t2-pre-rebase` (commit `7991296`, pushed to
+  origin).
+- **Logged values → committed state.** The logged protocol v4 sha256 `5b1785bc…`
+  (`7b5c9978…` for the three JEPA fits), with git_sha `462b86ab` / `4be6b40` /
+  `34d389a` / `e51cccd`, corresponds to the committed `experiments/protocol.yaml` v7
+  (sha256 `d8dae790…`) and the tag `t2-pre-rebase`. The v4 → v7 diff is T1 additions
+  only. After the rebase, the T2 code paths (planner, forecasters, arms, tuner) are
+  behaviourally unchanged.
+- **Test gate.** `bench check_test_gate` now refuses the frozen T2 configs with
+  "frozen under another protocol". This is accepted and intended: the sealed test must
+  not be re-run.
+- **Dirty-tree fits.** The direct-s0, direct-s1 and direct-s2 fits were logged from a
+  dirty working tree (git_sha `4be6b40`, git_dirty_diff_sha256
+  `a6c93306dc255952de87976494017f8b570e47d192b6970c8cf4df14962bee2c`). The diff itself
+  was not stored and cannot be reconstructed; its hash matches no committed diff. All
+  three were re-fitted from a clean `git archive` of `7991296` on the same train root.
+  For every seed, the `.pt` weights and the `_fit.json` are byte-identical to the logged
+  artifacts (same sha256: `f4890a20…` / `dd0198f2…` / `0f51b229…` for s0 / s1 / s2), so
+  the dirty diff did not affect the fits. The sealed test was not re-run, and the
+  re-fits are not in the T2 log.
+
 ## Bottom line
 
 The learned forecaster plus planner beats the best tuned textbook rule in all three
 T2 worlds on the sealed test (seeds 9,000,000–9,000,999). All six primary comparisons
 are **practically superior** under Holm. Holm here counts all 8 declared comparisons,
-with T1's two not-yet-run comparisons set to p = 1, so the labels can only loosen
-once T1 lands.
+with T1's two comparisons counted as p = 1. T1 stopped at gate G2 and will never get a
+sealed-test eval, so these conservative labels are the final primary-family result.
 
 | world | reference (picked on tune worlds) | JEPA − ref, pts [95% BCa] | cost reduction | direct − ref, pts | label |
 | --- | --- | --- | --- | --- | --- |
@@ -88,7 +113,8 @@ over-stocking is nearly free.
   - `bench select`: a common-worlds selection score; `best_textbook` prefers it.
   - The tuner spreads a learned arm's budget over its cells.
   - An ablation `role` keeps an arm out of the families.
-  - `pooled-primary --partial`: conservative Holm before T1's cell exists.
+  - `pooled-primary --partial`: conservative Holm, counting cells without a test eval
+    as p = 1.
 - Protocol v4 (logged amendment, before any T2 tuning or test look) declares the
   planner and ETS search spaces, the learned contextual budget and the selection rule.
 
@@ -119,8 +145,9 @@ per-seed estimates show no visible effect.
   0.0002 of it.
 - **Dev looks.** Dev was looked at once (100 worlds per variant) as a sanity check
   before freezing. Nothing was chosen on dev.
-- **The family is not complete yet.** T1's hidden-regime cell is not in the family yet.
-  `bench pooled-primary` (without `--partial`) gives the final labels once it is.
+- **T1's cell counts as p = 1.** T1 stopped at gate G2 with no sealed-test look, so its
+  hidden-regime cell will never get a test eval. Its two comparisons stay at p = 1 in
+  Holm, and the 8-comparison labels above are final.
 
 ## Reproduce
 

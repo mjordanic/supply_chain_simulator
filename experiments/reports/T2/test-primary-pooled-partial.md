@@ -1,7 +1,7 @@
 # Primary family (pooled)
 
 - protocol sha256 `5b1785bc0d979360…`; SESOI 0.1 pts; BCa 10000 resamples; Holm at α = 0.05 over all 8 comparisons
-- cells (from the protocol): T2-consolidation/perfect_supplier/base, T2-consolidation/perfect_supplier/no_fee, T2-consolidation/perfect_supplier/one_product, T1-hidden-regimes/hidden_regimes/base; sealed test evals only; **partial**: not yet run, counted as p = 1 (T1-hidden-regimes/hidden_regimes/base: no test eval), so these labels are conservative and can only loosen once the whole family lands
+- cells (from the protocol): T2-consolidation/perfect_supplier/base, T2-consolidation/perfect_supplier/no_fee, T2-consolidation/perfect_supplier/one_product, T1-hidden-regimes/hidden_regimes/base; sealed test evals only; counted as p = 1 (T1-hidden-regimes/hidden_regimes/base: no test eval; T1 stopped at gate G2 and will never get one), so these conservative labels are the final primary-family result
 
 | comparison | diff, pts [95% BCa] | Holm-adjusted interval | cost reduction [95%] | win rate | Wilcoxon p | Holm p | TOST p | CVaR10, pts | label |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

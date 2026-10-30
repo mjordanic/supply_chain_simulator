@@ -225,6 +225,24 @@ def test_copula_sampler_keeps_the_marginals_and_correlates_the_days():
     assert lead[0.8].std() > 2 * lead[0.0].std()
 
 
+def test_copula_sampler_reads_paths_against_the_forecasters_own_levels():
+    from types import SimpleNamespace
+
+    from src.perfect_supplier.forecast import TAIL_QUANTILES
+    from src.perfect_supplier.regimes import CopulaSampler
+
+    class TailForecaster:
+        name, levels = "tail", TAIL_QUANTILES
+
+        def __call__(self, obs):
+            return np.broadcast_to(1000 * TAIL_QUANTILES, (35, 2, len(TAIL_QUANTILES))).copy()
+
+    p = CopulaSampler(TailForecaster(), 0.5).paths(SimpleNamespace(), 4000, np.random.default_rng(1))
+    # Quantile column j holds 1000 * level j, so each draw is about 1000 * its uniform.
+    for level in (0.5, 0.99, 0.995):
+        assert abs(np.quantile(p, level) - 1000 * level) < 10
+
+
 def _demand_bank(seeds, split):
     from src.perfect_supplier.joint import ShopBank
 
