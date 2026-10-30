@@ -7,7 +7,7 @@ for arms that share a ``seed_group``; strata (BH-adjusted, exploratory). Margin
 capture differences are in points; cost reduction sits next to each.
 
 The families and strata come from ``comparisons`` in the protocol. The reference
-is the textbook arm with the best tune score, so it is chosen on tuning data,
+is the textbook arm with the best selection score (else tune score), so it is chosen on tuning data,
 never on the worlds it is compared on. A reference, primary, or secondary
 family passed by the caller makes the report exploratory, and says so. Every
 report is a log line.
@@ -34,14 +34,18 @@ from src.perfect_supplier.bench.protocol import Protocol
 
 
 def best_textbook(configs: list[dict]) -> str:
+    """The tuned textbook arm with the best selection score (common tune worlds), else the best tune score."""
     tuned = [c for c in configs if c["kind"] in TEXTBOOK_KINDS and c.get("tune_score") is not None]
     if not tuned:
         raise ValueError("no tuned textbook arm with a tune score; pass the reference explicitly")
-    return max(tuned, key=lambda c: c["tune_score"])["name"]
+    key = "select_score" if all(c.get("select_score") is not None for c in tuned) else "tune_score"
+    return max(tuned, key=lambda c: c[key])["name"]
 
 
 def role(config: dict) -> str:
-    """The name the protocol's comparison families use for an arm."""
+    """The name the protocol's comparison families use for an arm; an explicit ``role`` (an ablation) wins."""
+    if "role" in config:
+        return config["role"]
     return config.get("params", {}).get("forecaster", "") if config["kind"] == "planner" else config["kind"]
 
 
@@ -131,6 +135,8 @@ def write_report(
     exploratory = reference is not None or primary is not None or secondary is not None
     by_tune_score = reference is None
     reference = reference or best_textbook(configs)
+    basis = ("selection score on common tune worlds"
+             if any(c["name"] == reference and c.get("select_score") is not None for c in configs) else "tune score")
     by_role = arms_by_role(configs)
     if primary is None:
         primary = [a for r in comp["primary"]["arms"] for a in by_role.get(r, [])]
@@ -154,8 +160,7 @@ def write_report(
         f"{len(m)} worlds, seeds {m.index.min()}–{m.index.max()}, variant `{frame['variant'].iloc[0]}`",
         f"- protocol sha256 `{protocol.sha256[:16]}…`; SESOI {protocol.raw['sesoi_pts']} pts; "
         f"BCa {n_resamples} resamples; Holm at α = {alpha}",
-        f"- reference: `{reference}`" + (" (best tune score among tuned textbook arms)"
-                                          if by_tune_score else ""),
+        f"- reference: `{reference}`" + (f" (best {basis} among tuned textbook arms)" if by_tune_score else ""),
         "- families: " + ("**exploratory**, chosen by the caller; not the pre-registered ones" if exploratory
                           else "pre-registered (`comparisons` in the protocol)"),
         "- margin capture is the primary metric; cost reduction is `1 − (1 − s_arm)/(1 − s_ref)`, a ratio of means",
@@ -203,13 +208,14 @@ def write_report(
 
 
 def _decide(pairs: list[tuple[pd.DataFrame, dict, str, str]], protocol: Protocol,
-            n_resamples: int) -> list[stats.Comparison]:
+            n_resamples: int, family_size: int | None = None) -> list[stats.Comparison]:
     """Compare each (scores, seed groups, arm, ref) and apply Holm and the labels across all of them."""
     st, sesoi = protocol.stats, protocol.sesoi
     fam = [stats.compare(_vectors(m, g, a), _vectors(m, g, b), (a, b), sesoi, level=st["level"],
                          n_resamples=n_resamples) for m, g, a, b in pairs]
     diffs = [_vectors(m, g, a) - _vectors(m, g, b) for m, g, a, b in pairs]
-    return stats.decide(fam, diffs, sesoi, alpha=st["alpha"], n_resamples=n_resamples) if fam else []
+    return stats.decide(fam, diffs, sesoi, alpha=st["alpha"], n_resamples=n_resamples,
+                        family_size=family_size) if fam else []
 
 
 def write_pooled_primary(
@@ -219,9 +225,14 @@ def write_pooled_primary(
     *,
     title: str = "Primary family (pooled)",
     n_resamples: int | None = None,
+    partial: bool = False,
     log_dir: str | Path = log.LOG_DIR,
 ) -> str:
     """Holm once over every primary comparison of the protocol's declared primary cells.
+
+    ``partial=True`` runs before every cell has its test eval: Holm still
+    counts all declared comparisons, the missing ones as p = 1, so the labels
+    are conservative and can only loosen once the rest of the family lands.
 
     A cell is a (track, world family, variant) listed under
     ``comparisons.primary.cells``; its scores are every kept test eval logged
@@ -254,21 +265,26 @@ def write_pooled_primary(
             for a in by_role.get(r, []):
                 pairs.append((m, groups, a, reference))
                 names.append("/".join(cell))
-    if missing:
+    if missing and not partial:
         raise ValueError(f"pooled primary family incomplete; missing: {', '.join(missing)}")
-    family = _decide(pairs, protocol, n_resamples)
+    n_arms = len(protocol.raw["comparisons"]["primary"]["arms"])
+    family = _decide(pairs, protocol, n_resamples, family_size=len(cells) * n_arms if partial else None)
     for c, cell in zip(family, names):
         c.arm = f"{cell}: {c.arm}"
+    m = len(cells) * n_arms if partial else len(family)
     lines = [f"# {title}", "",
              f"- protocol sha256 `{protocol.sha256[:16]}…`; SESOI {protocol.raw['sesoi_pts']} pts; "
-             f"BCa {n_resamples} resamples; Holm at α = {protocol.stats['alpha']} over all {len(family)} comparisons",
+             f"BCa {n_resamples} resamples; Holm at α = {protocol.stats['alpha']} over all {m} comparisons",
              f"- cells (from the protocol): {', '.join('/'.join(c) for c in cells)}; sealed test evals only; "
-             "final labels", "",
+             + (f"**partial**: not yet run, counted as p = 1 ({', '.join(missing)}), so these labels are "
+                "conservative and can only loosen once the whole family lands" if partial and missing
+                else "final labels"), "",
              *_family_table(family), ""]
     text = "\n".join(lines)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(text)
-    log.append(track, {"kind": "report", "cells": ["/".join(c) for c in cells], "split": "test", "families": "pre-registered",
+    families = "pre-registered (partial)" if partial and missing else "pre-registered"
+    log.append(track, {"kind": "report", "cells": ["/".join(c) for c in cells], "split": "test", "families": families,
                        "primary": [c.arm for c in family], "result": {c.arm: {"label": c.label, "p_holm": c.p_adj} for c in family},
                        "artifacts": [{"path": str(out), "sha256": log.file_sha256(out)}], "status": "kept"},
                protocol, log_dir)

@@ -147,8 +147,8 @@ predictor and head ("+ 8 / 16 weekly means" below). A longer encoder window itse
   relative to direct even with a joint cross-product target" (ii); "a correctly specified fitted HMM beats
   both learned forecasters" (iii). These are the audit's "publishable if it fails" outcomes for T1.
 - **Not supported:** any closed-loop learned-arm claim on hidden regimes, any sealed-test label. The T1 primary
-  cell has no test eval, so `pooled-primary` will report it missing; the pooled family needs a
-  decision on dropping the cell (a protocol amendment) once T2's cells are in.
+  cell has no test eval, so `pooled-primary` will report it missing. The cell was not dropped:
+  the T2 report counts T1's two comparisons as p = 1 (`experiments/reports/T2-consolidation.md`).
 - **Open follow-up:** a longer encoder window (56–112 days) was not tested; the exploratory "ctx56"/"ctx112"
   variants only add weekly-mean summaries to the 35-day window.
 

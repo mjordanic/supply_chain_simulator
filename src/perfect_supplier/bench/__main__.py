@@ -51,6 +51,20 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument("--base-config", type=Path, default=None, help="fixed fields (model, forecaster) for the arm")
     t.add_argument("--out", type=Path, required=True)
 
+    sl = sub.add_parser("select", help="score tuned textbook arms on common tune worlds; writes select_score")
+    sl.add_argument("--arms", type=Path, nargs="+", required=True, help="one config per file, updated in place")
+    sl.add_argument("--variant", choices=VARIANTS, default="base")
+    sl.add_argument("--offset", type=int, required=True, help="into the tune block, past every tuner's seeds")
+    sl.add_argument("--n-worlds", type=int, required=True)
+
+    ft = sub.add_parser("fit", help="train one learned forecaster for one training seed")
+    ft.add_argument("--root", type=Path, required=True, help="behaviour log of the protocol's train block")
+    ft.add_argument("--arm", choices=("jepa", "direct"), required=True)
+    ft.add_argument("--seed", type=int, required=True)
+    ft.add_argument("--steps", type=int, default=20_000)
+    ft.add_argument("--no-tail-quantiles", action="store_true", help="train on QUANTILES only")
+    ft.add_argument("--out", type=Path, required=True)
+
     f = sub.add_parser("freeze", help="list arm configs in experiments/frozen.json")
     f.add_argument("--arms", type=Path, nargs="+", required=True)
     f.add_argument("--note", required=True)
@@ -77,6 +91,8 @@ def main(argv: list[str] | None = None) -> None:
 
     pp = sub.add_parser("pooled-primary", help="Holm once over the protocol's primary cells' test evals")
     pp.add_argument("--out", type=Path, required=True)
+    pp.add_argument("--partial", action="store_true",
+                    help="before every declared cell has a test eval: missing comparisons count as p = 1")
 
     b = sub.add_parser("backfill", help="write the historical results as kind=historical log lines")
     b.add_argument("--snapshot", type=Path, required=True, help="copy of the captain's runs/ (read-only)")
@@ -105,6 +121,20 @@ def main(argv: list[str] | None = None) -> None:
         config = tune(args.kind, args.name, args.variant, protocol, args.track, args.out,
                       cell_keys=args.cell_keys, base_config=base, family=args.world_family)
         print(json.dumps(config, indent=1))
+    elif args.command == "select":
+        from src.perfect_supplier.bench.tuner import select
+
+        configs = [json.loads(p.read_text()) for p in args.arms]
+        for path, config in zip(args.arms, select(configs, protocol, args.track, args.variant, offset=args.offset,
+                                                  n_worlds=args.n_worlds)):
+            path.write_text(json.dumps(config, indent=1))
+            print(f"{config['name']}: select {config['select_score']:.5f} tune {config.get('tune_score')}")
+    elif args.command == "fit":
+        from src.perfect_supplier.bench.fit import fit_model
+
+        config = fit_model(args.root, args.arm, args.seed, protocol, args.track, args.out, steps=args.steps,
+                           tail_quantiles=not args.no_tail_quantiles)
+        print(json.dumps(config, indent=1))
     elif args.command == "freeze":
         for config in _configs(args.arms):
             sha = freeze(config, args.note, protocol)
@@ -129,7 +159,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "pooled-primary":
         from src.perfect_supplier.bench.report import write_pooled_primary
 
-        print(write_pooled_primary(protocol, args.out, args.track))
+        print(write_pooled_primary(protocol, args.out, args.track, partial=args.partial))
     elif args.command == "backfill":
         from src.perfect_supplier.bench.backfill import backfill
 
