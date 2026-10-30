@@ -122,11 +122,12 @@ the avoidable rejections.
 
 **Demand-pull schedule** (tick phasing, `src/sim/runner.py`, ADR 0018)
 One tick executes as a **demand-pull topological walk** — Kahn's algorithm on the reversed graph
-(sinks first, factories last): `tick_world` (market multiplier + event_engine + item_registry) →
-`publish_offers` → walk each ready-set of mutually-incomparable peers in reverse-topological order,
-shuffling the ready-set with `allocation_rng` for FCFS fairness: per-buyer observe → decide →
-`execute_buy` per line → deliver (scheduled callbacks fire) → factory produce → consume demand
-sinks. Physical lead time still delays delivery — orders placed at tick N arrive at
+(sinks first, factories last): `tick_world` (market multiplier + event_engine, which fires the
+delivery callbacks due this tick + item lifecycle) → `publish_offers` → walk each ready-set of
+mutually-incomparable peers in reverse-topological order, shuffling the ready-set with
+`allocation_rng` for FCFS fairness: per-buyer observe → decide → `execute_buy` per line → factory
+produce → `consume_demand_sinks` (sink income; holding cost and order fee charged).
+Physical lead time still delays delivery — orders placed at tick N arrive at
 `current_tick + lead_time`, not within the same tick. Because `execute_buy` decrements seller
 inventory at sale time, by the time an intermediate is processed every downstream buyer has already
 transacted, so it reorders against *complete current-tick* demand (`observed_sales`) — there is no
@@ -516,16 +517,17 @@ from tightness factors instead (ADR 0032). Typed, comparable, JSON-serialisable.
 
 **Simulation** (`src/sim/runner.py`)
 Mutable bundle returned by `build_world(scenario, *, policy_overrides=None)`. Holds `(scenario,
-world_rng, allocation_rng, item_registry, market, event_engine, graph, nodes)` and exposes a
+world_rng, allocation_rng, lifecycle, market, event_engine, graph, nodes)` and exposes a
 two-phase tick API:
 
-- `tick_world() → list[WorldEvent]` — phase 1: advances market, events, and item lifecycle;
-  publishes all seller offers to the CentralTable; returns active events.
-- `tick_decide_and_settle(active_events) → TickResult` — phase 2: the demand-pull walk
+- `tick_world() → int` — phase 1: advances market, events (firing the delivery callbacks due
+  this tick), and item lifecycle; publishes all seller offers to the CentralTable; returns the
+  current tick.
+- `tick_decide_and_settle(current_tick=None) → None` — phase 2: the demand-pull walk
   (reverse-topological ready-sets, shuffled per tick) → per-buyer observe → decide → `execute_buy`
-  per line → factory produce → deliver callbacks → sink demand. RL action-injection happens in the
-  seam between phases.
-- `tick() → TickResult` — convenience composing both phases.
+  per line → factory produce → `consume_demand_sinks` (sink income; holding cost and order fee
+  charged). RL action-injection happens in the seam between phases.
+- `tick() → None` — convenience composing both phases.
 
 `allocation_rng` is a new `Random` stream derived via `_derive_seed(world_seed, "allocation")`
 (ADR 0016). `build_world` deep-copies nodes for multi-call safety.
@@ -674,6 +676,7 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0016](docs/adr/0016-allocation-rng-sub-seed.md) — `allocation` sub-seed added to CRN seeding contract; drives deterministic per-phase buyer shuffle. **Accepted.**
 - [ADR 0017](docs/adr/0017-setup-files-as-deterministic-input.md) — Setup files as deterministic input. **Accepted.**
 - [ADR 0018](docs/adr/0018-lateral-links-demand-pull-scheduling.md) — Lateral supplier links + demand-pull topological scheduling (Kahn on reversed graph); type-based validation; min-order-aware routing; rejection log. **Accepted — supersedes ADR 0014.**
+- [ADR 0019](docs/adr/0019-charge-holding-order-fee-and-flow-logged-metrics.md) — The engine charges holding cost and the order fee to the void; the `Runner` logs per-tick flows and business metrics are built from that log. **Accepted — amends ADR 0013.**
 - [ADR 0020](docs/adr/0020-replay-demand-sinks.md) — Replay demand sinks (M5 real-data mode): subclass override, full multiplier chain kept, CRN draws burned.
 - [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — Variable-K RL: shared-weight per-product policy, deterministic arbiter owning capacity + cash, implicit assortment, no mid-episode churn. **Accepted — supersedes ADR 0004 Decision 2.**
 - [ADR 0022](docs/adr/0022-rl-policy-as-first-class-intermediate-policy-eval-via-runner.md) — `RLNodePolicy` as a first-class `IntermediatePolicy`; eval rebuilt on `Runner.run()`; Arbiter travels with the policy; eval-history discontinuity noted. **Accepted.**

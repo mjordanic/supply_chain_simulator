@@ -25,12 +25,23 @@ stocked SKUs. Composed multiplicatively into `DemandSinkNode.demand_target`.
   + `_sanitise_freshness` + freshness schema
 - `tests/sim/test_freshness_curve.py`, `test_freshness_integration.py`, `test_demand_sink_freshness.py`
 
+**Still in the code.** The `Ware.freshness_alpha` / `Ware.freshness_decay` fields and the LLM
+`WorldBuilder` freshness stage (`freshness_prompt`, `_sanitise_freshness`) were kept; no demand
+term reads them.
+
 **To re-add.** Reintroduce the multiplier in `demand_target` and re-add the two per-product
 columns to `catalog.csv`. ADR 0001 has the original rationale (two-layer lifecycle).
 
 ---
 
-## 2. Global product life-cycle (PLC stages)  — REMOVED
+## 2. Global product life-cycle (PLC stages)  — RESTORED (without `ItemRegistry`)
+
+**Status.** Restored by `.scratch/jepa-replenishment-v2` issue 05: `src/sim/lifecycle_clock.py`
+(`LifecycleState`, owned by the `Runner`) advances each SKU on its own `lifecycle` sub-seed
+stream, `MarketParams.stage_multipliers` is back, and `DemandSinkNode.demand_target` applies the
+stage factor. Sampled tuning episodes draw per-SKU initial stages and transition tables; authored
+setups loaded by `load_setup` stay inert (every SKU at `maturity`, zero transitions). The text
+below records the original removal.
 
 **What it did.** A global stage per SKU in `[introduction, growth, maturity, decline, dead]`,
 each mapping to a `stage_multipliers` factor on baseline demand; stochastic transitions
@@ -81,7 +92,10 @@ restore `_resolve_stage_change_probs` override logic in `item_registry`.
 
 ---
 
-## 5. Tick phasing redesign — allow lateral links  — PLANNED
+## 5. Tick phasing redesign — allow lateral links  — IMPLEMENTED (ADR 0018)
+
+Done: ADR 0018 replaced the cascade with demand-pull topological scheduling and type-based
+validation. The original plan follows.
 
 Replace the upward echelon cascade (ADR 0014) with a scheduling model that supports
 **lateral supplier links** (same-echelon shop→shop, warehouse→warehouse, etc.) and

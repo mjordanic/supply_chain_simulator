@@ -19,7 +19,10 @@ continuous-control policy against the textbook baseline using Common Random Numb
 checkpoint attaches to any intermediate node via `RLNodePolicy`), and an **M5 demand-replay
 adapter** that turns Walmart sales into a loadable setup directory. A latent
 replenishment planner lives in [`src/jepa/`](src/jepa/); the commands are in
-[Latent replenishment](#latent-replenishment).
+[Latent replenishment](#latent-replenishment). The perfect-supplier experiment that followed
+it, a one-shop world where only demand is uncertain, lives in
+[`src/perfect_supplier/`](src/perfect_supplier/README.md); its pre-registered results are in
+[`experiments/reports/`](experiments/reports/).
 
 It is a demo project — the goal is to be readable and easy to extend, not production-grade.
 
@@ -37,8 +40,8 @@ uv run python main.py run setups/three_node_chain     # run the minimal example
 uv run pytest                                         # tests
 ```
 
-Outputs land under `data/three_node_chain/` (parquet + JSON + PNG). Neither runnable example
-setup requires an API key.
+Outputs land under `data/three_node_chain/` (parquet + JSON + PNG). None of the runnable
+example setups requires an API key.
 
 ## Light web demo
 
@@ -176,10 +179,11 @@ setups/
                            `main.py run` target until you scaffold a topology onto it
 ```
 
-Run the two complete examples:
+Run the complete examples:
 
 ```bash
 uv run python main.py run setups/three_node_chain
+uv run python main.py run setups/demo_two_suppliers
 uv run python main.py run setups/two_factories_two_shops
 ```
 
@@ -467,12 +471,14 @@ uv run jupyter nbconvert --to notebook --execute --output-dir runs/jepa-replenis
 src/
   sim/         core simulator + textbook policies
   jepa/        latent replenishment planner (does not import the RL stack)
+  perfect_supplier/  perfect-supplier experiment + pre-registered evaluation harness (bench/)
   web/         limited Streamlit visual demo (sibling consumer of sim)
   datasets/    M5 (Kaggle) → setup-directory adapter
   llm/         LLM catalog and market generator
   tuning/      Optuna-based hyperparameter search
   rl/          PPO training stack + RLNodePolicy
 setups/        example setup directories (runnable graphs + fashion catalog)
+experiments/   perfect-supplier protocol, frozen configs, run logs, and reports
 notebooks/     guided tour (00–06a), latent replenishment (09–14), perfect supplier (15–16), M5 replay example
 data/          scenario outputs
 runs/          tuning, RL, and latent-replenishment artifacts (not committed)

@@ -56,8 +56,8 @@ The audit's four checks:
    same knobs and the same budget. It only ties the best textbook rule (+0.02 pts in
    every world). JEPA beats it by +0.21 (base), +0.16 (no_fee) and +0.11 (one_product)
    pts.
-3. **Three training seeds.** The per-seed estimates against the reference span less
-   than 0.01 pts: base +0.228–0.238, no_fee +0.184–0.188, one_product +0.130–0.133.
+3. **Three training seeds.** The per-seed JEPA estimates against the reference span at
+   most 0.01 pts: base +0.228–0.238, no_fee +0.184–0.188, one_product +0.130–0.133.
 4. **The sealed test.** It matches dev (base +0.251, no_fee +0.154, one_product +0.134
    on 100 dev worlds) and the audit's +0.24 / 5.6%.
 
@@ -158,9 +158,9 @@ tuned configs and score files (not committed).
 B="uv run python -m src.perfect_supplier.bench --track T2-consolidation"
 uv run python -m src.perfect_supplier --root runs/train collect --n-worlds 2000
 $B fit --root runs/train --arm {jepa,direct} --seed {0,1,2} --out models      # PS_WORKERS=1 each
-$B tune --kind <textbook kind> [--cell-keys holding_rate [delivery_lag]] --variant V --out tune/V
+$B tune --kind <textbook kind> --name <arm> [--cell-keys holding_rate [delivery_lag]] --variant V --out tune/V
 $B select --variant V --offset 3072 --n-worlds 1024 --arms tune/V/<textbook arms>.json
-$B tune --kind {planner,seasonal_ets} --cell-keys holding_rate --base-config <base> --variant V --out tune/V
+$B tune --kind {planner,seasonal_ets} --name <arm> --cell-keys holding_rate --base-config <base> --variant V --out tune/V
 $B freeze --arms arms/V/*.json --note ...
 $B eval --arms arms/V/*.json --split test --n-worlds 1000 --variant V --out test/V
 $B report --scores test/V --out test/V/report.md

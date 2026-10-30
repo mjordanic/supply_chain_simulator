@@ -45,7 +45,7 @@ done
 
 Output for a variant goes under `runs/perfect-supplier-<variant>/`.
 
-## Result (500 eval worlds per world type, 2026-10-15)
+## Pre-harness result (500 eval worlds per world type, 2026-10-15)
 
 Margin capture, each arm closed-loop on its own copy of every world, paired by
 world. The best textbook rule in all three worlds is tuned joint EOQ: joint
@@ -66,4 +66,8 @@ reads the fee and holding rate, as the planner does.
 Notebook 15, section 12, has the details.
 
 Track T2 re-ran these comparisons through `bench/` against contextual baselines
-on the sealed test: `experiments/reports/T2-consolidation.md`.
+on the sealed test: `experiments/reports/T2-consolidation.md`, explored in
+`notebooks/16-perfect-supplier-t2.ipynb`. There the learned forecaster plus planner
+beats the best tuned textbook rule in all three worlds, `no_fee` included
+(JEPA +0.233 base, +0.186 no_fee, +0.132 one_product pts), with JEPA and direct
+practically equivalent.

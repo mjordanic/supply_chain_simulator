@@ -1,6 +1,6 @@
 # Charge holding cost and order fee; flow-logged business metrics
 
-Status: Accepted — amends ADR 0013 (implements Rules 4–5 and fixes their mechanics). Implementation pending (until merged, the engine charges neither cost and the run log carries no flow data).
+Status: Accepted — amends ADR 0013 (implements Rules 4–5 and fixes their mechanics). Implemented: the engine charges both costs and the run log carries the flow data.
 
 Two gaps share one root cause.
 
