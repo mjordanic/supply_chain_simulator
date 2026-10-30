@@ -100,7 +100,7 @@ gcloud run deploy supply-chain-demo \
   --image IMAGE \
   --region europe-west1 \
   --memory 1Gi --cpu 1 \
-  --concurrency 1 --min-instances 0 --max-instances 2 \
+  --concurrency 80 --min-instances 0 --max-instances 2 \
   --timeout 60 --port 8080 --allow-unauthenticated
 ```
 
