@@ -64,3 +64,6 @@ reads the fee and holding rate, as the planner does.
 - **Headroom.** The oracle planner shows 0.2–0.7 points a better forecast could take.
 
 Notebook 15, section 12, has the details.
+
+Track T2 re-ran these comparisons through `bench/` against contextual baselines
+on the sealed test: `experiments/reports/T2-consolidation.md`.
