@@ -9,7 +9,8 @@ statistics with multiplicity control. ADR 0034 records the decision.
 | --- | --- |
 | `protocol.py` | loads `experiments/protocol.yaml` (constants, seed blocks, burnt seeds, budgets, search spaces); the sealed-split gate and `experiments/frozen.json` |
 | `arms.py` | arm registry: a JSON config per arm (textbook families, contextual per-cell and parametric EOQ, the planner with oracle / moving-average / seasonal-ETS / direct / JEPA forecasts) |
-| `tuner.py` | sequential TPE with a process pool per trial; budget and search space from the protocol; per-cell contextual tuning; tuning curves |
+| `tuner.py` | sequential TPE with a process pool per trial; budget and search space from the protocol; per-cell contextual tuning (a learned arm spreads its budget over the cells); tuning curves; `select`, the common-worlds selection score that picks the textbook reference |
+| `fit.py` | one learned forecaster (`jepa` or `direct`) for one training seed on the train block, logged as `kind: fit`, with its arm config (`seed_group`) |
 | `evaluate.py` | paired evaluation writer: every arm on its own copy of the same worlds → `scores.parquet` + `arms.json` |
 | `stats.py` | BCa bootstrap, Wilcoxon, Holm, BH, TOST, two-level (world × training seed) bootstrap, cost reduction, protocol labels |
 | `calibration.py` | lead-time coverage of a planner arm's imagined demand (exceedance at q0.90/0.95/0.99, PIT) |
@@ -53,6 +54,10 @@ $B tune --kind eoq_joint --name ctx_eoq_joint --cell-keys holding_rate --out run
 $B eval --arms arms/base/jepa.json runs/bench/tune/ctx_eoq_joint.json --split dev --n-worlds 300 --out runs/bench/dev1
 $B report --scores runs/bench/dev1 --out runs/bench/dev1/report.md
 
+# training seeds, and the reference choice on common tune worlds no tuner used
+$B fit --root runs/train --arm jepa --seed 0 --out models
+$B select --variant base --offset 3072 --n-worlds 1024 --arms runs/bench/tune/*eoq*.json
+
 # lead-time calibration of a planner arm (dev only)
 $B calibrate --arm arms/base/jepa.json --n-worlds 60 --out runs/bench/cal
 
@@ -89,6 +94,11 @@ cell are ablations and stay out of the family.
 The report's families come from `comparisons` in the protocol. Passing
 `--reference`, `--primary`, or `--secondary` makes it exploratory: the report
 says so and its log line records `families: exploratory`.
+
+Before every declared cell has a test eval, `pooled-primary --partial` counts
+the missing comparisons as p = 1 (last in Holm's step-down), so its labels are
+conservative and can only loosen once the whole family lands. An arm config
+with an explicit `role` (e.g. `"ablation"`) stays out of the families.
 
 Arms that share a `seed_group` field in their configs (one config per training
 seed) are averaged in the report, which adds a two-level bootstrap section.
