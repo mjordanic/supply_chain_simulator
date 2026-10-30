@@ -47,7 +47,7 @@ src/sim/
 ## Concepts
 
 - **Node** (`Node` ABC) — the actor in the supply-chain graph. Three concrete subtypes:
-  - **`FactoryNode`** — produces one product per tick at `unit_cost`; sells at `list_price` == `unit_cost` (zero-margin, ADR 0013). The entry point of inventory into the chain.
+  - **`FactoryNode`** — produces one product per tick at `unit_cost`. Authored setups sell at `list_price` == `unit_cost` (ADR 0013). The replenishment episode sampler may list above `unit_cost` (ADR 0031). The entry point of inventory into the chain.
   - **`IntermediateNode`** — warehouse / DC / shop. Holds multi-product `inventory`, sets `list_prices`, imposes per-product `min_order_imposed`, routes orders across multiple upstream suppliers, tracks `pending` (per-supplier × pid in-transit). Warehouse-vs-shop is a free-form `tags` label, never branches mechanics.
   - **`DemandSinkNode`** — the only source of new cash. Bound to one `product_id`; each tick earns `income_rate`, computes a demand target, and buys from intermediates. Unmet demand (no supplier stock or no cash) is a lost sale.
   - **`ReplayDemandSinkNode`** (`replay_demand_sink.py`) — a `DemandSinkNode` whose per-tick demand comes from an observed series instead of `demand_dist` — the real-data replay mode. The full market multiplier chain still applies on top, and the node burns the same `world_rng` draws as the stochastic sink, so mixed replay/stochastic graphs stay CRN-clean. See [Real-data demand replay (M5)](#real-data-demand-replay-m5).
@@ -312,7 +312,7 @@ Each policy owns a private `policy_rng` seeded from its `policy_seed` kwarg, dis
 
 | class | base | role |
 | --- | --- | --- |
-| `StaticFactoryPolicy(*, capacity_per_tick, unit_cost, policy_seed=None)` | `FactoryPolicy` | produce a fixed quantity each tick, publish at `unit_cost` |
+| `StaticFactoryPolicy(*, capacity_per_tick, unit_cost, policy_seed=None)` | `FactoryPolicy` | produce a fixed quantity each tick; publish the node's `list_price` (falls back to `unit_cost`) |
 | `DefaultDemandSinkPolicy(*, policy_seed=None)` | `DemandSinkPolicy` | greedy: buy the demand target from the cheapest feasible direct suppliers first |
 | `IntermediatePolicy.SingleSupplierAdapter(*, supplier_id, ...)` | `IntermediatePolicy` | route a textbook reorder policy to a single named supplier |
 | `MultiSupplierTextbookPolicy` (+ 4 concrete) | `IntermediatePolicy` | textbook reorder rules with multi-supplier routing |
@@ -321,7 +321,7 @@ Each policy owns a private `policy_rng` seeded from its `policy_seed` kwarg, dis
 
 ### `TextbookReorderPolicy` family (`MultiSupplierTextbookPolicy`)
 
-Four textbook inventory rules sharing one base class: a censored-sales rate estimator over a `delivery_lag`-length rolling window, a two-pass fair-share allocator across the capacity and cash pools, a cash-budget "pilot order" cold-start, and opt-in adaptive safety stock. All four emit pure inventory decisions (`price[pid] = base_price`, no activations/promotions). Multi-supplier routing via `_split_across_suppliers` honours both min-order layers; the default strategy is cheapest-first, pluggable via the `routing_strategy` kwarg (`"cheapest_first"` / `"fill_rate_weighted"`).
+Four textbook inventory rules sharing one base class: a censored-sales rate estimator over a `delivery_lag`-length rolling window, a two-pass fair-share allocator across the capacity and cash pools, a cash-budget "pilot order" cold-start, and opt-in adaptive safety stock. All four emit pure inventory decisions (`price[pid] = base_price`, no activations/promotions). On the graph engine the cash check and the pilot use the cheapest direct supplier's `list_price`; `unit_cost` is only the fallback when no offer is published. Multi-supplier routing via `_split_across_suppliers` honours both min-order layers. The tuner pins cheapest-first, a zero `per_supplier_min_order_floor`, and a cold-start fraction of 0.50. `routing_strategy` can still be passed explicitly (`None` is cheapest-first; `fill_rate_weighted` remains available) but the tuner does not sample it.
 
 Shared `MultiSupplierTextbookPolicy` kwargs:
 
@@ -331,7 +331,7 @@ Shared `MultiSupplierTextbookPolicy` kwargs:
 | `cover_horizon_ticks` | 14 | cycle length driving `S − s` for order-up-to (EOQ result, independent of lead time) |
 | `safety_lead_pct_of_lag` | 1/3 | fraction of per-edge lead time used as the safety horizon: `s = (lag + pct × lag) × rate` |
 | `delivery_lag` | 2 | fallback lead time the inner policy assumes for pilot sizing |
-| `unit_cost` | 1.0 | upstream unit cost (pilot-order budgeting) |
+| `unit_cost` | 1.0 | fallback unit cost when no supplier offer is published; a live offer's `list_price` is what the cash check uses |
 | `list_price_out` | 0.0 | the node's own downstream selling price |
 | `per_supplier_min_order_floor` | 0 | buyer-side min order per line (the second min-order layer) |
 | `routing_strategy` | `None` | `None`/`"cheapest_first"` or `"fill_rate_weighted"` |

@@ -20,29 +20,15 @@ from typing import Optional
 
 from src.sim.distributions import Distribution
 
+# Default synthetic catalog. Inside the 500–1000 band the study asked for.
+SYNTHETIC_CATALOG_SIZE = 750
 
-def _default_capacity_dist() -> Distribution:
-    """``LogUniform(100, 10_000)`` — per-episode capacity distribution.
-
-    Log-uniform over two orders of magnitude so a single study spans
-    small-store and flagship deployments.
-    """
-    from src.sim.distributions import LogUniform
-
-    return LogUniform(100, 10_000)
 
 def _default_init_stock_pct_dist() -> Distribution:
     """``Uniform(0.2, 1.0)`` — per-episode starting inventory fraction of capacity."""
     from src.sim.distributions import Uniform
 
     return Uniform(0.2, 1.0)
-
-
-def _default_balance_dist() -> Distribution:
-    """``LogUniform(10_000, 1_000_000)`` — per-episode opening balance distribution."""
-    from src.sim.distributions import LogUniform
-
-    return LogUniform(10_000, 1_000_000)
 
 
 @dataclass(frozen=True)
@@ -55,23 +41,42 @@ class TuningConfig:
     episode_length: int = 365
     """Number of ticks per episode (one calendar year at daily resolution)."""
 
-    K_active: int = 5
-    """Number of active SKUs per episode (sampled from the catalog)."""
+    K_active: int | None = None
+    """Pinned assortment size. ``None`` draws K from ``[K_min, K_max_episode]``."""
 
-    K_catalog: int = 100
+    K_min: int = 1
+    """Inclusive lower bound when ``K_active`` is not pinned."""
+
+    K_max_episode: int = 30
+    """Inclusive upper bound when ``K_active`` is not pinned."""
+
+    K_catalog: int = SYNTHETIC_CATALOG_SIZE
     """Catalog size used by the synthetic fallback when no world cache is found."""
+
+    def active_catalog_size(self) -> int:
+        """Synthetic catalog length that covers the largest assortment this config draws."""
+        k = self.K_max_episode if self.K_active is None else self.K_active
+        return max(self.K_catalog, k)
 
     # ------------------------------------------------------------------
     # Episode randomisation
     # ------------------------------------------------------------------
-    capacity_dist: Distribution = field(default_factory=_default_capacity_dist)
-    balance_dist: Distribution = field(default_factory=_default_balance_dist)
+    capacity_dist: Distribution | None = None
+    """Absolute capacity draw. ``None`` sizes the pool from episode tightness."""
+
+    balance_dist: Distribution | None = None
+    """Absolute opening-cash draw. ``None`` sizes cash from episode tightness."""
+
     init_stock_pct_dist: Distribution = field(default_factory=_default_init_stock_pct_dist)
 
     # ------------------------------------------------------------------
     # Simulator knobs (forwarded into the StoreTemplate)
     # ------------------------------------------------------------------
-    delivery_lag: int = 3
+    delivery_lag: int | None = None
+    """Nominal lead time. ``None`` draws an integer from 2 through 6.
+    An explicit value pins that nominal lag. Supplier edges still differ
+    around it (ADR 0031)."""
+
     holding_rate: float = 0.01
     order_fee: float = 50.0
 
@@ -108,4 +113,4 @@ class TuningConfig:
     When unset, a synthetic catalog is used (no LLM calls required)."""
 
 
-__all__ = ["TuningConfig"]
+__all__ = ["SYNTHETIC_CATALOG_SIZE", "TuningConfig"]

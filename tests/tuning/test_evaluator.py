@@ -88,6 +88,8 @@ _EXPECTED_KEYS = {
     "per_seed_net_profit",
     "per_seed_initial_cash",
     "per_seed_capacity",
+    "per_seed_tightness",
+    "per_seed_cash_tightness",
     "per_seed_service_level",
     "per_seed_stockout_rate",
     "per_seed_inventory_turnover",
@@ -112,6 +114,12 @@ class TestEvaluatePolicyNormalised2Seeds:
         result = evaluate_policy_normalised(lambda: OrderUpToPolicy(), specs)
         for key in _EXPECTED_KEYS:
             assert key in result, f"Missing expected key {key!r}"
+
+    def test_per_seed_tightness_matches_the_episode_spec(self):
+        specs = _make_specs(n=2)
+        result = evaluate_policy_normalised(lambda: OrderUpToPolicy(), specs)
+        assert result["per_seed_tightness"] == [spec.tightness for spec in specs]
+        assert result["per_seed_cash_tightness"] == [spec.cash_tightness for spec in specs]
 
     def test_per_seed_lists_have_length_2(self):
         specs = _make_specs(n=2)

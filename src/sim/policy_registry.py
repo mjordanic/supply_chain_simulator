@@ -140,9 +140,8 @@ def build_policy(
         if isinstance(node, IntermediateNode):
             # Inject the representative delivery lag from upstream edges.
             kwargs["delivery_lag"] = _average_lead_time(node.id, edges)
-            # unit_cost for the inner policy's cash accounting.
-            # IntermediateNode doesn't have a direct unit_cost — use
-            # the mean of list_prices as a proxy, or 1.0 as fallback.
+            # Fallback unit cost when the offer book has no price for a SKU.
+            # A live decide() prices cash at the supplier's list_price instead.
             if node.list_prices:
                 mean_price = sum(node.list_prices.values()) / len(node.list_prices)
                 kwargs.setdefault("unit_cost", mean_price)

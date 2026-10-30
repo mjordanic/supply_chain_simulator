@@ -7,13 +7,15 @@ artifact files to ``{output_dir}/{study_name}/``:
 
   - ``trials.parquet``   — one row per trial, all documented columns.
   - ``per_seed.parquet`` — long format, one row per (trial, seed).
-  - ``study.json``       — self-describing study metadata.
+  - ``study.json``       — self-describing study metadata, including the
+    git SHA and the episode-distribution parameters.
 
 ``confirm_top_k`` re-evaluates the top-K search trials plus the published
 default on a disjoint held-out seed set, and writes:
 
   - ``holdout.parquet``       — one row per (label, seed).
-  - ``holdout_summary.json``  — bootstrap CIs + headline uplift.
+  - ``holdout_summary.json``  — bootstrap CIs + headline uplift, plus the
+    git SHA and episode-distribution parameters.
 
 CRN guarantee
 -------------
@@ -46,7 +48,11 @@ import optuna
 from src.sim.policy import Policy
 from src.sim.scenario import Ware
 from src.tuning.config import TuningConfig
-from src.tuning.episode import TuningEpisodeSpec, sample_episode
+from src.tuning.episode import (
+    TuningEpisodeSpec,
+    episode_distribution_parameters,
+    sample_episode,
+)
 from src.tuning.evaluator import evaluate_policy_normalised
 from src.tuning.search_spaces import (
     order_up_to_space,
@@ -115,8 +121,6 @@ def _introspect_policy_class_name(
             "stockout_safety_bonus_pct_of_lag": 0.0,
             "Q": 5,
             "review_interval": 7,
-            "per_supplier_min_order_floor": 0,
-            "routing_strategy": "cheapest_first",
         }
         trial = optuna.trial.FixedTrial(probe_params)
         policy = policy_space(trial)
@@ -167,6 +171,8 @@ _PER_SEED_PARQUET_COLUMNS = [
     "seed",
     "capacity",
     "initial_cash",
+    "tightness",
+    "cash_tightness",
     "net_profit",
     "normalised_return",
     "service_level",
@@ -304,6 +310,8 @@ def run_study(
         ps_net_profit = kpis.get("per_seed_net_profit", [None] * n_seeds)
         ps_initial_cash = kpis.get("per_seed_initial_cash", [None] * n_seeds)
         ps_capacity = kpis.get("per_seed_capacity", [None] * n_seeds)
+        ps_tightness = kpis.get("per_seed_tightness", [None] * n_seeds)
+        ps_cash_tightness = kpis.get("per_seed_cash_tightness", [None] * n_seeds)
         ps_service_level = kpis.get("per_seed_service_level", [None] * n_seeds)
         ps_stockout_rate = kpis.get("per_seed_stockout_rate", [None] * n_seeds)
         ps_inv_turnover = kpis.get("per_seed_inventory_turnover", [None] * n_seeds)
@@ -324,6 +332,10 @@ def run_study(
                 "seed": seed,
                 "capacity": ps_capacity[i] if i < len(ps_capacity) else None,
                 "initial_cash": initial_cash_i,
+                "tightness": ps_tightness[i] if i < len(ps_tightness) else None,
+                "cash_tightness": (
+                    ps_cash_tightness[i] if i < len(ps_cash_tightness) else None
+                ),
                 "net_profit": net_profit_i,
                 "normalised_return": normalised_return_i,
                 "service_level": ps_service_level[i] if i < len(ps_service_level) else None,
@@ -369,6 +381,12 @@ def run_study(
         "finished_at": finished_at,
         "git_sha": _get_git_sha(),
         "policy_class_name": _introspect_policy_class_name(policy_space),
+        "episode_distribution": episode_distribution_parameters(
+            tuning_config,
+            market_params=market_params,
+            disruption_params=disruption_params,
+            catalog_size=len(catalog),
+        ),
     }
 
     with open(os.path.join(study_dir, "study.json"), "w", encoding="utf-8") as fh:
@@ -388,6 +406,8 @@ _HOLDOUT_PARQUET_COLUMNS = [
     "seed",
     "capacity",
     "initial_cash",
+    "tightness",
+    "cash_tightness",
     "net_profit",
     "normalised_return",
     "service_level",
@@ -502,6 +522,8 @@ def confirm_top_k(
                 "trial_id": trial_id if trial_id is not None else -1,
                 "seed": seed,
                 "capacity": kpis["per_seed_capacity"][i],
+                "tightness": kpis["per_seed_tightness"][i],
+                "cash_tightness": kpis["per_seed_cash_tightness"][i],
                 "initial_cash": initial_cash_i,
                 "net_profit": net_profit_i,
                 "normalised_return": normalised_return_i,
@@ -564,6 +586,13 @@ def confirm_top_k(
         "headline_uplift_ci_low": uplift_ci_low,
         "headline_uplift_ci_high": uplift_ci_high,
         "n_holdout_seeds": tuning_config.n_holdout_seeds,
+        "git_sha": _get_git_sha(),
+        "episode_distribution": episode_distribution_parameters(
+            tuning_config,
+            market_params=market_params,
+            disruption_params=disruption_params,
+            catalog_size=len(catalog),
+        ),
     }
 
     with open(os.path.join(study_dir, "holdout_summary.json"), "w", encoding="utf-8") as fh:

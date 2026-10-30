@@ -131,8 +131,15 @@ class Simulation:
         self._tick_purchases: list[dict] = []
         self._tick_sink_demand: dict[str, dict[str, int]] = {}
         self._tick_decision_state: dict[str, dict[str, dict]] = {}
+        # Filled lots still on the way: ``{buyer_id: {pid: [(order_tick, qty, lead)]}}``.
+        # Decision time is before this tick's fill, so the profile the policy
+        # reads is this ledger and not the order it is about to place.
+        self._in_transit_lots: dict[str, dict[str, list[tuple[int, int, int]]]] = {}
         # Stashed central table from ``tick_world()`` for use by ``tick_decide_and_settle()``.
         self._current_table: Any = None
+        from src.sim.lifecycle_clock import LifecycleState
+
+        self.lifecycle = LifecycleState(scenario)
 
     # ------------------------------------------------------------------
     # Public API
@@ -143,7 +150,7 @@ class Simulation:
 
         Steps
         -----
-        1. ``tick_world``        — advance market, events.
+        1. ``tick_world``        — advance market, events, and item lifecycle.
         2. ``publish_offers``    — all sellers publish live offers.
         3. Demand-pull walk      — reverse-topological order; sinks first,
                                    factories last; each ready-set shuffled
@@ -161,6 +168,7 @@ class Simulation:
         # -------------------------------------------------------------------
         self.market.tick()
         self.event_engine.tick(self.market)
+        self.lifecycle.tick()
         current_tick = self.market.current_step()
 
         # -------------------------------------------------------------------
@@ -202,7 +210,7 @@ class Simulation:
     # ------------------------------------------------------------------
 
     def tick_world(self) -> Any:
-        """Phase 1: advance world state (market, events).
+        """Phase 1: advance world state (market, events, item lifecycle).
 
         Also publishes offers to a fresh ``CentralTable`` and stores
         it on ``self._current_table`` for ``tick_decide_and_settle()``
@@ -215,6 +223,7 @@ class Simulation:
 
         self.market.tick()
         self.event_engine.tick(self.market)
+        self.lifecycle.tick()
         current_tick = self.market.current_step()
 
         table, decision_state = _publish_offers(self.nodes, CentralTable, Offer, FactoryNode, IntermediateNode)
@@ -333,6 +342,7 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
         build_sink_obs,
     )
 
+    stage_factor = sim.lifecycle.demand_factors(sim.market.stage_multipliers)
     for ready_set in sim.schedule:
         # Shuffle the ready-set deterministically (ADR 0016).
         buyers = [sim.nodes[nid] for nid in ready_set if nid in sim.nodes]
@@ -345,12 +355,14 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
 
             if isinstance(buyer, DemandSinkNode):
                 # Samples world_rng for every catalog pid — CRN invariant (ADR 0003).
+                # Lifecycle multipliers are looked up, not drawn, from world_rng.
                 demand_target = float(
                     buyer.demand_target(
                         tick=current_tick,
                         market=sim.market,
                         catalog=sim.scenario.catalog,
                         world_rng=sim.world_rng,
+                        stage_factor=stage_factor,
                     )
                 )
                 # Persist the exogenous demand target for the flow log (ADR 0019).
@@ -439,6 +451,19 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                 obs["observed_sales"] = sim._tick_sales.get(buyer.id, {})
                 direct_supplier_ids = sim.graph.suppliers_of(buyer.id)
                 obs["direct_supplier_ids"] = direct_supplier_ids
+                buyer_lots = sim._in_transit_lots.get(buyer.id, {})
+                obs["in_transit_lots"] = {
+                    pid: list(buyer_lots.get(pid, [])) for pid in buyer.inventory
+                }
+                # Nominal lead is the fastest direct edge. The learned buyer
+                # reads it the way the textbook buyer reads ``delivery_lags``.
+                obs["delivery_lags"] = {
+                    pid: float(
+                        min(sim.graph.lead_time(sid, buyer.id, pid) for sid in direct_supplier_ids)
+                    )
+                    for pid in buyer.inventory
+                    if direct_supplier_ids
+                }
                 if buyer.policy is not None:
                     action = buyer.policy.decide(obs, table)
                 else:
@@ -467,6 +492,10 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                             lead_time=lt,
                         )
                         buyer_orders[pid] = buyer_orders.get(pid, 0) + qty
+                        if result.qty_filled > 0:
+                            sim._in_transit_lots.setdefault(buyer.id, {}).setdefault(pid, []).append(
+                                (int(current_tick), int(result.qty_filled), int(lt))
+                            )
                         # Persist the realised purchase row for the flow log (ADR 0019).
                         sim._tick_purchases.append({
                             "buyer_id": buyer.id,
@@ -497,6 +526,27 @@ def _run_demand_pull_schedule(sim: "Simulation", table: Any, current_tick: int) 
                             sup_sales[pid] = sup_sales.get(pid, 0) + result.qty_filled
 
 
+def _supplier_fill_rate(ticks: list[dict], factory_ids: set[str]) -> float | None:
+    """Factory units filled divided by units requested.
+
+    ``None`` when the episode never asked a factory for anything.
+    """
+    requested = 0
+    filled = 0
+    for tick in ticks:
+        for flow in tick.get("node_flows") or []:
+            if flow.get("node_id") not in factory_ids:
+                continue
+            demand = int(flow.get("demand") or 0)
+            if demand <= 0:
+                continue
+            requested += demand
+            filled += int(flow.get("sales") or 0)
+    if requested <= 0:
+        return None
+    return filled / requested
+
+
 def _produce_factories(sim: "Simulation", current_tick: int) -> None:
     """Run factory produce step for all FactoryNodes."""
     from src.sim.node import FactoryNode
@@ -514,7 +564,7 @@ def _produce_factories(sim: "Simulation", current_tick: int) -> None:
                     produce_qty = int(cap.sample(sim.world_rng))
                 else:
                     produce_qty = int(cap)
-                action = {"produce_qty": produce_qty, "list_price": node.unit_cost}
+                action = {"produce_qty": produce_qty, "list_price": node.list_price}
 
             produce_qty = int(action.get("produce_qty", 0))
             node.inventory += produce_qty
@@ -792,9 +842,18 @@ class Runner:
                 Shared world-state time series:
                 ``"time"`` (``simulation_step``, ``simulation_date``),
                 ``"market_supply"`` and ``"market_demand"`` per region
-                (length ``n_steps + 1``), and ``"events"``.
+                (length ``n_steps + 1``), ``"lifecycle"``
+                (``{product_id: [stage, ...]}``, length ``n_steps + 1``,
+                stage before the first transition then after each tick),
+                ``"events"``, and ``"supplier_fill_rate"`` (factory units
+                filled over units requested, or ``None`` when no factory
+                was asked for anything).
         """
-        # Capture step-0 snapshot before any tick.
+        # Capture step-0 snapshot before any tick. Lifecycle series includes
+        # the stage before the first transition, then the stage after each tick.
+        lifecycle_series: dict[str, list[str]] = {
+            pid: [stage] for pid, stage in self._sim.lifecycle.stages.items()
+        }
         step_series: list[int] = [0]
         date_series: list[Any] = [self._sim.market.current_date()]
         market_supply_series: dict[str, list[float]] = {
@@ -821,7 +880,16 @@ class Runner:
                 market_demand_series[r].append(
                     float(self._sim.market.market_state[r]["market_demand"])
                 )
+            for pid, stage in self._sim.lifecycle.stages.items():
+                lifecycle_series[pid].append(stage)
 
+        from src.sim.node import FactoryNode
+
+        factory_ids = {
+            node_id
+            for node_id, node in self._sim.nodes.items()
+            if isinstance(node, FactoryNode)
+        }
         return {
             "n_steps": self.scenario.n_steps,
             "ticks": ticks,
@@ -832,7 +900,9 @@ class Runner:
                 },
                 "market_supply": market_supply_series,
                 "market_demand": market_demand_series,
+                "lifecycle": lifecycle_series,
                 "events": {"occurrences": [None] * self.scenario.n_steps},
+                "supplier_fill_rate": _supplier_fill_rate(ticks, factory_ids),
             },
         }
 

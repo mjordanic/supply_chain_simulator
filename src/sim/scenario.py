@@ -19,6 +19,7 @@ This module also hosts authoring helpers:
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from collections import namedtuple
 from dataclasses import dataclass, field, fields
@@ -67,8 +68,12 @@ Ware = namedtuple(
         # allocation of the ``capacity * init_stock_pct`` budget across
         # initially active SKUs in ``init_store_state``.
         "init_stock_share",
+        # Optional per-SKU demand scale and coefficient of variation.
+        # ``None`` keeps the historical ``Uniform(2, 8)`` sink demand.
+        "demand_mean",
+        "demand_cv",
     ],
-    defaults=(None, None, None, None, None),
+    defaults=(None, None, None, None, None, None, None),
 )
 
 
@@ -159,6 +164,8 @@ def _ware_from_dict(d: Mapping[str, Any]) -> Ware:
         freshness_alpha=_deserialize(d.get("freshness_alpha")),
         freshness_decay=_deserialize(d.get("freshness_decay")),
         init_stock_share=_deserialize(d.get("init_stock_share")),
+        demand_mean=_deserialize(d.get("demand_mean")),
+        demand_cv=_deserialize(d.get("demand_cv")),
     )
 
 
@@ -335,8 +342,8 @@ class MarketParams:
 
     # Period of the seasonal sine wave in steps.
     cycle_len: int | Distribution
-    # Amplitude of the same wave.
-    cycle_amp: float | Distribution
+    # Amplitude of the same wave. Finite scalar with absolute value below 1.
+    cycle_amp: float
     # Step-0 demand / supply levels.
     init_demand: float
     init_supply: float
@@ -377,6 +384,24 @@ class MarketParams:
     supply_shock: Distribution
     # Base demand draw consumed once per (store, product, tick) in ``sample_demand``.
     base_demand: Distribution
+
+    def __post_init__(self) -> None:
+        """Reject a seasonal amplitude that can zero or negate the read-time multiplier.
+
+        The emitted cycle factor is ``1 + cycle_amp * sin(...)``. That factor
+        stays strictly positive for every step iff ``abs(cycle_amp) < 1``.
+        """
+        amp = self.cycle_amp
+        if isinstance(amp, bool) or not isinstance(amp, (int, float)):
+            amp_f = None
+        else:
+            amp_f = float(amp)
+        if amp_f is None or not math.isfinite(amp_f) or abs(amp_f) >= 1.0:
+            raise ValueError(
+                "MarketParams.cycle_amp must be a finite float with absolute "
+                "value below 1 so 1 + cycle_amp * sin(2π * step / cycle_len) "
+                f"stays positive; got {amp!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Recursive ``_serialize`` over every field."""
@@ -526,6 +551,8 @@ class Scenario:
                 "init_stage": w.init_stage,
                 "stage_change_probs": w.stage_change_probs,
                 "init_stock_share": w.init_stock_share,
+                "demand_mean": w.demand_mean,
+                "demand_cv": w.demand_cv,
                 "related_products": list(w.related_products),
             }
             for w in self.catalog
