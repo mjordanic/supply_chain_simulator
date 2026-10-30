@@ -1,7 +1,10 @@
 # Notebooks
 
-A guided tour of the simulator. Every notebook runs **offline** against the committed
-setup directories or a small synthetic catalog — no API key, no GPU. Run any of them with:
+A guided tour of the simulator. Notebooks 00–06 run **offline** against the committed
+setup directories or a small synthetic catalog — no API key, no GPU. The analysis
+companions (05a, 06a) and notebooks 10–15 read saved runs under the gitignored `runs/`
+directory, and the M5 notebooks need the raw Kaggle files under `data/m5/`; each says
+what it needs. Run any of them with:
 
 ```bash
 uv run jupyter lab            # then open a notebook
@@ -18,7 +21,7 @@ regardless of where the kernel launches. Generated artifacts land under
 | 00 | [`00-setup-directories.ipynb`](00-setup-directories.ipynb) | Anatomy of a **setup directory** (`catalog.csv` + `setup.yaml`); inspect catalog, nodes, edges, market; draw the DAG; author a new setup by scaffolding or round-tripping a `Scenario`. |
 | 01 | [`01-generate-with-llm.ipynb`](01-generate-with-llm.ipynb) | Generate a catalog + market from a one-word domain prompt with the **LLM world generator** (gated on `OPENAI_API_KEY`); shows the on-disk output format and how to turn it into a runnable setup. |
 | 02 | [`02-run-and-inspect.ipynb`](02-run-and-inspect.ipynb) | Run a simulation and **inspect every output**: run-log anatomy, per-tier cash/inventory/equity, market supply/demand, per-product series, and the exported parquet/JSON/PNG. |
-| 02a | [`02a-inspect-a-saved-run.ipynb`](02a-inspect-a-saved-run.ipynb) | Load a **saved run** from disk (a `main.py run` output) and inspect it without re-running — rebuild the `Scenario` from the config snapshot, replay the inspect helpers, scorecard the run, and reconcile the exported parquet against the run log. Read-only; pairs with 02. |
+| 02a | [`02a-inspect-a-saved-run.ipynb`](02a-inspect-a-saved-run.ipynb) | Load a **saved run** from disk (a `main.py run` output) and inspect it without re-running — rebuild the `Scenario` from the config snapshot, replay the inspect helpers, scorecard the run, and reconcile the exported parquet against the run log. Never overwrites a run directory you supply (it regenerates only the default demo run); pairs with 02. |
 | 03 | [`03-topology-gallery.ipynb`](03-topology-gallery.ipynb) | Build, draw, run, and compare several **DAG topologies** — linear chain, supplier contention, fan-out, and a **lateral cross-stocking** peer link (`intermediate → intermediate`) — on shared KPIs. |
 | 04 | [`04-policy-comparison.ipynb`](04-policy-comparison.ipynb) | Compare the four **textbook inventory policies** head-to-head under Common Random Numbers (same world, only the policy changes). |
 | 05 | [`05-tune-a-policy.ipynb`](05-tune-a-policy.ipynb) | Tune a policy with **Optuna**; inspect the trial trajectory, parameter sensitivity, and the best-trial parameters. |
@@ -28,6 +31,10 @@ regardless of where the kernel launches. Generated artifacts land under
 | 09 | [`09-jepa-train-and-plan.ipynb`](09-jepa-train-and-plan.ipynb) | Smoke **latent replenishment** walkthrough: a small transition log, a fit, and one `decide` (covers, priority ration, order). Published commands are in the root README. |
 | 10 | [`10-jepa-synthetic-eval.ipynb`](10-jepa-synthetic-eval.ipynb) | Plot the synthetic generalisation tables, floors and oracle ceiling, rollout curve, capacity and data-scaling curves, and the holding-rate sweep. Prints the published eval command when `runs/jepa-replenishment/synthetic/` is absent. |
 | 11 | [`11-jepa-m5.ipynb`](11-jepa-m5.ipynb) | **M5 replay exam** for the latent planner: slice rule, zero-shot row, adaptation row. Skips with the Kaggle download and the slice rule when raw files are absent. |
+| 12 | [`12-jepa-drilldown.ipynb`](12-jepa-drilldown.ipynb) | **Drill into a JEPA fit** on a short log: the `LatentDynamics` modules `fit_latent` builds, its training loss, and the logged buyer, planner and tuned order-up-to rule deciding on the same held-out observations. Writes under `runs/jepa-drilldown/`. |
+| 13 | [`13-jepa-training-log.ipynb`](13-jepa-training-log.ipynb) | Load the published **transition log** (`runs/jepa-replenishment/log/transitions.parquet`) with the fit's holdout split, and count reorders and arrivals per episode. |
+| 14 | [`14-jepa-validation-decisions.ipynb`](14-jepa-validation-decisions.ipynb) | Replay the latent fit's **validation episodes** and record, per observation, the order the planner and each textbook rule would send. Needs `runs/jepa-replenishment/`; about five minutes per episode. |
+| 15 | [`15-perfect-supplier.ipynb`](15-perfect-supplier.ipynb) | **Perfect-supplier** experiment (ADR 0033): the JEPA planner and its ablations vs tuned textbook and EOQ rules in a one-shop world where only demand is uncertain, plus the `one_product` and `no_fee` variants. Re-running needs `runs/perfect-supplier*/` (commands in `src/perfect_supplier/README.md`). |
 | M5 | [`m5_replay_example.ipynb`](m5_replay_example.ipynb) | End-to-end **M5 real-demand replay**: raw Kaggle files → quality report → invented upstream (factory + CA DC) → emitted CA shops → replay sinks → (s,S) policy run → exact-replay assertion → event-overlay plot → `PriceReplayPolicy` variant. Exits gracefully when raw files are absent. |
 
 Start at **00** for the core model, then branch wherever your interest is.
