@@ -1,7 +1,10 @@
 # Notebooks
 
-A guided tour of the simulator. Every notebook runs **offline** against the committed
-setup directories or a small synthetic catalog — no API key, no GPU. Run any of them with:
+A guided tour of the simulator. Notebooks 00–06 run **offline** against the committed
+setup directories or a small synthetic catalog — no API key, no GPU. The analysis
+companions (05a, 06a) and notebooks 10–15 read saved runs under the gitignored `runs/`
+directory, and the M5 notebooks need the raw Kaggle files under `data/m5/`; each says
+what it needs. Run any of them with:
 
 ```bash
 uv run jupyter lab            # then open a notebook
@@ -28,6 +31,10 @@ regardless of where the kernel launches. Generated artifacts land under
 | 09 | [`09-jepa-train-and-plan.ipynb`](09-jepa-train-and-plan.ipynb) | Smoke **latent replenishment** walkthrough: a small transition log, a fit, and one `decide` (covers, priority ration, order). Published commands are in the root README. |
 | 10 | [`10-jepa-synthetic-eval.ipynb`](10-jepa-synthetic-eval.ipynb) | Plot the synthetic generalisation tables, floors and oracle ceiling, rollout curve, capacity and data-scaling curves, and the holding-rate sweep. Prints the published eval command when `runs/jepa-replenishment/synthetic/` is absent. |
 | 11 | [`11-jepa-m5.ipynb`](11-jepa-m5.ipynb) | **M5 replay exam** for the latent planner: slice rule, zero-shot row, adaptation row. Skips with the Kaggle download and the slice rule when raw files are absent. |
+| 12 | [`12-jepa-drilldown.ipynb`](12-jepa-drilldown.ipynb) | **Drill into a JEPA fit** on a short log: the `LatentDynamics` modules `fit_latent` builds, its training loss, and the logged buyer, planner and tuned order-up-to rule deciding on the same held-out observations. Writes under `runs/jepa-drilldown/`. |
+| 13 | [`13-jepa-training-log.ipynb`](13-jepa-training-log.ipynb) | Load the published **transition log** (`runs/jepa-replenishment/log/transitions.parquet`) with the fit's holdout split, and count reorders and arrivals per episode. |
+| 14 | [`14-jepa-validation-decisions.ipynb`](14-jepa-validation-decisions.ipynb) | Replay the latent fit's **validation episodes** and record, per observation, the order the planner and each textbook rule would send. Needs `runs/jepa-replenishment/`; about five minutes per episode. |
+| 15 | [`15-perfect-supplier.ipynb`](15-perfect-supplier.ipynb) | **Perfect-supplier** experiment (ADR 0033): the JEPA planner and its ablations vs tuned textbook and EOQ rules in a one-shop world where only demand is uncertain, plus the `one_product` and `no_fee` variants. Re-running needs `runs/perfect-supplier*/` (commands in `src/perfect_supplier/README.md`). |
 | M5 | [`m5_replay_example.ipynb`](m5_replay_example.ipynb) | End-to-end **M5 real-demand replay**: raw Kaggle files → quality report → invented upstream (factory + CA DC) → emitted CA shops → replay sinks → (s,S) policy run → exact-replay assertion → event-overlay plot → `PriceReplayPolicy` variant. Exits gracefully when raw files are absent. |
 
 Start at **00** for the core model, then branch wherever your interest is.
