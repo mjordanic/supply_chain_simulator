@@ -2,9 +2,10 @@
 
 A guided tour of the simulator. Notebooks 00–06 run **offline** against the committed
 setup directories or a small synthetic catalog — no API key, no GPU. The analysis
-companions (05a, 06a) and notebooks 10–15 read saved runs under the gitignored `runs/`
+companions (05a, 06a) and notebooks 10 and 13–15 read saved runs under the gitignored `runs/`
 directory, and the M5 notebooks need the raw Kaggle files under `data/m5/`; each says
-what it needs. Run any of them with:
+what it needs. Notebooks 09–14 are the earlier latent-replenishment study on the full
+engine (`src/jepa/`); 15 is the perfect-supplier experiment that followed it. Run any of them with:
 
 ```bash
 uv run jupyter lab            # then open a notebook
@@ -34,7 +35,7 @@ regardless of where the kernel launches. Generated artifacts land under
 | 12 | [`12-jepa-drilldown.ipynb`](12-jepa-drilldown.ipynb) | **Drill into a JEPA fit** on a short log: the `LatentDynamics` modules `fit_latent` builds, its training loss, and the logged buyer, planner and tuned order-up-to rule deciding on the same held-out observations. Writes under `runs/jepa-drilldown/`. |
 | 13 | [`13-jepa-training-log.ipynb`](13-jepa-training-log.ipynb) | Load the published **transition log** (`runs/jepa-replenishment/log/transitions.parquet`) with the fit's holdout split, and count reorders and arrivals per episode. |
 | 14 | [`14-jepa-validation-decisions.ipynb`](14-jepa-validation-decisions.ipynb) | Replay the latent fit's **validation episodes** and record, per observation, the order the planner and each textbook rule would send. Needs `runs/jepa-replenishment/`; about five minutes per episode. |
-| 15 | [`15-perfect-supplier.ipynb`](15-perfect-supplier.ipynb) | **Perfect-supplier** experiment (ADR 0033): the JEPA planner and its ablations vs tuned textbook and EOQ rules in a one-shop world where only demand is uncertain, plus the `one_product` and `no_fee` variants. Re-running needs `runs/perfect-supplier*/` (commands in `src/perfect_supplier/README.md`). |
+| 15 | [`15-perfect-supplier.ipynb`](15-perfect-supplier.ipynb) | **Perfect-supplier** experiment (ADR 0033): the JEPA planner and its ablations vs tuned textbook and EOQ rules in a one-shop world where only demand is uncertain, plus the `one_product` and `no_fee` variants. Stored outputs are the pre-harness result; newer results are in `experiments/reports/`. Re-running needs `runs/perfect-supplier*/` (commands in `src/perfect_supplier/README.md`). |
 | M5 | [`m5_replay_example.ipynb`](m5_replay_example.ipynb) | End-to-end **M5 real-demand replay**: raw Kaggle files → quality report → invented upstream (factory + CA DC) → emitted CA shops → replay sinks → (s,S) policy run → exact-replay assertion → event-overlay plot → `PriceReplayPolicy` variant. Exits gracefully when raw files are absent. |
 
 Start at **00** for the core model, then branch wherever your interest is.
