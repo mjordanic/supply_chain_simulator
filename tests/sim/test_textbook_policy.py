@@ -1282,3 +1282,54 @@ def test_safety_pct_of_lag_monotonic_in_safety():
         f"safety_lead_pct_of_lag=3.0 should produce >= orders than 1.0. "
         f"orders_1={orders_1}, orders_3={orders_3}"
     )
+
+
+@pytest.mark.parametrize("family", ["periodic_order_up_to", "periodic_reorder"])
+def test_periodic_review_longer_than_lag_keeps_reordering(family):
+    """R > lag + safety must not starve the rate estimate into a death spiral.
+
+    three_node_chain, lag 2, R = 7, 60 ticks. With a lead-time-only demand
+    window the shelf is empty for the whole window at every review, so the
+    rate estimate is 0, S = 0 and shop-1 never reorders after its opening
+    stock runs out (net profit 159 on the demo knobs). Averaging over the
+    full review cycle keeps the post-delivery sales in the estimate.
+    """
+    from src.sim.policy_registry import build_policy
+    from src.sim.setup_io import _derive_node_seed, load_setup
+
+    scenario = load_setup("setups/three_node_chain")
+    scenario.n_steps = 60
+    shop = next(ni.node for ni in scenario.nodes if ni.node.id == "shop-1")
+    policy = build_policy(
+        family,
+        {"cover_horizon_ticks": 10, "safety_lead_pct_of_lag": 1 / 3, "review_interval": 7},
+        node=shop,
+        edges=scenario.edges,
+        policy_seed=_derive_node_seed(scenario.world_seed, "shop-1", "policy"),
+    )
+    run_log = Runner(scenario, policy_overrides={"shop-1": policy}).run()
+
+    order_ticks = [t["tick"] for t in run_log["ticks"] if t["node_orders"].get("shop-1")]
+    assert len(order_ticks) >= 4, f"{family} stopped reordering: orders at {order_ticks}"
+    assert all(tick % 7 == 0 for tick in order_ticks)
+    if family == "periodic_order_up_to":
+        # (R, S) orders on every review tick.
+        assert order_ticks == list(range(7, 60, 7))
+
+
+def test_demand_window_spans_review_interval_for_periodic_families_only():
+    """Periodic families average over max(lag, R); continuous ones over lag."""
+    from src.sim.policy import (
+        _OrderUpToCore,
+        _PeriodicOrderUpToCore,
+        _PeriodicReorderCore,
+        _ReorderPointCore,
+    )
+
+    assert _OrderUpToCore()._demand_window(2) == 2
+    assert _ReorderPointCore()._demand_window(2) == 2
+    for core in (_PeriodicOrderUpToCore, _PeriodicReorderCore):
+        assert core(review_interval=7)._demand_window(2) == 7
+        assert core(review_interval=1)._demand_window(3) == 3
+        # Default R = lag ⇒ unchanged lead-time window.
+        assert core()._demand_window(3) == 3

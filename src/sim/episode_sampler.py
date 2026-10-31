@@ -10,6 +10,9 @@ the others:
   - ``capacity_seed``   — store capacity draw
   - ``balance_seed``    — opening cash draw
   - ``world_seed``      — ``Scenario.world_seed`` (drives all world-side RNG)
+  - ``lifecycle``       — per-episode stage table and per-SKU initial stages
+  - ``delivery_lag``    — nominal lead time when the tuning config does not pin it
+  - ``supply``          — per-SKU supplier production, opening stock, and markup
 
 RL adds a fifth ``slot`` stream in ``src.rl.episode_sampler``; the slot
 stream and ``slot_permutation`` are RL-observation-encoder concerns and
@@ -81,6 +84,16 @@ _SUB_SEED_PARAMS: dict[str, tuple[int, int]] = {
     "world":      (0x27D4_EB2F, 0x0000_0004),
     "init_stock": (0x85EB_CA6B, 0x0000_0006),
     "allocation": (0xA24B_AED4, 0x0000_0007),
+    # Parameter draws for one episode's lifecycle. Transition draws during
+    # the run use the same purpose off ``world_seed``, per SKU.
+    "lifecycle":  (0x1656_67B1, 0x0000_000B),
+    # Nominal delivery lag and per-supplier scarcity for one tuning episode.
+    # RL does not read these purposes.
+    "delivery_lag": (0xC2B2_AE3D, 0x0000_000D),
+    "supply":       (0x27BB_2EE6, 0x0000_000F),
+    # Capacity tightness, then cash tightness, on one stream.
+    # RL does not read this purpose.
+    "tightness":    (0x85EB_CA77, 0x0000_0013),
 }
 _MASK_32 = 0xFFFF_FFFF
 
@@ -101,13 +114,14 @@ def _derive_seed(episode_seed: int, purpose: str) -> int:
 
 
 def default_market_params() -> MarketParams:
-    """Return a sensible ``MarketParams`` for synthetic/fallback episodes.
+    """Return ``MarketParams`` for synthetic episodes.
 
-    All fields are kept simple (scalar or low-variance distributions) so
-    the training signal is dominated by the store's pricing / ordering
-    decisions, not by exotic market dynamics.
+    ``demand_shock`` and ``trend`` are wide enough that two world seeds
+    produce different demand paths, and narrow enough that the level does
+    not sit on a clamp. The seasonal cycle is applied when the demand
+    factor is read, not inside the level update.
     """
-    from src.sim.distributions import Constant, Normal, Uniform
+    from src.sim.distributions import Normal, Uniform
 
     return MarketParams(
         cycle_len=365,
@@ -136,8 +150,8 @@ def default_market_params() -> MarketParams:
         cross_inv_lo=0.3,
         cross_inv_hi=0.7,
         cross_factor_range=(0.3, 1.6),
-        trend=Constant(1.0),
-        demand_shock=Normal(0.0, 0.01),
+        trend=Uniform(0.997, 1.003),
+        demand_shock=Normal(0.0, 0.02),
         supply_shock=Normal(0.0, 0.01),
         base_demand=Uniform(2, 8),
     )
@@ -157,7 +171,12 @@ def default_disruption_params() -> DisruptionParams:
 
 
 def default_lifecycle_params() -> ItemLifecycleParams:
-    """Return default ``ItemLifecycleParams`` (maturity, zero-transition)."""
+    """Return inert ``ItemLifecycleParams`` (maturity, zero-transition).
+
+    Sampled episodes do not use this. ``sample_episode_lifecycle`` draws
+    a fresh table and per-SKU initial stages. Callers that pass this
+    object explicitly keep the inert lifecycle.
+    """
     stages = ["introduction", "growth", "maturity", "decline", "dead"]
     return ItemLifecycleParams(
         stages=stages,
@@ -166,9 +185,82 @@ def default_lifecycle_params() -> ItemLifecycleParams:
     )
 
 
+def _mix_seed(seed: int, product_id: str, salt: int) -> int:
+    """Mix a sub-seed with a product id. One SKU's stream does not shift another's."""
+    acc = salt & _MASK_32
+    for char in product_id:
+        acc = (acc * 131 + ord(char)) & _MASK_32
+    return (seed * 0x9E37_79B1 + acc) & _MASK_32
+
+
+# Bounds for the per-episode lifecycle table. ``dead`` is rarer than the
+# other stages. Authored per-SKU tables are scaled by one episode draw.
+LIFECYCLE_DEAD_PROB_LOW = 0.0
+LIFECYCLE_DEAD_PROB_HIGH = 0.008
+LIFECYCLE_OTHER_PROB_LOW = 0.008
+LIFECYCLE_OTHER_PROB_HIGH = 0.03
+LIFECYCLE_RATE_SCALE_LOW = 0.5
+LIFECYCLE_RATE_SCALE_HIGH = 1.5
+
+
+def sample_episode_lifecycle(catalog: list, episode_seed: int):
+    """Draw this episode's lifecycle table and per-SKU initial stages.
+
+    The caller's ``catalog`` is not mutated. Wares that already author
+    ``stage_change_probs`` keep those rates, scaled by one episode-level
+    draw, so SKU identity still carries lifecycle behaviour. Wares without
+    a table share the episode table. ``init_stage`` is drawn per SKU when
+    the ware does not set one.
+
+    Returns ``(ItemLifecycleParams, catalog)`` with scalar probabilities
+    and string stages. The draw uses only the ``lifecycle`` sub-seed.
+    """
+    from random import Random
+
+    from src.sim.distributions import Distribution
+    from src.sim.scenario import CANONICAL_STAGES, Ware
+
+    seed = _derive_seed(episode_seed, "lifecycle")
+    rng = Random(seed)
+    stages = list(CANONICAL_STAGES)
+    table: dict[str, float] = {}
+    for stage in stages:
+        if stage == "dead":
+            table[stage] = rng.uniform(LIFECYCLE_DEAD_PROB_LOW, LIFECYCLE_DEAD_PROB_HIGH)
+        else:
+            table[stage] = rng.uniform(LIFECYCLE_OTHER_PROB_LOW, LIFECYCLE_OTHER_PROB_HIGH)
+    scale = rng.uniform(LIFECYCLE_RATE_SCALE_LOW, LIFECYCLE_RATE_SCALE_HIGH)
+    params = ItemLifecycleParams(
+        stages=stages,
+        init_stage="maturity",
+        default_stage_change_probs=dict(table),
+    )
+    resolved: list[Ware] = []
+    for ware in catalog:
+        sku_rng = Random(_mix_seed(seed, ware.product_id, 3))
+        if ware.init_stage is None:
+            init_stage = sku_rng.choice(stages)
+        elif isinstance(ware.init_stage, Distribution):
+            init_stage = ware.init_stage.sample(sku_rng)
+        else:
+            init_stage = ware.init_stage
+        if ware.stage_change_probs is None:
+            probs = dict(table)
+        else:
+            probs = {}
+            for stage, raw in ware.stage_change_probs.items():
+                value = raw.sample(sku_rng) if isinstance(raw, Distribution) else raw
+                probs[stage] = min(0.5, max(0.0, float(value) * scale))
+        resolved.append(
+            ware._replace(init_stage=str(init_stage), stage_change_probs=probs)
+        )
+    return params, resolved
+
+
 __all__ = [
     "EpisodeSpec",
     "default_market_params",
     "default_disruption_params",
     "default_lifecycle_params",
+    "sample_episode_lifecycle",
 ]

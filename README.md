@@ -41,8 +41,9 @@ setup requires an API key.
 ## Light web demo
 
 [`src/web/`](src/web/) is a **small, limited visual representation** of the simulator:
-two canned graphs, four textbook inventory policies on `shop-1`, and a short
-Common-Random-Numbers (CRN) run. It is the same `Runner` as `main.py run`, not a
+three canned graphs, four textbook inventory policies on `shop-1`, and a short
+Common-Random-Numbers (CRN) run. It opens on the default comparison, reruns as soon as a
+knob changes, and the address bar encodes every knob, so a link reproduces a run. It is the same `Runner` as `main.py run`, not a
 second engine. The rest of the repo — custom DAGs, the LLM world generator, Optuna,
 PPO / `RLNodePolicy`, M5 demand replay, notebooks, and parquet exports — is not in
 this UI.
@@ -51,25 +52,26 @@ this UI.
 
 **Full project:** [github.com/mjordanic/supply_chain_simulator](https://github.com/mjordanic/supply_chain_simulator)
 
-![Streamlit policy lab after Compare](docs/images/web_demo_policy_lab.png)
+![Streamlit policy lab on the two-shop preset, opened from a shared link](docs/images/web_demo_policy_lab.png)
 
 ### What it simulates
 
 
 | Piece          | In this demo                                                                                                                                          |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Graphs         | `setups/three_node_chain` (factory → shop → sink) and `setups/demo_two_suppliers` (cheap/slow + fast/pricey factories → shop-1 → sink). One SKU each. |
-| Policy overlay | Only **shop-1** is swapped. Factories and the sink keep the setup policies.                                                                           |
+| Graphs         | `setups/three_node_chain` (factory → shop → sink), `setups/demo_two_suppliers` (cheap/slow + fast/pricey factories → shop-1 → sink), and `setups/two_factories_two_shops` (the same two factories feed shop-1 and shop-2, which compete). One SKU each. |
+| Policy overlay | Only **shop-1** is swapped. Factories, sinks, and shop-2 keep the setup policies.                                                                     |
 | Families       | `(s,S)` `OrderUpToPolicy`, `(s,Q)` `ReorderPointPolicy`, `(R,S)` `PeriodicOrderUpToPolicy`, `(R,s,S)` `PeriodicReorderPolicy`                         |
-| World knobs    | `world_seed`, `n_steps` (capped at 60), sink demand mean, seasonal `cycle_amp` (period locked at 20 ticks), disruptions on/off                        |
-| Policy knobs   | safety fraction `k` (moves s), cover horizon `H = S − s` in ticks (moves S), batch `Q`, review interval `R`                                           |
-| Output         | shop-1 scorecard, Plotly DAG playback of one finished run, cash & inventory series for every selected family                                          |
+| World knobs    | Seed (`world_seed`), Days (`n_steps`, capped at 60), customer demand mean, Seasonal swing (`cycle_amp`, period locked at 20 days), disruptions on/off (a demand slump in these graphs) |
+| Policy knobs   | safety fraction `k` (moves s), cover horizon `H = S − s` in ticks (moves S), batch `Q`, review interval `R` (default 3)                               |
+| Output         | shop-1 scorecard (net profit, fill rate vs customer demand, days empty, ...), shop-2 results on the two-shop graph, network playback of any selected policy (Play / Pause / day slider), cash & stock series with one fixed colour per policy, and an on-demand **Is it luck?** sweep: the same settings on 30 worlds (seeds 0–29), each rule's paired profit gap vs `(s,S)` with a bootstrap 95% CI and a wins-out-of-30 count |
 
 
 Lead time is **on the graph edges**, not a slider: 2 ticks factory→shop on the linear
-chain; 4 / 2 ticks from the cheap / fast factories on the dual-supplier graph; 1 tick
-shop→sink on both. Unmet demand is a lost sale. Compare shares one `world_seed`
-across families so scorecard gaps are the policy, not luck.
+chain; 4 / 2 ticks from the cheap / fast factories on the dual-supplier and two-shop
+graphs; 1 tick shop→sink on all three. Unmet demand is a lost sale. Every selected family
+shares one `world_seed`, so scorecard gaps are the policy, not luck. A different seed can
+flip the ranking; the **Is it luck?** button shows whether a gap holds across 30 worlds.
 
 Not exposed: graph editing, elasticity / promo / trend, catalog and prices, factory
 policy, live `Simulation.tick()` streaming, RL, LLM, M5, or parquet download.
@@ -83,8 +85,8 @@ uv sync --group web
 uv run --group web streamlit run src/web/app.py
 ```
 
-Opens [http://localhost:8501](http://localhost:8501). Click **Compare** after choosing
-a preset and knobs.
+Opens [http://localhost:8501](http://localhost:8501) on the default comparison; it reruns
+whenever a knob changes. `.streamlit/config.toml` hides Streamlit's developer menu.
 
 ### Cloud Run
 
@@ -99,7 +101,7 @@ gcloud run deploy supply-chain-demo \
   --image IMAGE \
   --region europe-west1 \
   --memory 1Gi --cpu 1 \
-  --concurrency 1 --min-instances 0 --max-instances 2 \
+  --concurrency 80 --min-instances 0 --max-instances 2 \
   --timeout 60 --port 8080 --allow-unauthenticated
 ```
 
@@ -169,6 +171,7 @@ setups/
                            (4 nodes; the Streamlit demo's second preset)
   two_factories_two_shops/ runnable: 2 factories + 2 shops + 2 sinks; both shops compete
                            for inventory from a cheap-but-slow and a premium-but-fast factory
+                           (the Streamlit demo's third preset)
   fashion_retail/          LLM-generated catalog (185 SKUs, 6 categories) + market block.
                            Training data for the RL stack — no nodes/edges, so not a
                            `main.py run` target until you scaffold a topology onto it
@@ -291,10 +294,12 @@ Full reference: [`src/llm/README.md`](src/llm/README.md)
 ### Hyperparameter tuning (`src/tuning/`)
 
 An Optuna-based hyperparameter search for any policy. Each trial runs the policy across a fixed
-set of seeded episodes spanning two orders of magnitude in node capacity, optimising mean profit
-per opening dollar. The top winners are re-checked on a separate held-out seed set with bootstrap
-confidence intervals. All four textbook policies have ready-made search spaces (including
-multi-supplier routing knobs); custom policies need a ~10-line callback. A tuned policy is an
+set of seeded episodes whose shelf and opening cash are sampled tightness multiples of that
+episode's demand, optimising mean profit per opening dollar. The top winners are re-checked on a
+separate held-out seed set with bootstrap confidence intervals. All four textbook policies have
+ready-made search spaces. Routing and the minimum-order floor are pinned to cheapest-first
+routing and a zero floor, and the cold-start fraction is pinned at half of cash. Custom policies
+need a ~10-line callback. A tuned policy is an
 ordinary `IntermediatePolicy` — attach it to any node with `Runner(..., policy_overrides=...)`.
 
 ![Pareto front: profit vs service level](docs/images/tuning_pareto_front.png)

@@ -8,7 +8,7 @@ In the multi-echelon graph, demand is initiated by `DemandSinkNode` actors, not 
 
 **Decision — Move demand sampling into `DemandSinkNode.demand_target` and shrink `Market` to a pure multiplier engine.**
 
-**New `Market` contract.** `Market.demand_multiplier(pid, region, tick) -> float` returns the combined float multiplier: `seasonality(pid, tick) × regional_shock(region, tick) × active_disruption_multiplier(pid, region, tick)`. It does not draw from `world_rng`; it reads the current market state that `market.tick()` already advanced. `market.tick()` continues to advance per-region demand/supply state, cycle, trend (existing math unchanged). `ItemRegistry`, `EventEngine`, `freshness_curve`, and `lifecycle_clock` are unchanged.
+**New `Market` contract.** `Market.demand_multiplier(pid, region, tick) -> float` returns the combined float multiplier: `seasonality(pid, tick) × regional_shock(region, tick) × active_disruption_multiplier(pid, region, tick)`. It does not draw from `world_rng`; it reads the current market state that `market.tick()` already advanced. `market.tick()` advances per-region demand/supply state and trend. The seasonal cycle is a read-time multiplier on the demand level, not a term in that update (ADR 0030 supersedes the earlier "cycle is part of the stored update" math). `ItemRegistry`, `EventEngine`, `freshness_curve`, and `lifecycle_clock` are unchanged.
 
 **`DemandSinkNode.demand_target` composition.** Each tick, a sink's demand target is:
 

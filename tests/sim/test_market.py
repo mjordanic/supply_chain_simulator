@@ -12,6 +12,7 @@ Pins the math-fidelity contract for ``Market``:
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from random import Random
 from types import SimpleNamespace
@@ -19,6 +20,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.sim.distributions import Constant, Normal
+from src.sim.episode_sampler import default_market_params
+from src.sim.event_engine import WorldEvent
 from src.sim.market import Market
 from src.sim.scenario import (
     MarketParams,
@@ -205,3 +208,168 @@ def test_cross_demand_factor_no_related_returns_one():
 
     store = _store_stub(active_items=["P0000"], inventory={"P0000": 50}, capacity=100.0)
     assert market.cross_demand_factor("P0000", store) == 1.0
+
+
+def test_market_params_rejects_cycle_amp_at_or_above_one():
+    """``|cycle_amp| >= 1`` would let the read-time multiplier hit zero or go negative."""
+    for amp in (1.0, 1.5, -1.0, -1.5, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="cycle_amp"):
+            _market_params(cycle_amp=amp)
+    with pytest.raises(ValueError, match="cycle_amp"):
+        _market_params(cycle_amp=Normal(0.0, 0.2))
+
+
+def test_market_params_accepts_cycle_amp_below_one():
+    params = _market_params(cycle_amp=0.999)
+    assert params.cycle_amp == pytest.approx(0.999)
+    params_neg = _market_params(cycle_amp=-0.5)
+    assert params_neg.cycle_amp == pytest.approx(-0.5)
+
+
+def test_demand_level_is_trend_and_shock_without_the_cycle():
+    """Zero shock and unit trend hold the level fixed; the sine is not integrated."""
+    market = _build_market(
+        cycle_len=4,
+        cycle_amp=0.5,
+        trend=Constant(1.0),
+        demand_shock=Constant(0.0),
+        supply_shock=Constant(0.0),
+        init_demand=1.0,
+    )
+    for _ in range(12):
+        market.tick()
+        for region in market.regions:
+            assert market.market_state[region]["market_demand"] == pytest.approx(1.0)
+
+
+def test_demand_multiplier_applies_the_seasonal_cycle_at_read_time():
+    """Emitted factor is the floored level times ``1 + cycle_amp * sin(2π step / cycle_len)``.
+
+    ``tick`` advances ``step`` before demand is read, so the first tick uses
+    step 1. ``cycle_len=4`` puts a sine of +1, 0, -1 on steps 1, 2, 3.
+    """
+    market = _build_market(
+        cycle_len=4,
+        cycle_amp=0.25,
+        trend=Constant(1.0),
+        demand_shock=Constant(0.0),
+        supply_shock=Constant(0.0),
+        init_demand=1.0,
+        peak_factor=1.0,
+        off_factor=1.0,
+        demand_factor_min=0.1,
+        regions=["US"],
+    )
+    assert market.demand_multiplier("P0000", "US") == pytest.approx(1.0)
+    market.tick()
+    assert market.state()["US"]["market_demand"] == pytest.approx(1.0)
+    assert market.demand_multiplier("P0000", "US") == pytest.approx(1.25)
+    market.tick()
+    assert market.demand_multiplier("P0000", "US") == pytest.approx(1.0)
+    market.tick()
+    assert market.demand_multiplier("P0000", "US") == pytest.approx(0.75)
+
+
+def test_disruption_shock_lands_on_the_level_not_the_stored_cycle():
+    """EventEngine writes the level. The cycle scales that level only when read."""
+    market = _build_market(
+        cycle_len=4,
+        cycle_amp=0.25,
+        trend=Constant(1.0),
+        demand_shock=Constant(0.0),
+        supply_shock=Constant(0.0),
+        init_demand=1.0,
+        peak_factor=1.0,
+        off_factor=1.0,
+        demand_factor_min=0.1,
+        regions=["US"],
+        min_value=0.2,
+    )
+    market.tick()
+    WorldEvent(
+        event_type="economic_crisis",
+        severity=0.1,
+        affected_regions=["US"],
+        duration=1,
+    ).apply(market)
+    assert market.state()["US"]["market_demand"] == pytest.approx(0.9)
+    assert market.demand_multiplier("P0000", "US") == pytest.approx(0.9 * 1.25)
+
+
+def test_emitted_demand_factor_stays_strictly_positive():
+    """Every amplitude the params accept keeps the emitted factor above zero."""
+    for amp in (0.0, 0.5, 0.999, -0.999):
+        market = _build_market(
+            cycle_len=16,
+            cycle_amp=amp,
+            trend=Constant(1.0),
+            demand_shock=Constant(0.0),
+            supply_shock=Constant(0.0),
+            init_demand=1.0,
+            peak_factor=1.2,
+            off_factor=0.7,
+            min_value=0.2,
+            regions=["US"],
+        )
+        for _ in range(16):
+            assert market.demand_multiplier("P0000", "US") > 0.0
+            market.tick()
+
+
+def _longest_clamp_run(values: list[float], lo: float, hi: float) -> int:
+    best = current = 0
+    for value in values:
+        if value <= lo or value >= hi:
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return best
+
+
+def test_default_world_seeds_diverge_without_parking_on_a_clamp():
+    """Widened shock and trend make seeds differ, without the old clamp collapse.
+
+    Divergence is the mean pairwise RMS of the demand-level paths. The old
+    ``Normal(0, 0.01)`` shock with a constant trend stays under 0.25 on this
+    seed panel; an extended pin is 20 or more consecutive ticks at a clamp.
+    """
+    n_steps = 365
+    params = default_market_params()
+    series: list[list[float]] = []
+    factor_tails: list[float] = []
+    for seed in range(8):
+        market = Market(params, Random(seed), datetime(2024, 1, 1))
+        levels: list[float] = []
+        factors: list[float] = []
+        for _ in range(n_steps):
+            market.tick()
+            levels.append(market.state()["US"]["market_demand"])
+            factors.append(market.demand_multiplier("P0000", "US"))
+        assert _longest_clamp_run(levels, params.min_value, params.max_value) < 20
+        second = levels[n_steps // 2 :]
+        assert sum(second) / len(second) > 0.5
+        tail = factors[n_steps // 2 :]
+        factor_tails.append(sum(tail) / len(tail))
+        # No catalog season, so the calendar factor is off_factor. Dividing it
+        # and the stored level out leaves the read-time cycle. Its swing is
+        # cycle_amp on every step, including while the level is moving.
+        for step, (level, factor) in enumerate(zip(levels, factors), start=1):
+            baseline = float(params.off_factor) * max(params.demand_factor_min, level)
+            expected = baseline * (
+                1.0 + params.cycle_amp * math.sin(2.0 * math.pi * step / params.cycle_len)
+            )
+            assert factor == pytest.approx(expected)
+        series.append(levels)
+
+    assert min(factor_tails) > 0.35
+
+    pair_rms: list[float] = []
+    for i in range(len(series)):
+        for j in range(i + 1, len(series)):
+            pair_rms.append(
+                math.sqrt(
+                    sum((a - b) ** 2 for a, b in zip(series[i], series[j])) / n_steps
+                )
+            )
+    assert sum(pair_rms) / len(pair_rms) > 0.25

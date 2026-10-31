@@ -188,11 +188,13 @@ class TestLoadCatalogAndMarketFromSetup:
 
 class TestMakeSyntheticCatalog:
     def test_default_size(self):
-        """Default call returns 100 products."""
+        """Default call returns the study catalog, a few hundred to a thousand SKUs."""
+        from src.tuning.config import TuningConfig
         from src.tuning.episode import make_synthetic_catalog
 
         catalog = make_synthetic_catalog()
-        assert len(catalog) == 100
+        assert len(catalog) == TuningConfig().K_catalog
+        assert 500 <= len(catalog) <= 1000
 
     def test_custom_size(self):
         """Custom n returns exactly n products."""

@@ -16,8 +16,8 @@ attached. Nodes are not frozen dataclasses — the simulation engine mutates run
 **FactoryNode** (`FactoryNode(Node)`, `src/sim/node.py`)
 Produces one product per tick in exchange for cash at manufacturing cost. Fields:
 `produces_product_id: str`, `unit_cost: float`, `capacity_per_tick: int | float | Distribution`,
-`inventory: int`, `list_price: float` (always == `unit_cost` per ADR 0013; zero-margin by
-construction). Factories are the entry point for inventory into the chain.
+`inventory: int`, `list_price: float` (equal to `unit_cost` on authored zero-margin
+factories, ADR 0013; the tuning episode sampler may set a markup, ADR 0031). Factories are the entry point for inventory into the chain.
 
 **IntermediateNode** (`IntermediateNode(Node)`, `src/sim/node.py`)
 Holds multi-product inventory, sets list prices, routes orders across multiple upstream suppliers.
@@ -143,25 +143,43 @@ variants to multi-supplier routing with `_split_across_suppliers`). See ADR 0006
 **TextbookReorderPolicy family** (`MultiSupplierTextbookPolicy(IntermediatePolicy)` abstract base + 4 concrete classes, `src/sim/policy.py`)
 Family of four reorder policies sharing one base class, re-rooted on `IntermediatePolicy` for the
 graph engine. The shared machinery: censored-sales rate estimator over a `delivery_lag`-length
-rolling window, two-pass fair-share allocator across capacity and cash pools, cash-budget
+rolling window (`max(delivery_lag, review_interval)` for the periodic variants, so a review cycle
+longer than the lead time cannot see only empty-shelf ticks and estimate zero demand), two-pass fair-share allocator across capacity and cash pools, cash-budget
 pilot-order cold-start, opt-in adaptive safety stock. Concrete variants: `OrderUpToPolicy` (s,S),
 `ReorderPointPolicy` (s,Q), `PeriodicOrderUpToPolicy` (R,S), `PeriodicReorderPolicy` (R,s,S).
-Multi-supplier routing via `_split_across_suppliers(pid, qty_total, suppliers, central_table)`:
-default strategy is cheapest-first with both min-order layers honoured, pluggable via
-`routing_strategy` constructor kwarg. `OrderUpToPolicy` remains the canonical CRN comparison
+On the graph engine the internal cash check and the pilot are priced at the cheapest direct
+supplier's `list_price`. The constructor `unit_cost` (default 1.0) is only the fallback when
+that supplier has not published an offer. Cold start: the first decision for a SKU with zero
+inventory position and a zero censored-sales rate orders
+`int(0.50 × cash / K_active / supplier_price)`, then the ration. `0.50` is `OPENING_BUDGET_PCT`.
+A first sighting that already has sales still pilots, because the textbook family does not
+trust a one-tick rate. Multi-supplier routing via
+`_split_across_suppliers(pid, qty_total, suppliers, central_table)`: default strategy is
+cheapest-first with both min-order layers honoured, pluggable via `routing_strategy`
+constructor kwarg. The tuner pins cheapest-first with `per_supplier_min_order_floor` 0.
+`OrderUpToPolicy` remains the canonical CRN comparison
 anchor for RL evaluation. See ADR 0006, ADR 0008.
 
 **Market** (`Market`, `src/sim/market.py`)
-Regional economic environment shared across nodes. Holds per-region demand/supply state, seasonal
-cycle, and trend drift. Provides `demand_multiplier(pid, region, tick) -> float` — bundles
-seasonality + regional shock + active disruption multipliers. `Market.tick()` advances per-region
-demand/supply state, cycle, trend. One Market per simulation run. See ADR 0015.
+Regional economic environment shared across nodes. Holds per-region demand and supply levels
+and a trend draw. The demand level updates as level × trend + shock, clamped to
+`[min_value, max_value]`. The seasonal cycle is not part of that update: `demand_multiplier`
+applies `1 + cycle_amp * sin(2π * step / cycle_len)` when the factor is read, and
+`MarketParams` rejects `abs(cycle_amp) >= 1`. Disruption shocks still write the stored level.
+`demand_multiplier(pid, region) -> float` bundles calendar seasonality, that cycle-scaled
+regional level, and any disruption already folded into the level. One Market per simulation
+run. See ADR 0015, ADR 0030.
 
 **Item** / **Ware** / **SKU**
 A product in the catalog. `Ware` is the static record (`product_id P####`, `name`, `category`,
 `base_price`, `unit_cost`, `seasonality`, `related_products`) plus optional per-product lifecycle
-and freshness authoring fields. The simulator samples demand per catalog product every tick for
-CRN cleanliness (ADR 0003).
+and freshness authoring fields, and optional `demand_mean` / `demand_cv` (the sink's demand
+scale and coefficient of variation; absent means `Uniform(2, 8)`). The simulator samples demand
+per catalog product every tick for CRN cleanliness (ADR 0003). Sampled tuner episodes draw a
+per-SKU initial stage when the ware does not set one. Wares with no stage-change table share
+one episode-sampled table; wares that author a table keep that identity, scaled by one
+episode-level draw. Each SKU then transitions on its own stream. The stage multiplier scales
+that SKU's demand.
 
 **EventEngine**
 Generates stochastic disruption events (natural_disaster, economic_crisis, political_unrest,
@@ -221,7 +239,8 @@ _Avoid_: delisting, deactivation (the engine has no such mechanism). See ADR 002
 **Run Log**
 Dict produced by `Runner.run()`. Top-level keys: `n_steps` (int), `ticks` (list of per-tick node
 snapshots with `node_cash`, `node_inventory`, `node_pending`, `node_orders`, and the always-on
-`rejections` stream — see **Rejection log**), `global` (market/event/lifecycle time-series).
+`rejections` stream — see **Rejection log**), `global` (market/event time-series and
+`lifecycle`, a `{product_id: [stage, ...]}` series of length `n_steps + 1`).
 Consumed by `DataExporter`.
 
 **CRN-paired eval**
@@ -233,11 +252,15 @@ computed paired per seed and averaged across held-out seeds. `OrderUpToPolicy` a
 unchanged since K is frozen within episodes. See ADR 0003, ADR 0006, ADR 0016, ADR 0021.
 
 **Policy tuning study** (`src/tuning/`)
-Optuna-based hyperparameter tuner for `MultiSupplierTextbookPolicy` and subclasses. New tunables:
-`per_supplier_min_order_floor` (int[0,10]) and `routing_strategy` (Categorical). Per-trial CRN
+Optuna-based hyperparameter tuner for `MultiSupplierTextbookPolicy` and subclasses. Routing
+strategy and `per_supplier_min_order_floor` are not sampled: every trial is pinned to
+cheapest-first and a zero floor. `opening_budget_pct` is pinned at 0.50, the shared cold-start
+fraction. Per-trial CRN
 tuple expanded to include the `allocation` sub-seed for bit-identical paired comparisons on the
 graph engine. The objective remains mean `net_profit / initial_cash`. Artifacts land at
-`runs/tuning/<study_name>/` as `trials.parquet` + `per_seed.parquet` + `study.json`. See ADR 0009.
+`runs/tuning/<study_name>/` as `trials.parquet` + `per_seed.parquet` + `study.json`.
+`study.json` and `holdout_summary.json` record the git SHA and the episode-distribution
+parameters the study was tuned against. See ADR 0009.
 
 **Run model — "policies attached to nodes"**
 Each Node has its own Policy (or `None`). A run binds a list of `NodeInstance(node, init_seed,
@@ -299,8 +322,9 @@ to inspect a graph scenario.
 **Distribution** (`src/sim/distributions.py`)
 Abstract base class with one method, `sample(rng) -> Any`, and five concrete implementations:
 `Constant(value)`, `Uniform(lo, hi)`, `Normal(mean, std)`, `Choice(options)`,
-`LogUniform(lo, hi)`. Used for domain-randomisation parameters (per-episode capacity, opening
-balance) and node construction fields. Typed, comparable, JSON-serialisable.
+`LogUniform(lo, hi)`. Used for domain-randomisation parameters (the RL episode's capacity
+and opening balance) and node construction fields. A tuning episode sizes those two pools
+from tightness factors instead (ADR 0032). Typed, comparable, JSON-serialisable.
 
 **Simulation** (`src/sim/runner.py`)
 Mutable bundle returned by `build_world(scenario, *, policy_overrides=None)`. Holds `(scenario,
@@ -316,14 +340,16 @@ two-phase tick API:
 - `tick() → TickResult` — convenience composing both phases.
 
 `allocation_rng` is a new `Random` stream derived via `_derive_seed(world_seed, "allocation")`
-(ADR 0016). `build_world` deep-copies nodes for multi-call safety.
+(ADR 0016). `build_world` deep-copies nodes and Scenario-owned policies for multi-call safety
+(override objects are used as-is).
 
 **Runner** (`src/sim/runner.py`)
 Owns the simulation loop. `Runner(scenario).run() → dict` builds all subsystems via `build_world`
 and runs the observe → decide → advance → log loop for `scenario.n_steps` ticks. Maintains the
 four-stream RNG split (`world_rng`, `allocation_rng`, one `policy_rng` per Policy, one `init_rng`
 per NodeInstance) that makes CRN comparison correct. Returns a run log with keys `n_steps`,
-`ticks`, `global`.
+`ticks`, `global`. `global.supplier_fill_rate` is factory units filled divided by factory units
+requested, or null when the episode requested nothing from a factory (ADR 0031).
 
 **DataExporter** (`src/sim/data_exporter.py`)
 Consumes a `Scenario` and a completed run log and writes: parquet time-series, parquet static
@@ -332,11 +358,31 @@ node/product tables, JSON config snapshot and run log, and a regional supply/dem
 (node table), `data/timeseries.parquet`, `reports/overview.png`. Public methods:
 `export_all(output_folder)` plus per-artifact saves.
 
-**Episode sampler** (`src/sim/episode_sampler.py`)
-Canonical home for `EpisodeSpec`, `sample_episode(...)`, and default-params factories. Sub-seed
-derivation: `sub = (episode_seed * PRIME + OFFSET) & 0xFFFF_FFFF`, one `(PRIME, OFFSET)` pair per
-purpose. Five sub-seeds for the graph-engine era: `assortment`, `capacity`, `balance`, `world`,
-and `allocation` (ADR 0016). RL adds a 6th `slot` stream in `src.rl.episode_sampler`.
+**Episode sampler** (`src/sim/episode_sampler.py`, `src/tuning/episode.py`)
+Sub-seed derivation: `sub = (episode_seed * PRIME + OFFSET) & 0xFFFF_FFFF`, one `(PRIME, OFFSET)`
+pair per purpose. Sim purposes: `assortment`, `capacity`, `balance`, `world`, `init_stock`,
+`allocation` (ADR 0016), `lifecycle`, `delivery_lag`, `supply`, and `tightness`. RL adds a
+`slot` stream in `src.rl.episode_sampler`. The tuning
+sampler draws a capacity tightness from `LogUniform(0.5, 6)` and a cash tightness from
+`LogUniform(0.02, 0.8)` unless both `capacity_dist` and `balance_dist` are set. Capacity
+is its factor times aggregate episode demand times a 14-tick cover (the cover is
+`14 / episode_length` of the episode total). Opening cash is its factor times aggregate
+episode demand valued at unit cost. The factors are separate draws: one shared factor
+would leave cash able to buy about twenty times the shelf on a year-long episode, so
+cash would never set the fill. They are stored on `TuningEpisodeSpec` and written as
+per-seed columns. An explicit distribution still overrides that pool. The tuning sampler draws `K`
+per episode from `[K_min, K_max_episode]` (default 1 through 30) unless `K_active` is pinned.
+It draws a nominal delivery lag from 2 through 6 unless `delivery_lag` is pinned. Each active
+SKU is supplied by three `FactoryNode`s (`F_<pid>_0` is fastest). Production per tick and
+opening inventory are sampled as multiples of that SKU's expected demand per tick, split
+across those suppliers, not as multiples of the shop's capacity. `list_price` is unit cost
+times one plus a sampled markup; a faster supplier lists higher. Edge lead times are the
+nominal lag, that lag plus 2, and that lag plus 4. Lifecycle parameter
+draws use the `lifecycle` sub-seed of the episode seed: a shared stage-change table, one scale
+on authored tables, and a per-SKU initial stage. Transition draws during the run use a per-SKU
+stream of that same purpose off `world_seed`, not `world_rng`.
+`make_synthetic_catalog` defaults to about 750 SKUs. RL still samples K from `[1, 20]` in
+`src/rl/episode_sampler.py` and still builds one zero-margin factory per SKU.
 
 **Metrics** (`src/sim/metrics.py`)
 Canonical home for `RunSlice`, `aggregate_episode(run_slice) -> dict[str, float]`, and five KPI
@@ -406,11 +452,11 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0006](docs/adr/0006-textbook-reorder-policy-family.md) — Textbook reorder-policy family replaces the heuristic baseline as the RL comparison anchor.
 - [ADR 0007](docs/adr/0007-rl-scale-invariance-package.md) — RL scale-invariance package: order-up-to action decoder, demand-units inventory feature, log-uniform domain randomisation.
 - [ADR 0008](docs/adr/0008-safety-horizons-as-fraction-of-delivery-lag.md) — Reparameterise textbook safety horizons as fractions of delivery lag (fix per-SKU mis-scaling).
-- [ADR 0009](docs/adr/0009-policy-hyperparameter-tuning-tool.md) — Policy hyperparameter tuning tool (Optuna-based).
+- [ADR 0009](docs/adr/0009-policy-hyperparameter-tuning-tool.md) — Policy hyperparameter tuning tool (Optuna-based). Decision (d)'s log-uniform capacity and balance for tuning episodes is replaced by ADR 0032.
 - [ADR 0010](docs/adr/0010-sim-as-base-for-ml-layers.md) — `src/sim/` is the canonical home for rollout primitives; `src/tuning/` and `src/rl/` are sibling consumers.
 - [ADR 0011](docs/adr/0011-multi-echelon-graph.md) — Multi-echelon DAG of typed nodes replaces the single-`Store` flat model. **Accepted.**
 - [ADR 0012](docs/adr/0012-central-table-fcfs-allocation.md) — Central table + sequential FCFS allocation with live offer-book mutation. **Accepted.**
-- [ADR 0013](docs/adr/0013-cash-flow-conservation.md) — Cash flow conservation: sinks create, ops destroy, inter-node trades transfer; factories are zero-margin. **Accepted.**
+- [ADR 0013](docs/adr/0013-cash-flow-conservation.md) — Cash flow conservation: sinks create, ops destroy, inter-node trades transfer; authored factories are zero-margin. **Accepted.** ADR 0031 samples a markup on tuning-episode factories.
 - [ADR 0014](docs/adr/0014-tick-phasing-cascade.md) — Tick phasing as upward cascade by echelon level (sinks → intermediates → factories). **Accepted — superseded by ADR 0018.**
 - [ADR 0015](docs/adr/0015-demand-sinks-market-multiplier.md) — Demand-sinks own demand sampling; `Market` shrinks to a multiplier engine (`demand_multiplier`). **Accepted.**
 - [ADR 0016](docs/adr/0016-allocation-rng-sub-seed.md) — `allocation` sub-seed added to CRN seeding contract; drives deterministic per-phase buyer shuffle. **Accepted.**
@@ -420,3 +466,6 @@ capacities, lead times). Called by `main.py scaffold`.
 - [ADR 0021](docs/adr/0021-variable-k-shared-weight-policy-with-deterministic-arbiter.md) — Variable-K RL: shared-weight per-product policy, deterministic arbiter owning capacity + cash, implicit assortment, no mid-episode churn. **Accepted — supersedes ADR 0004 Decision 2.**
 - [ADR 0022](docs/adr/0022-rl-policy-as-first-class-intermediate-policy-eval-via-runner.md) — `RLNodePolicy` as a first-class `IntermediatePolicy`; eval rebuilt on `Runner.run()`; Arbiter travels with the policy; eval-history discontinuity noted. **Accepted.**
 - [ADR 0023](docs/adr/0023-web-demo-cloud-run.md) — Streamlit CRN lab as a sibling `Runner` consumer; Cloud Run slim image (not Fargate, not full `uv sync`). **Accepted.**
+- [ADR 0030](docs/adr/0030-market-seasonal-cycle-read-time.md) — Seasonal cycle is a read-time multiplier on the demand level; `abs(cycle_amp) < 1`. Supersedes CRN baselines that depended on the integrated cycle. **Accepted.**
+- [ADR 0031](docs/adr/0031-supply-side-scarcity.md) — Tuning episodes have several factories per SKU, a sampled markup, demand-relative supply, and differing lead times. Realised supplier fill rate is on the run log. Routing stays a fixed setting. **Accepted.** Amends ADR 0013 rule 3 for those episodes.
+- [ADR 0032](docs/adr/0032-binding-tightness.md) — Tuning episodes size shop capacity and opening cash from separate tightness factors times episode demand. Both factors are per-seed columns. **Accepted.** Replaces ADR 0009 decision (d) for those episodes. RL keeps log-uniform scale draws.

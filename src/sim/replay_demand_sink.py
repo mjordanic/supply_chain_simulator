@@ -74,6 +74,7 @@ class ReplayDemandSinkNode(DemandSinkNode):
         market: "Market",
         catalog: "list[Ware]",
         world_rng: Random,
+        stage_factor: dict[str, float] | None = None,
     ) -> int:
         """Compute demand target using the replay series for this tick.
 
@@ -116,7 +117,8 @@ class ReplayDemandSinkNode(DemandSinkNode):
                 # increments before demand_target is called); map to 0-based
                 # series index.
                 base = float(self.series[tick - 1])
-                raw = base * market_mult
+                lifecycle = 1.0 if stage_factor is None else float(stage_factor.get(pid, 1.0))
+                raw = base * market_mult * lifecycle
                 result_for_product = max(0, int(raw))
 
         return result_for_product
