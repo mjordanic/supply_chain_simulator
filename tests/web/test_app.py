@@ -76,12 +76,16 @@ def test_bad_link_values_are_replaced_and_named_in_a_notice():
     assert at.query_params["steps"] == ["1"]
 
 
-def test_old_amp_links_still_work_and_are_rewritten_as_swing():
-    at = _app(amp="0.5").run()
+def test_crafted_link_values_show_as_plain_text_not_links_or_images():
+    at = _app(
+        preset="[Your account is locked](https://evil.example)",
+        policies="![x](https://tracker.example/p.png)",
+    ).run()
     assert not at.exception
-    assert at.slider(key="cycle_amp").value == 0.5
-    assert at.query_params["swing"] == ["0.5"]
-    assert "amp" not in at.query_params
+    notice = at.warning[0].value
+    assert "](" not in notice and "https://" not in notice
+    assert r"\[Your account is locked\]" in notice
+    assert r"\!\[x\]" in notice
 
 
 def test_two_shops_row_is_the_same_whatever_else_is_ticked():

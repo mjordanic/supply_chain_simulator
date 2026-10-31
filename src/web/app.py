@@ -190,7 +190,7 @@ def _identical_note(card: pd.DataFrame) -> str | None:
 
 # Sidebar knobs and their ``st.query_params`` names: (param, cast, lo, hi, default).
 # The address bar always holds the knobs of the run on screen, so a link
-# reproduces it. ``amp`` is the pre-rename name of ``swing``; old links still work.
+# reproduces it.
 KNOBS = {
     "world_seed": ("seed", int, 0, MAX_SEED, 42),
     "n_steps": ("steps", int, 1, MAX_N_STEPS, 30),
@@ -201,7 +201,13 @@ KNOBS = {
     "q_value": ("Q", int, 1, 80, 30),
     "review_interval": ("R", int, 1, 14, 3),
 }
-LEGACY_PARAMS = {"swing": "amp"}
+MARKDOWN_SPECIALS = set("\\`*_{}[]()<>#+-.!|~:$")
+
+
+def _shown(raw: str) -> str:
+    """A link value as plain text in a Markdown notice, cut to a short length."""
+    cut = raw if len(raw) <= 40 else raw[:40] + "…"
+    return "".join("\\" + c if c in MARKDOWN_SPECIALS else c for c in cut)
 
 
 def _seed_widgets_from_link() -> None:
@@ -218,11 +224,11 @@ def _seed_widgets_from_link() -> None:
     default_preset = next(iter(PRESETS))
     raw = q.get("preset")
     if raw is not None and raw not in by_slug:
-        notes.append(f"unknown preset “{raw}” → {default_preset}")
+        notes.append(f"unknown preset “{_shown(raw)}” → {default_preset}")
     st.session_state["preset"] = by_slug.get(raw, default_preset)
 
     for key, (param, cast, lo, hi, default) in KNOBS.items():
-        raw = q.get(param, q.get(LEGACY_PARAMS.get(param, "")))
+        raw = q.get(param)
         if raw is None:
             st.session_state[key] = default
             continue
@@ -231,23 +237,23 @@ def _seed_widgets_from_link() -> None:
         except ValueError:
             value = None
         if value is None or not math.isfinite(value):
-            notes.append(f"{param}={raw} is not a usable number → {default:g}")
+            notes.append(f"{param}={_shown(raw)} is not a usable number → {default:g}")
             value = default
         elif not lo <= value <= hi:
             value = min(hi, max(lo, value))
-            notes.append(f"{param}={raw} is outside {lo:g}–{hi:g} → {value:g}")
+            notes.append(f"{param}={_shown(raw)} is outside {lo:g}–{hi:g} → {value:g}")
         st.session_state[key] = value
 
     raw = q.get("disrupt")
     if raw not in (None, "0", "1"):
-        notes.append(f"disrupt={raw} is not 0 or 1 → off")
+        notes.append(f"disrupt={_shown(raw)} is not 0 or 1 → off")
     st.session_state["disruption"] = "On" if raw == "1" else "Off"
 
     raw = q.get("policies")
     chosen = list(TEXTBOOK_FAMILIES) if raw is None else raw.split(",")
     for name in chosen:
         if name and name not in TEXTBOOK_FAMILIES:
-            notes.append(f"unknown policy “{name}” ignored")
+            notes.append(f"unknown policy “{_shown(name)}” ignored")
     st.session_state["policies"] = [f for f in TEXTBOOK_FAMILIES if f in chosen]
     st.session_state["link_notes"] = notes
 
@@ -377,7 +383,8 @@ with st.sidebar:
         help=(
             f"When on, each day has a {DISRUPTION_ON_PROB:.0%} chance that a "
             f"{DISRUPTION_DURATION}-day disruption starts. While it lasts it pushes "
-            f"customer demand down (by {DISRUPTION_SEVERITY} per day). Factories "
+            f"the demand index down by {DISRUPTION_SEVERITY} each day of the event, "
+            "to its floor. Factories "
             "keep producing as usual, so it acts as a demand slump: sales and "
             "profit usually fall, and lost sales can fall too. A short run may "
             "draw no disruption at all."
