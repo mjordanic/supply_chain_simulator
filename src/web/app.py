@@ -25,10 +25,13 @@ from src.web.compare import (
     FAMILY_COLORS,
     FAMILY_LABELS,
     FOCAL_NODE_ID,
+    LUCK_SEEDS,
     MAX_N_STEPS,
     TEXTBOOK_FAMILIES,
     apply_knobs,
     identical_groups,
+    luck_summary,
+    luck_sweep,
     run_crn_overlay,
     scorecard,
 )
@@ -302,6 +305,120 @@ def _run(
     return scenario, logs, scorecard(logs, scenario), frames, rival
 
 
+@st.cache_data(max_entries=32, show_spinner=f"Running {len(LUCK_SEEDS)} worlds…")
+def _luck(
+    setup_dir: str,
+    families: tuple[str, ...],
+    n_steps: int,
+    demand_mean: float,
+    cycle_amp: float,
+    disruption: bool,
+    params: tuple[tuple[str, float], ...],
+):
+    """One cached luck sweep; the visitor's own seed is not an input."""
+    scenario = apply_knobs(
+        load_setup(Path(setup_dir)),
+        world_seed=0,
+        n_steps=n_steps,
+        demand_mean=demand_mean,
+        cycle_amp=cycle_amp,
+        disruption=disruption,
+    )
+    sweep = luck_sweep(scenario, list(families), dict(params))
+    return sweep, luck_summary(sweep)
+
+
+def _luck_figure(sweep: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    for family in TEXTBOOK_FAMILIES:
+        rows = sweep[sweep["family"] == family]
+        if family == "order_up_to" or rows.empty:
+            continue
+        fig.add_trace(
+            go.Box(
+                y=rows["delta_net_profit"],
+                name=FAMILY_SHORT[family],
+                customdata=rows["world_seed"],
+                hovertemplate="world %{customdata}: %{y:+.2f}<extra></extra>",
+                boxpoints="all",
+                jitter=0.4,
+                pointpos=0,
+                marker=dict(color=FAMILY_COLORS[family], size=6),
+                line=dict(color=FAMILY_COLORS[family]),
+                fillcolor="rgba(0,0,0,0)",
+            )
+        )
+    fig.add_hline(y=0, line=dict(color="grey", dash="dash"))
+    fig.update_layout(
+        height=340,
+        showlegend=False,
+        margin=dict(l=50, r=20, t=20, b=40),
+        yaxis_title="profit minus (s, S)",
+    )
+    return fig
+
+
+def _luck_verdict(row: pd.Series) -> str:
+    name = FAMILY_SHORT[row["family"]]
+    span = f"{row['ci_low']:+.2f} to {row['ci_high']:+.2f}"
+    if row["ci_low"] > 0:
+        return f"**{name}** beats (s, S) on average (95% range {span}): not luck."
+    if row["ci_high"] < 0:
+        return f"**{name}** loses to (s, S) on average (95% range {span}): not luck."
+    return (
+        f"**{name}** vs (s, S) is too close to call (95% range {span} includes 0): "
+        "which one wins is down to the world's luck."
+    )
+
+
+def _luck_section(selected: list[str], settings: tuple) -> None:
+    st.subheader("Is it luck?")
+    n = len(LUCK_SEEDS)
+    rivals = [f for f in selected if f != "order_up_to"]
+    if not rivals:
+        st.caption("Tick a rule other than (s, S) to test it against (s, S) on many worlds.")
+        return
+    st.caption(
+        f"The scorecard is one world, and a different seed can flip the winner. "
+        f"This reruns the same settings on {n} other worlds (seeds 0–{n - 1}) and "
+        "compares each rule with (s, S) on every one of them"
+        + ("" if "order_up_to" in selected else " ((s, S) runs as the yardstick)")
+        + ". Takes a few seconds."
+    )
+    if st.button(f"Run on {n} worlds", key="luck"):
+        st.session_state["luck_settings"] = settings
+    if st.session_state.get("luck_settings") != settings:
+        return
+    sweep, summary = _luck(*settings)
+    for _, row in summary.iterrows():
+        st.markdown(_luck_verdict(row))
+    st.plotly_chart(_luck_figure(sweep), width="stretch")
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Policy": summary["family"].map(FAMILY_SHORT),
+                "Beats (s, S)": [
+                    f"{r.wins}/{r.n_worlds}" + (f" ({r.ties} ties)" if r.ties else "")
+                    for r in summary.itertuples()
+                ],
+                "Average gap": summary["mean_delta"].map("{:+.2f}".format),
+                "95% range of the average": [
+                    f"{lo:+.2f} to {hi:+.2f}"
+                    for lo, hi in zip(summary["ci_low"], summary["ci_high"])
+                ],
+            }
+        ),
+        hide_index=True,
+    )
+    st.caption(
+        "Each dot is one world: that rule's net profit minus (s, S)'s on the same "
+        "world. Above the dashed line, the rule won that world. The 95% range is a "
+        "bootstrap interval for the average gap: if it sits wholly above or below 0, "
+        f"the difference holds across worlds; if it spans 0, {n} worlds cannot tell "
+        "the rules apart."
+    )
+
+
 st.set_page_config(page_title="Supply-chain policy lab", layout="wide")
 st.title("Supply-chain policy lab")
 
@@ -504,20 +621,15 @@ left); the address bar always links to the run on screen.
 if not selected:
     st.error("Select at least one ordering rule.")
 else:
+    params = (
+        ("cover_horizon_ticks", int(cover_horizon)),
+        ("safety_lead_pct_of_lag", float(safety_pct)),
+        ("Q", int(q_value)),
+        ("review_interval", int(review_interval)),
+    )
+    world = (int(n_steps), float(demand_mean), float(cycle_amp), disruption == "On")
     scenario, logs, card, frames, rival = _run(
-        str(PRESETS[preset_name]),
-        tuple(selected),
-        int(world_seed),
-        int(n_steps),
-        float(demand_mean),
-        float(cycle_amp),
-        disruption == "On",
-        (
-            ("cover_horizon_ticks", int(cover_horizon)),
-            ("safety_lead_pct_of_lag", float(safety_pct)),
-            ("Q", int(q_value)),
-            ("review_interval", int(review_interval)),
-        ),
+        str(PRESETS[preset_name]), tuple(selected), int(world_seed), *world, params
     )
     st.subheader(f"Scorecard ({FOCAL_NODE_ID})")
     st.dataframe(_format_scorecard(card), hide_index=True, width="stretch")
@@ -601,6 +713,8 @@ Factory and customer cash are not in this table.
         )
         st.plotly_chart(_series_figure(logs, scenario), width="stretch")
 
+    _luck_section(selected, (str(PRESETS[preset_name]), tuple(selected), *world, params))
+
 with st.expander("How this demo works"):
     st.markdown(
         f"""
@@ -622,6 +736,8 @@ Every ticked rule runs on the same seed, so demand, market noise, and
 disruptions are identical across rules (simulation people call this
 *Common Random Numbers*). Differences in the scorecard are the rule, not luck.
 A different seed is a different world, and the ranking can change.
+**Is it luck?** reruns the ticked rules on 30 worlds (seeds 0–29) to show
+whether a gap holds across worlds or flips with the seed.
 
 ### What is *not* a knob
 

@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from random import Random
 
+import pandas as pd
+import pytest
+
 from src.sim.distributions import Normal
 from src.sim.inspect import flow_frame
 from src.sim.node import DemandSinkNode
@@ -13,6 +16,8 @@ from src.sim.inspect import node_timeseries_df
 from src.web.compare import (
     apply_knobs,
     identical_groups,
+    luck_summary,
+    luck_sweep,
     run_crn_overlay,
     scorecard,
 )
@@ -279,3 +284,90 @@ def test_web_package_does_not_import_rl_tuning_or_llm():
         for name in forbidden:
             assert f"import {name}" not in text
             assert f"from {name}" not in text
+
+
+def test_luck_sweep_pairs_each_family_with_s_s_on_the_same_world():
+    scenario = _knobbed_chain()
+    sweep = luck_sweep(scenario, ["periodic_order_up_to"], _POLICY_PARAMS, seeds=(0, 1, 42))
+
+    # (s, S) is the anchor, run even when not asked for.
+    assert set(sweep["family"]) == {"order_up_to", "periodic_order_up_to"}
+    assert sorted(set(sweep["world_seed"])) == [0, 1, 42]
+    assert len(sweep) == 6
+
+    table = sweep.pivot(index="world_seed", columns="family", values="net_profit")
+    deltas = sweep.pivot(index="world_seed", columns="family", values="delta_net_profit")
+    assert (deltas["order_up_to"] == 0.0).all()
+    assert (
+        deltas["periodic_order_up_to"]
+        == table["periodic_order_up_to"] - table["order_up_to"]
+    ).all()
+
+    # World 42 is exactly the world the scorecard shows at seed 42.
+    card = scorecard(
+        run_crn_overlay(scenario, ["order_up_to", "periodic_order_up_to"], _POLICY_PARAMS),
+        scenario,
+    ).set_index("family")
+    for family in ("order_up_to", "periodic_order_up_to"):
+        assert table.loc[42, family] == card.loc[family, "net_profit"]
+
+    # Different seeds are different worlds.
+    assert table.loc[0, "order_up_to"] != table.loc[1, "order_up_to"]
+
+
+def test_luck_sweep_does_not_change_the_scenario_seed():
+    scenario = _knobbed_chain()
+    luck_sweep(scenario, ["order_up_to"], _POLICY_PARAMS, seeds=(0, 1))
+    assert scenario.world_seed == 42
+
+
+def _sweep_frame(deltas: dict[str, list[float]]) -> pd.DataFrame:
+    rows = []
+    for family, values in deltas.items():
+        for seed, d in enumerate(values):
+            rows.append(
+                {"world_seed": seed, "family": family, "net_profit": d, "delta_net_profit": d}
+            )
+    n = len(next(iter(deltas.values())))
+    rows += [
+        {"world_seed": s, "family": "order_up_to", "net_profit": 0.0, "delta_net_profit": 0.0}
+        for s in range(n)
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_luck_summary_counts_wins_and_ties_against_s_s():
+    sweep = _sweep_frame({"reorder_point": [5.0, -2.0, 0.0, 3.0, 1.0]})
+    summary = luck_summary(sweep).set_index("family")
+
+    assert list(summary.index) == ["reorder_point"]  # the anchor has no row
+    row = summary.loc["reorder_point"]
+    assert row["n_worlds"] == 5
+    assert row["wins"] == 3
+    assert row["ties"] == 1
+    assert row["mean_delta"] == pytest.approx(1.4)
+    assert row["ci_low"] <= row["mean_delta"] <= row["ci_high"]
+    assert row["ci_low"] >= -2.0 and row["ci_high"] <= 5.0
+
+
+def test_luck_summary_ci_is_reproducible_and_collapses_on_a_constant_gap():
+    sweep = _sweep_frame(
+        {"reorder_point": [4.0, -1.0, 2.5, 7.0, -3.0, 1.0], "periodic_reorder": [-2.0] * 6}
+    )
+    first = luck_summary(sweep).set_index("family")
+    second = luck_summary(sweep).set_index("family")
+    pd.testing.assert_frame_equal(first, second)
+
+    const = first.loc["periodic_reorder"]
+    assert const["ci_low"] == const["ci_high"] == const["mean_delta"] == -2.0
+    assert const["wins"] == 0
+
+    spread = first.loc["reorder_point"]
+    assert spread["ci_low"] < spread["mean_delta"] < spread["ci_high"]
+
+
+def test_luck_summary_ci_excludes_zero_for_a_clear_winner():
+    sweep = _sweep_frame({"reorder_point": [10.0 + 0.5 * i for i in range(30)]})
+    row = luck_summary(sweep).iloc[0]
+    assert row["ci_low"] > 0
+    assert row["wins"] == 30
