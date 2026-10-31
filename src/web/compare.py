@@ -275,17 +275,18 @@ def luck_sweep(
 def luck_summary(sweep: pd.DataFrame, n_boot: int = 2000, rng_seed: int = 0) -> pd.DataFrame:
     """Per family: mean paired delta vs (s, S), bootstrap 95% CI, wins and ties.
 
-    Percentile bootstrap of the mean over worlds, with a fixed RNG seed so the
-    same sweep always shows the same interval. A win is a world where the
-    family made strictly more than (s, S); a tie is exactly the same profit.
+    Percentile bootstrap of the mean over worlds, with a fixed RNG seed per
+    family so the same deltas always show the same interval, whichever other
+    families ran. A win is a world where the family made strictly more than
+    (s, S); a tie is exactly the same profit.
     """
     import numpy as np
 
-    rng = np.random.default_rng(rng_seed)
     rows: list[dict[str, Any]] = []
     for family, group in sweep.groupby("family", sort=False):
         if family == ANCHOR_FAMILY:
             continue
+        rng = np.random.default_rng(rng_seed)
         deltas = group["delta_net_profit"].to_numpy(dtype=float)
         n = len(deltas)
         means = deltas[rng.integers(0, n, size=(n_boot, n))].mean(axis=1)

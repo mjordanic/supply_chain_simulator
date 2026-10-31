@@ -361,6 +361,11 @@ def _luck_figure(sweep: pd.DataFrame) -> go.Figure:
 def _luck_verdict(row: pd.Series) -> str:
     name = FAMILY_SHORT[row["family"]]
     span = f"{row['ci_low']:+.2f} to {row['ci_high']:+.2f}"
+    if row["ties"] == row["n_worlds"]:
+        return (
+            f"**{name}** behaved exactly like (s, S) on every world: "
+            "there is no gap to test."
+        )
     if row["ci_low"] > 0:
         return f"**{name}** beats (s, S) on average (95% range {span}): not luck."
     if row["ci_high"] < 0:

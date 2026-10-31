@@ -366,6 +366,15 @@ def test_luck_summary_ci_is_reproducible_and_collapses_on_a_constant_gap():
     assert spread["ci_low"] < spread["mean_delta"] < spread["ci_high"]
 
 
+def test_luck_summary_ci_does_not_depend_on_which_other_families_ran():
+    spread = [4.0, -1.0, 2.5, 7.0, -3.0, 1.0]
+    alone = luck_summary(_sweep_frame({"reorder_point": spread})).set_index("family")
+    together = luck_summary(
+        _sweep_frame({"periodic_reorder": [-2.0, 1.0, 0.5, 3.0, -4.0, 2.0], "reorder_point": spread})
+    ).set_index("family")
+    pd.testing.assert_series_equal(alone.loc["reorder_point"], together.loc["reorder_point"])
+
+
 def test_luck_summary_ci_excludes_zero_for_a_clear_winner():
     sweep = _sweep_frame({"reorder_point": [10.0 + 0.5 * i for i in range(30)]})
     row = luck_summary(sweep).iloc[0]

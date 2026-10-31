@@ -164,6 +164,17 @@ def test_luck_sweep_runs_s_s_as_yardstick_and_survives_a_seed_change():
     assert not any("Beats (s, S)" in d.value.columns for d in at.dataframe)
 
 
+def test_luck_sweep_says_a_rule_that_matches_s_s_everywhere_is_not_luck():
+    # Reviewing every day, (R, s, S) is (s, S): every world is a tie.
+    at = _app(steps="20", R="1", policies="periodic_reorder").run()
+    at.button(key="luck").click().run()
+    assert _luck_table(at).loc["(R, s, S)", "Beats (s, S)"] == "0/30 (30 ties)"
+    verdicts = [m.value for m in at.markdown if m.value.startswith("**(R, s, S)**")]
+    assert len(verdicts) == 1
+    assert "exactly like (s, S) on every world" in verdicts[0]
+    assert "luck" not in verdicts[0].lower()
+
+
 def test_luck_sweep_needs_a_rule_other_than_s_s():
     at = _app(policies="order_up_to").run()
     assert not at.button
