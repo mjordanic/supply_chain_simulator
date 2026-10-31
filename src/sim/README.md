@@ -391,7 +391,7 @@ Consequences:
 - Two nodes constructed from the same `(subclass, init_seed)` pair start step 0 bit-identical.
 - Swapping a policy on a scenario does not perturb the world or allocation streams, so per-policy outcome differences come from policy decisions alone — the property the paired-comparison and tuning/RL evaluators rely on.
 
-`build_world` deep-copies nodes so the same node templates can be reused across calls without mutation aliasing.
+`build_world` deep-copies nodes and their Scenario-owned policies so the same node templates can be reused across calls without mutation aliasing or policy-state leaks between runs (`policy_overrides` objects are used as-is).
 
 ## Visualizing a run
 
