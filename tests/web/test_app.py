@@ -131,3 +131,52 @@ def test_delta_column_shows_a_dash_when_s_s_is_not_ticked():
 def test_identical_rows_are_called_out():
     at = _app(R="14", policies="periodic_order_up_to,periodic_reorder").run()
     assert any("came out identical" in c.value for c in at.caption)
+
+
+def _luck_table(at: AppTest):
+    tables = [d.value for d in at.dataframe if "Beats (s, S)" in d.value.columns]
+    assert len(tables) == 1
+    return tables[0].set_index("Policy")
+
+
+def test_luck_sweep_runs_only_on_click_and_reports_wins_out_of_30():
+    at = _app(steps="20", policies="order_up_to,reorder_point").run()
+    assert not any("Beats (s, S)" in d.value.columns for d in at.dataframe)
+
+    at.button(key="luck").click().run()
+    assert not at.exception
+    table = _luck_table(at)
+    assert list(table.index) == ["(s, Q)"]
+    assert table.loc["(s, Q)", "Beats (s, S)"].endswith("/30")
+    assert any("(s, Q)" in m.value and "luck" in m.value.lower() for m in at.markdown)
+
+
+def test_luck_sweep_runs_s_s_as_yardstick_and_survives_a_seed_change():
+    at = _app(steps="20", policies="periodic_order_up_to").run()
+    at.button(key="luck").click().run()
+    assert list(_luck_table(at).index) == ["(R, S)"]
+
+    # The sweep always uses worlds 0-29, so the visitor's own seed does not reset it.
+    at.number_input(key="world_seed").set_value(5).run()
+    assert list(_luck_table(at).index) == ["(R, S)"]
+
+    # Any other knob does: the old result no longer matches the settings.
+    at.slider(key="review_interval").set_value(2).run()
+    assert not any("Beats (s, S)" in d.value.columns for d in at.dataframe)
+
+
+def test_luck_sweep_says_a_rule_that_matches_s_s_everywhere_is_not_luck():
+    # Reviewing every day, (R, s, S) is (s, S): every world is a tie.
+    at = _app(steps="20", R="1", policies="periodic_reorder").run()
+    at.button(key="luck").click().run()
+    assert _luck_table(at).loc["(R, s, S)", "Beats (s, S)"] == "0/30 (30 ties)"
+    verdicts = [m.value for m in at.markdown if m.value.startswith("**(R, s, S)**")]
+    assert len(verdicts) == 1
+    assert "exactly like (s, S) on every world" in verdicts[0]
+    assert "luck" not in verdicts[0].lower()
+
+
+def test_luck_sweep_needs_a_rule_other_than_s_s():
+    at = _app(policies="order_up_to").run()
+    assert not at.button
+    assert any("other than (s, S)" in c.value for c in at.caption)

@@ -64,13 +64,14 @@ this UI.
 | Families       | `(s,S)` `OrderUpToPolicy`, `(s,Q)` `ReorderPointPolicy`, `(R,S)` `PeriodicOrderUpToPolicy`, `(R,s,S)` `PeriodicReorderPolicy`                         |
 | World knobs    | Seed (`world_seed`), Days (`n_steps`, capped at 60), customer demand mean, Seasonal swing (`cycle_amp`, period locked at 20 days), disruptions on/off (a demand slump in these graphs) |
 | Policy knobs   | safety fraction `k` (moves s), cover horizon `H = S − s` in ticks (moves S), batch `Q`, review interval `R` (default 3)                               |
-| Output         | shop-1 scorecard (net profit, fill rate vs customer demand, days empty, ...), shop-2 results on the two-shop graph, network playback of any selected policy (Play / Pause / day slider), cash & stock series with one fixed colour per policy |
+| Output         | shop-1 scorecard (net profit, fill rate vs customer demand, days empty, ...), shop-2 results on the two-shop graph, network playback of any selected policy (Play / Pause / day slider), cash & stock series with one fixed colour per policy, and an on-demand **Is it luck?** sweep: the same settings on 30 worlds (seeds 0–29), each rule's paired profit gap vs `(s,S)` with a bootstrap 95% CI and a wins-out-of-30 count |
 
 
 Lead time is **on the graph edges**, not a slider: 2 ticks factory→shop on the linear
 chain; 4 / 2 ticks from the cheap / fast factories on the dual-supplier and two-shop
 graphs; 1 tick shop→sink on all three. Unmet demand is a lost sale. Every selected family
-shares one `world_seed`, so scorecard gaps are the policy, not luck.
+shares one `world_seed`, so scorecard gaps are the policy, not luck. A different seed can
+flip the ranking; the **Is it luck?** button shows whether a gap holds across 30 worlds.
 
 Not exposed: graph editing, elasticity / promo / trend, catalog and prices, factory
 policy, live `Simulation.tick()` streaming, RL, LLM, M5, or parquet download.

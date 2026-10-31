@@ -220,3 +220,87 @@ def identical_groups(card: pd.DataFrame) -> list[list[str]]:
     cols = ["net_profit", "fill_rate", "days_empty", "rejections"]
     groups = card.groupby(cols, sort=False, dropna=False)["family"].agg(list)
     return [g for g in groups if len(g) > 1]
+
+
+ANCHOR_FAMILY = "order_up_to"
+LUCK_SEEDS = tuple(range(30))
+
+
+def _net_profit(run_log: dict[str, Any], scenario: Any, node_id: str) -> float:
+    from src.sim.inspect import closing_inventory_frame, flow_frame, purchase_frame
+    from src.sim.metrics import profit_decomposition
+
+    profit = profit_decomposition(
+        flow_frame(run_log),
+        purchase_frame(run_log),
+        closing_inventory_frame(run_log),
+        scenario,
+    )
+    row = profit[profit["node_id"] == node_id]
+    return float(row.iloc[0]["net_profit"]) if not row.empty else float("nan")
+
+
+def luck_sweep(
+    scenario: Any,
+    families: list[str],
+    params: dict[str, Any],
+    seeds: tuple[int, ...] = LUCK_SEEDS,
+) -> pd.DataFrame:
+    """Run each family plus the (s, S) anchor on every seed's world.
+
+    Only ``world_seed`` changes between worlds; every other knob stays as in
+    ``scenario``. Each world is shared by all families (CRN), so the delta
+    vs (s, S) is a paired difference. Columns: ``world_seed, family,
+    net_profit, delta_net_profit``.
+    """
+    run_families = [ANCHOR_FAMILY] + [f for f in families if f != ANCHOR_FAMILY]
+    rows: list[dict[str, Any]] = []
+    for seed in seeds:
+        world = copy.deepcopy(scenario)
+        world.world_seed = int(seed)
+        logs = run_crn_overlay(world, run_families, params)
+        profits = {f: _net_profit(log, world, FOCAL_NODE_ID) for f, log in logs.items()}
+        for family, profit in profits.items():
+            rows.append(
+                {
+                    "world_seed": int(seed),
+                    "family": family,
+                    "net_profit": profit,
+                    "delta_net_profit": profit - profits[ANCHOR_FAMILY],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def luck_summary(sweep: pd.DataFrame, n_boot: int = 2000, rng_seed: int = 0) -> pd.DataFrame:
+    """Per family: mean paired delta vs (s, S), bootstrap 95% CI, wins and ties.
+
+    Percentile bootstrap of the mean over worlds, with a fixed RNG seed per
+    family so the same deltas always show the same interval, whichever other
+    families ran. A win is a world where the family made strictly more than
+    (s, S); a tie is exactly the same profit.
+    """
+    import numpy as np
+
+    rows: list[dict[str, Any]] = []
+    for family, group in sweep.groupby("family", sort=False):
+        if family == ANCHOR_FAMILY:
+            continue
+        rng = np.random.default_rng(rng_seed)
+        deltas = group["delta_net_profit"].to_numpy(dtype=float)
+        n = len(deltas)
+        means = deltas[rng.integers(0, n, size=(n_boot, n))].mean(axis=1)
+        rows.append(
+            {
+                "family": family,
+                "n_worlds": n,
+                "mean_delta": float(deltas.mean()),
+                "ci_low": float(np.percentile(means, 2.5)),
+                "ci_high": float(np.percentile(means, 97.5)),
+                "wins": int((deltas > 0).sum()),
+                "ties": int((deltas == 0).sum()),
+            }
+        )
+    return pd.DataFrame(
+        rows, columns=["family", "n_worlds", "mean_delta", "ci_low", "ci_high", "wins", "ties"]
+    )
