@@ -85,6 +85,14 @@ FAMILY_LABELS = {
     "periodic_reorder": "(R, s, S) periodic reorder",
 }
 
+# One fixed colour per family, used by every chart and the network title.
+FAMILY_COLORS = {
+    "order_up_to": "#4C9BE8",
+    "reorder_point": "#F28E2B",
+    "periodic_order_up_to": "#59A14F",
+    "periodic_reorder": "#E15759",
+}
+
 
 def _policy_params_for_family(name: str, params: dict[str, Any]) -> dict[str, Any]:
     """Hyperparameters the registry will splat; facts are injected separately."""
@@ -113,6 +121,9 @@ def run_crn_overlay(
     """Run each textbook family on shop-1; all other nodes keep setup policies.
 
     Same ``scenario`` (hence same ``world_seed``) for every family — CRN.
+    Each run gets its own deep copy: ``build_world`` copies nodes but
+    re-attaches the setup policy objects, so a stateful setup policy (shop-2
+    on the two-shop graph) would otherwise carry history between runs.
     """
     if not families:
         raise ValueError("families must be non-empty")
@@ -128,7 +139,8 @@ def run_crn_overlay(
             edges=scenario.edges,
             policy_seed=policy_seed,
         )
-        logs[name] = Runner(scenario, policy_overrides={FOCAL_NODE_ID: pol}).run()
+        world = copy.deepcopy(scenario)
+        logs[name] = Runner(world, policy_overrides={FOCAL_NODE_ID: pol}).run()
     return logs
 
 
@@ -140,8 +152,8 @@ def _rejection_qty(run_log: dict[str, Any]) -> int:
     return total
 
 
-def _fill_rate(flow: pd.DataFrame, scenario: Any) -> float:
-    """Shop-1 units sold ÷ demand target of the sinks it supplies.
+def _fill_rate(flow: pd.DataFrame, scenario: Any, node_id: str) -> float:
+    """Shop units sold ÷ demand target of the sinks it supplies.
 
     The engine's ``service_level`` divides by orders the shop actually saw,
     which equals sales here, so it reads 1.0 even for a starved shop.
@@ -149,17 +161,18 @@ def _fill_rate(flow: pd.DataFrame, scenario: Any) -> float:
     sink_ids = {
         ni.node.id for ni in scenario.nodes if isinstance(ni.node, DemandSinkNode)
     }
-    fed = {e.buyer_id for e in scenario.edges if e.supplier_id == FOCAL_NODE_ID}
+    fed = {e.buyer_id for e in scenario.edges if e.supplier_id == node_id}
     wanted = flow.loc[flow["node_id"].isin(sink_ids & fed), "demand"].sum()
-    sold = flow.loc[flow["node_id"] == FOCAL_NODE_ID, "sales"].sum()
+    sold = flow.loc[flow["node_id"] == node_id, "sales"].sum()
     return float(sold / wanted) if wanted > 0 else float("nan")
 
 
 def scorecard(
     run_logs: dict[str, dict[str, Any]],
     scenario: Any,
+    node_id: str = FOCAL_NODE_ID,
 ) -> pd.DataFrame:
-    """Shop-1 operational KPIs + profit, with CRN delta vs ``order_up_to``."""
+    """One shop's operational KPIs + profit, with CRN delta vs ``order_up_to``."""
     from src.sim.inspect import (
         closing_inventory_frame,
         flow_frame,
@@ -173,21 +186,21 @@ def scorecard(
         ff = flow_frame(run_log)
         ts = node_timeseries_df(run_log, scenario)
         kpis = business_metrics(ff, ts, scenario)
-        shop_kpis = kpis[kpis["node_id"] == FOCAL_NODE_ID]
+        shop_kpis = kpis[kpis["node_id"] == node_id]
         profit = profit_decomposition(
             ff, purchase_frame(run_log), closing_inventory_frame(run_log), scenario
         )
-        shop_profit = profit[profit["node_id"] == FOCAL_NODE_ID]
+        shop_profit = profit[profit["node_id"] == node_id]
+        on_hand = ts.loc[ts["node_id"] == node_id, "inventory_total"]
         row: dict[str, Any] = {
             "family": family,
-            "fill_rate": _fill_rate(ff, scenario),
-            "stockout_rate": float("nan"),
+            "fill_rate": _fill_rate(ff, scenario, node_id),
+            "days_empty": int((on_hand == 0).sum()),
             "inventory_turnover": float("nan"),
             "net_profit": float("nan"),
             "rejections": _rejection_qty(run_log),
         }
         if not shop_kpis.empty:
-            row["stockout_rate"] = float(shop_kpis.iloc[0]["stockout_rate"])
             row["inventory_turnover"] = float(shop_kpis.iloc[0]["inventory_turnover"])
         if not shop_profit.empty:
             row["net_profit"] = float(shop_profit.iloc[0]["net_profit"])
@@ -202,10 +215,8 @@ def scorecard(
     return card
 
 
-def focal_family(families: list[str]) -> str:
-    """Playback family: ``order_up_to`` when selected, else the first checked."""
-    if "order_up_to" in families:
-        return "order_up_to"
-    if not families:
-        raise ValueError("families must be non-empty")
-    return families[0]
+def identical_groups(card: pd.DataFrame) -> list[list[str]]:
+    """Families whose scorecard rows came out identical (two or more each)."""
+    cols = ["net_profit", "fill_rate", "days_empty", "rejections"]
+    groups = card.groupby(cols, sort=False, dropna=False)["family"].agg(list)
+    return [g for g in groups if len(g) > 1]

@@ -21,6 +21,7 @@ RUN uv pip install --no-cache \
     pyyaml \
     python-dotenv
 
+COPY .streamlit .streamlit
 COPY src/__init__.py src/__init__.py
 COPY src/sim src/sim
 COPY src/web src/web

@@ -37,7 +37,7 @@ def _legend_traces() -> list[go.Scatter]:
             y=[None],
             mode="markers",
             marker=dict(size=14, color=_TYPE_COLOR["intermediate"], line=dict(width=4, color="#111")),
-            name="Shop (thick outline = compared)",
+            name="Shop (size = stock on hand; thick outline = compared)",
             hoverinfo="skip",
             showlegend=True,
         ),
@@ -46,7 +46,7 @@ def _legend_traces() -> list[go.Scatter]:
             y=[None],
             mode="markers",
             marker=dict(size=14, color=_TYPE_COLOR["demand_sink"], line=dict(width=1, color="#111")),
-            name="Demand sink (buys / makes cash)",
+            name="Customers (demand sink)",
             hoverinfo="skip",
             showlegend=True,
         ),
@@ -64,7 +64,7 @@ def _legend_traces() -> list[go.Scatter]:
             y=[None],
             mode="lines",
             line=dict(width=6, color=_FILLED_EDGE),
-            name="Order filled this tick",
+            name="Shipped this day",
             hoverinfo="skip",
             showlegend=True,
         ),
@@ -89,8 +89,28 @@ def _positions(scenario: Any) -> dict[str, tuple[float, float]]:
     return pos
 
 
-def dag_figure(scenario: Any, frame: dict[str, Any]) -> go.Figure:
-    """Scatter DAG: node size ~ inventory, edge width ~ this-tick filled qty."""
+_FIXED_SIZE = 26
+
+
+def _frame_title(frame: dict[str, Any], policy_label: str, color: str | None) -> str:
+    name = f"<span style='color:{color}'>{policy_label}</span>  ·  " if policy_label else ""
+    return f"{name}day {frame['tick']}  ·  units lost this day {frame['rejections']}"
+
+
+def dag_figure(
+    scenario: Any,
+    frame: dict[str, Any],
+    *,
+    shop_max: int | None = None,
+    policy_label: str = "",
+    color: str | None = None,
+) -> go.Figure:
+    """Scatter DAG: shop size ~ on-hand stock, orange edges ~ units shipped.
+
+    Factories and customers keep a fixed size: a factory's stock is not what
+    the demo compares, and a demand sink holds none. ``shop_max`` is the
+    run-wide shop stock that maps to the largest marker.
+    """
     pos = _positions(scenario)
     filled: dict[tuple[str, str], int] = {}
     for p in frame.get("purchases", []):
@@ -113,14 +133,33 @@ def dag_figure(scenario: Any, frame: dict[str, Any]) -> go.Figure:
                     color=_FILLED_EDGE if qty > 0 else _IDLE_EDGE,
                 ),
                 hoverinfo="text",
-                text=f"{a} → {b}" + (f"  filled={qty}" if qty else ""),
+                text=f"{a} → {b}" + (f"  shipped {qty} units" if qty else ""),
                 showlegend=False,
             )
         )
+    shipped = [
+        (a, b, qty) for (a, b), qty in filled.items() if qty and a in pos and b in pos
+    ]
+    traces.append(
+        go.Scatter(
+            x=[(pos[a][0] + pos[b][0]) / 2 for a, b, _ in shipped],
+            y=[(pos[a][1] + pos[b][1]) / 2 for a, b, _ in shipped],
+            mode="text",
+            text=[str(qty) for _, _, qty in shipped],
+            textposition="top center",
+            textfont=dict(color=_FILLED_EDGE, size=12),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
 
     xs, ys, colors, sizes, texts, widths = [], [], [], [], [], []
-    inventories = [n["inventory"] for n in frame["nodes"].values()] or [1]
-    inv_max = max(1, max(inventories))
+    if shop_max is None:
+        shop_max = max(
+            (n["inventory"] for n in frame["nodes"].values() if n["node_type"] == "intermediate"),
+            default=1,
+        )
+    shop_max = max(1, shop_max)
     for nid, state in frame["nodes"].items():
         if nid not in pos:
             continue
@@ -128,7 +167,10 @@ def dag_figure(scenario: Any, frame: dict[str, Any]) -> go.Figure:
         xs.append(x)
         ys.append(y)
         colors.append(_TYPE_COLOR.get(state["node_type"], "#888888"))
-        sizes.append(16 + 32 * (state["inventory"] / inv_max) ** 0.5)
+        if state["node_type"] == "intermediate":
+            sizes.append(12 + 36 * (state["inventory"] / shop_max) ** 0.5)
+        else:
+            sizes.append(_FIXED_SIZE)
         texts.append(nid)
         widths.append(4 if nid == FOCAL_NODE_ID else 1)
 
@@ -156,7 +198,7 @@ def dag_figure(scenario: Any, frame: dict[str, Any]) -> go.Figure:
 
     fig = go.Figure(data=traces)
     fig.update_layout(
-        title=f"tick {frame['tick']}  ·  rejections {frame['rejections']}",
+        title=_frame_title(frame, policy_label, color),
         xaxis=dict(visible=False),
         yaxis=dict(visible=False, scaleanchor="x", scaleratio=1),
         margin=dict(l=20, r=20, t=40, b=72),
@@ -169,35 +211,50 @@ def dag_figure(scenario: Any, frame: dict[str, Any]) -> go.Figure:
     return fig
 
 
-def animated_dag(scenario: Any, frames: list[dict[str, Any]]) -> go.Figure:
-    """One Plotly figure that auto-plays playback frames in the browser."""
+def animated_dag(
+    scenario: Any,
+    frames: list[dict[str, Any]],
+    *,
+    policy_label: str = "",
+    color: str | None = None,
+) -> go.Figure:
+    """One Plotly figure that plays, pauses, and scrubs playback frames."""
     if not frames:
         raise ValueError("frames must be non-empty")
-    fig = dag_figure(scenario, frames[0])
+    shop_max = max(
+        n["inventory"]
+        for fr in frames
+        for n in fr["nodes"].values()
+        if n["node_type"] == "intermediate"
+    )
+    style = dict(shop_max=shop_max, policy_label=policy_label, color=color)
+    fig = dag_figure(scenario, frames[0], **style)
     fig.frames = [
         go.Frame(
-            data=dag_figure(scenario, fr).data,
+            data=dag_figure(scenario, fr, **style).data,
             name=str(i),
-            layout=go.Layout(
-                title=f"tick {fr['tick']}  ·  rejections {fr['rejections']}"
-            ),
+            layout=go.Layout(title=_frame_title(fr, policy_label, color)),
         )
         for i, fr in enumerate(frames)
     ]
     last = str(len(frames) - 1)
+    still = dict(frame=dict(duration=0, redraw=True), mode="immediate", transition=dict(duration=0))
     fig.update_layout(
-        margin=dict(l=20, r=20, t=90, b=90),
-        height=420,
+        title=dict(y=0.98, yref="container", yanchor="top"),
+        margin=dict(l=20, r=20, t=100, b=190),
+        height=580,
         showlegend=True,
-        legend=dict(orientation="h", y=-0.12, x=0, font=dict(size=11), title_text=""),
+        legend=dict(
+            orientation="h", y=-0.38, yanchor="top", x=0, font=dict(size=11), title_text=""
+        ),
         updatemenus=[
             dict(
                 type="buttons",
                 showactive=False,
                 x=0.0,
-                y=1.18,
+                y=1.02,
                 xanchor="left",
-                yanchor="top",
+                yanchor="bottom",
                 direction="left",
                 buttons=[
                     dict(
@@ -206,26 +263,35 @@ def animated_dag(scenario: Any, frames: list[dict[str, Any]]) -> go.Figure:
                         args=[
                             None,
                             dict(
-                                frame=dict(duration=120, redraw=True),
+                                frame=dict(duration=300, redraw=True),
                                 fromcurrent=True,
                                 transition=dict(duration=0),
                             ),
                         ],
                     ),
+                    dict(label="Pause", method="animate", args=[[None], still]),
                     dict(
                         label="Skip to end",
                         method="animate",
-                        args=[
-                            [last],
-                            dict(
-                                frame=dict(duration=0, redraw=True),
-                                mode="immediate",
-                                transition=dict(duration=0),
-                            ),
-                        ],
+                        args=[[last], still],
                     ),
                 ],
             )
-        ]
+        ],
+        sliders=[
+            dict(
+                active=0,
+                x=0.0,
+                y=-0.02,
+                yanchor="top",
+                len=1.0,
+                pad=dict(t=10, b=0),
+                currentvalue=dict(prefix="day ", font=dict(size=12)),
+                steps=[
+                    dict(label=str(fr["tick"]), method="animate", args=[[str(i)], still])
+                    for i, fr in enumerate(frames)
+                ],
+            )
+        ],
     )
     return fig

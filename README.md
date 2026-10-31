@@ -42,8 +42,8 @@ setup requires an API key.
 
 [`src/web/`](src/web/) is a **small, limited visual representation** of the simulator:
 three canned graphs, four textbook inventory policies on `shop-1`, and a short
-Common-Random-Numbers (CRN) run. It opens on the default comparison, and the address
-bar encodes every knob, so a link reproduces a run. It is the same `Runner` as `main.py run`, not a
+Common-Random-Numbers (CRN) run. It opens on the default comparison, reruns as soon as a
+knob changes, and the address bar encodes every knob, so a link reproduces a run. It is the same `Runner` as `main.py run`, not a
 second engine. The rest of the repo — custom DAGs, the LLM world generator, Optuna,
 PPO / `RLNodePolicy`, M5 demand replay, notebooks, and parquet exports — is not in
 this UI.
@@ -62,15 +62,15 @@ this UI.
 | Graphs         | `setups/three_node_chain` (factory → shop → sink), `setups/demo_two_suppliers` (cheap/slow + fast/pricey factories → shop-1 → sink), and `setups/two_factories_two_shops` (the same two factories feed shop-1 and shop-2, which compete). One SKU each. |
 | Policy overlay | Only **shop-1** is swapped. Factories, sinks, and shop-2 keep the setup policies.                                                                     |
 | Families       | `(s,S)` `OrderUpToPolicy`, `(s,Q)` `ReorderPointPolicy`, `(R,S)` `PeriodicOrderUpToPolicy`, `(R,s,S)` `PeriodicReorderPolicy`                         |
-| World knobs    | `world_seed`, `n_steps` (capped at 60), sink demand mean, seasonal `cycle_amp` (period locked at 20 ticks), disruptions on/off                        |
+| World knobs    | Seed (`world_seed`), Days (`n_steps`, capped at 60), customer demand mean, Seasonal swing (`cycle_amp`, period locked at 20 days), disruptions on/off (a demand slump in these graphs) |
 | Policy knobs   | safety fraction `k` (moves s), cover horizon `H = S − s` in ticks (moves S), batch `Q`, review interval `R` (default 3)                               |
-| Output         | shop-1 scorecard (net profit, fill rate vs sink demand, ...), Plotly DAG playback of one finished run, cash & inventory series for every selected family |
+| Output         | shop-1 scorecard (net profit, fill rate vs customer demand, days empty, ...), shop-2 results on the two-shop graph, network playback of any selected policy (Play / Pause / day slider), cash & stock series with one fixed colour per policy |
 
 
 Lead time is **on the graph edges**, not a slider: 2 ticks factory→shop on the linear
 chain; 4 / 2 ticks from the cheap / fast factories on the dual-supplier and two-shop
-graphs; 1 tick shop→sink on all three. Unmet demand is a lost sale. Compare shares one `world_seed`
-across families so scorecard gaps are the policy, not luck.
+graphs; 1 tick shop→sink on all three. Unmet demand is a lost sale. Every selected family
+shares one `world_seed`, so scorecard gaps are the policy, not luck.
 
 Not exposed: graph editing, elasticity / promo / trend, catalog and prices, factory
 policy, live `Simulation.tick()` streaming, RL, LLM, M5, or parquet download.
@@ -84,8 +84,8 @@ uv sync --group web
 uv run --group web streamlit run src/web/app.py
 ```
 
-Opens [http://localhost:8501](http://localhost:8501) on the default comparison. Change
-the knobs and click **Compare** to rerun.
+Opens [http://localhost:8501](http://localhost:8501) on the default comparison; it reruns
+whenever a knob changes. `.streamlit/config.toml` hides Streamlit's developer menu.
 
 ### Cloud Run
 
