@@ -47,7 +47,8 @@ reorder formulas are scale-invariant in capacity:
     S = s + cover_horizon_ticks × rate
 
 where ``rate`` is the censored-sales rate estimate over the recent
-``demand_window = max(1, delivery_lag)`` ticks.
+``demand_window`` ticks: ``max(1, delivery_lag)`` for the continuous-review
+families, ``max(delivery_lag, review_interval)`` for the periodic ones.
 
 Three private module-level helpers extracted for unit-testability:
 
@@ -1292,6 +1293,16 @@ class TextbookReorderPolicy(Policy):
             self.inv_before_settle_log.setdefault(pid, []).append(inv_bs)
             self.sales_log.setdefault(pid, []).append(sales.get(pid, 0))
 
+    def _demand_window(self, delivery_lag: float) -> int:
+        """Ticks of sales history the rate estimate averages over.
+
+        ``max(1, delivery_lag)``: sized to the lead time so the estimate
+        averages over roughly one ordering cycle; never 0 (would zero out
+        the rate). Periodic-review subclasses widen it to the review
+        interval.
+        """
+        return max(1, int(delivery_lag))
+
     def _get_delivery_lag(self, pid: str, observation: Mapping[str, Any]) -> float:
         """Return the delivery lag (in ticks) for ``pid`` from the observation."""
         # Per-pid delivery lags as of issue 01 — ``Store.observe()``
@@ -1410,10 +1421,9 @@ class TextbookReorderPolicy(Policy):
                 continue
 
             # ── Steady-state pids ─────────────────────────────────────
-            # Demand window = max(1, delivery_lag). Sized to the lead
-            # time so the estimate averages over roughly one ordering
-            # cycle; never 0 (would zero out the rate).
-            demand_window = max(1, int(delivery_lag))
+            # Demand window sized to roughly one ordering cycle; see
+            # ``_demand_window``.
+            demand_window = self._demand_window(delivery_lag)
             rates = _estimate_rate(
                 sales_log={pid: self.sales_log[pid]},
                 demand_window=demand_window,
@@ -1676,6 +1686,18 @@ class _PeriodicOrderUpToCore(TextbookReorderPolicy):
         # the value isn't available at construction).
         self.review_interval = review_interval
 
+    def _demand_window(self, delivery_lag: float) -> int:
+        """Average demand over ``max(delivery_lag, review_interval)`` ticks.
+
+        A review cycle longer than the lead time can sell the shelf out
+        well before the next review. A lead-time-only window would then
+        see only empty-shelf ticks, estimate rate 0, set S = 0 and never
+        reorder again. Spanning the whole review cycle keeps the sales
+        that followed the last delivery in the estimate.
+        """
+        ri = self.review_interval if self.review_interval is not None else max(1, int(delivery_lag))
+        return max(super()._demand_window(delivery_lag), ri)
+
     def _trigger_with_safety(
         self,
         pid: str,
@@ -1760,6 +1782,14 @@ class _PeriodicReorderCore(TextbookReorderPolicy):
         # ``delivery_lag`` at trigger time (same semantics as
         # ``PeriodicOrderUpToPolicy``).
         self.review_interval = review_interval
+
+    def _demand_window(self, delivery_lag: float) -> int:
+        """Average demand over ``max(delivery_lag, review_interval)`` ticks.
+
+        Same rule and rationale as ``PeriodicOrderUpToPolicy``.
+        """
+        ri = self.review_interval if self.review_interval is not None else max(1, int(delivery_lag))
+        return max(super()._demand_window(delivery_lag), ri)
 
     def _trigger_with_safety(
         self,

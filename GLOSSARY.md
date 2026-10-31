@@ -143,7 +143,8 @@ variants to multi-supplier routing with `_split_across_suppliers`). See ADR 0006
 **TextbookReorderPolicy family** (`MultiSupplierTextbookPolicy(IntermediatePolicy)` abstract base + 4 concrete classes, `src/sim/policy.py`)
 Family of four reorder policies sharing one base class, re-rooted on `IntermediatePolicy` for the
 graph engine. The shared machinery: censored-sales rate estimator over a `delivery_lag`-length
-rolling window, two-pass fair-share allocator across capacity and cash pools, cash-budget
+rolling window (`max(delivery_lag, review_interval)` for the periodic variants, so a review cycle
+longer than the lead time cannot see only empty-shelf ticks and estimate zero demand), two-pass fair-share allocator across capacity and cash pools, cash-budget
 pilot-order cold-start, opt-in adaptive safety stock. Concrete variants: `OrderUpToPolicy` (s,S),
 `ReorderPointPolicy` (s,Q), `PeriodicOrderUpToPolicy` (R,S), `PeriodicReorderPolicy` (R,s,S).
 On the graph engine the internal cash check and the pilot are priced at the cheapest direct
