@@ -153,7 +153,10 @@ def _format_scorecard(card: pd.DataFrame):
         {
             "Policy": card["family"].map(FAMILY_SHORT),
             "Net profit": card["net_profit"],
-            "Δ vs (s, S)": card["delta_net_profit"],
+            # Preformatted: st.dataframe draws a null cell as "None", ignoring na_rep.
+            "Δ vs (s, S)": card["delta_net_profit"].map(
+                lambda d: "—" if pd.isna(d) else f"{d:+.2f}"
+            ),
             "Fill rate": card["fill_rate"],
             "Days empty": card["days_empty"],
             "Turnover": card["inventory_turnover"],
@@ -163,11 +166,9 @@ def _format_scorecard(card: pd.DataFrame):
     return out.style.format(
         {
             "Net profit": "{:.2f}",
-            "Δ vs (s, S)": "{:+.2f}",
             "Fill rate": "{:.3f}",
             "Turnover": "{:.2f}",
-        },
-        na_rep="—",
+        }
     )
 
 
@@ -202,12 +203,20 @@ KNOBS = {
     "review_interval": ("R", int, 1, 14, 3),
 }
 MARKDOWN_SPECIALS = set("\\`*_{}[]()<>#+-.!|~:$")
+# Wrapped in an invisible word joiner so GFM cannot autolink a bare
+# ``https://…``, ``www.…`` or ``a@b.c`` in a link value.
+AUTOLINK_MARKS = set(":.@")
+WORD_JOINER = "\u2060"
 
 
 def _shown(raw: str) -> str:
     """A link value as plain text in a Markdown notice, cut to a short length."""
     cut = raw if len(raw) <= 40 else raw[:40] + "…"
-    return "".join("\\" + c if c in MARKDOWN_SPECIALS else c for c in cut)
+    out = []
+    for c in cut:
+        shown = "\\" + c if c in MARKDOWN_SPECIALS else c
+        out.append(WORD_JOINER + shown + WORD_JOINER if c in AUTOLINK_MARKS else shown)
+    return "".join(out)
 
 
 def _seed_widgets_from_link() -> None:

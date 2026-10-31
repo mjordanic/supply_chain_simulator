@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pyarrow as pa
 import pytest
 
 pytest.importorskip("streamlit")
@@ -88,6 +87,17 @@ def test_crafted_link_values_show_as_plain_text_not_links_or_images():
     assert r"\!\[x\]" in notice
 
 
+@pytest.mark.parametrize(
+    "value", ["https://evil.example/login", "www.evil.example", "me@evil.example"]
+)
+def test_bare_url_link_values_are_not_autolinked(value):
+    notice = _app(preset=value).run().warning[0].value
+    # GFM autolinks these literal forms; the visitor still reads the value.
+    for form in ("https:", "www.", "@evil", ".example"):
+        assert form not in notice.replace("\\", "")
+    assert value in notice.replace("\u2060", "").replace("\\", "")
+
+
 def test_two_shops_row_is_the_same_whatever_else_is_ticked():
     link = dict(preset="two_factories_two_shops", seed="42", steps="30")
     together = _card(_app(**link).run()).loc["(R, S)", "Net profit"]
@@ -110,15 +120,11 @@ def test_network_starts_on_the_best_profit_policy():
     assert shown.format_func(shown.value) == best_short
 
 
-def _shown_cells(at: AppTest, index: int = 0):
-    """The scorecard as the visitor sees it (the Styler's display values)."""
-    data = at.dataframe[index].proto.arrow_data.styler.display_values
-    return pa.ipc.open_stream(data).read_all().to_pandas()
-
-
 def test_delta_column_shows_a_dash_when_s_s_is_not_ticked():
     at = _app(policies="reorder_point").run()
-    assert _shown_cells(at)["Δ vs (s, S)"].tolist() == ["—"]
+    # The grid draws a null cell as "None" whatever the Styler says, so the
+    # data the grid receives must already hold the dash.
+    assert _card(at)["Δ vs (s, S)"].tolist() == ["—"]
 
 
 def test_identical_rows_are_called_out():
