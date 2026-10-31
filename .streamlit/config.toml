@@ -1,0 +1,3 @@
+[client]
+# Visitors see no Deploy / developer menu (local runs and Cloud Run alike).
+toolbarMode = "viewer"

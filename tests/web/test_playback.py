@@ -76,7 +76,7 @@ def test_dag_figure_labels_shop_1_and_draws_edges():
     assert n_line >= 2
     legend_names = [t.name for t in fig.data if t.showlegend]
     assert "Factory (produces)" in legend_names
-    assert "Order filled this tick" in legend_names
+    assert "Shipped this day" in legend_names
 
 
 def test_animated_dag_has_one_frame_per_tick_and_skip_button():
@@ -99,3 +99,55 @@ def test_animated_dag_has_one_frame_per_tick_and_skip_button():
     labels = [btn["label"] for menu in fig.layout.updatemenus for btn in menu.buttons]
     assert "Play" in labels
     assert "Skip to end" in labels
+
+
+def _chain_frames(n_steps=12):
+    scenario = apply_knobs(
+        load_setup(_CHAIN),
+        world_seed=42,
+        n_steps=n_steps,
+        demand_mean=10.0,
+        cycle_amp=0.03,
+        disruption=False,
+    )
+    log = run_crn_overlay(
+        scenario,
+        ["order_up_to"],
+        {"cover_horizon_ticks": 10, "Q": 30, "review_interval": 3},
+    )["order_up_to"]
+    return scenario, playback_frames(log, scenario)
+
+
+def _node_sizes(data) -> dict[str, float]:
+    nodes = next(t for t in data if t.mode == "markers+text")
+    return dict(zip(nodes.text, nodes.marker.size))
+
+
+def test_animated_dag_names_the_policy_in_its_colour_and_can_pause_and_scrub():
+    scenario, frames = _chain_frames()
+    fig = animated_dag(scenario, frames, policy_label="(s, Q) reorder-point", color="#F28E2B")
+    assert "(s, Q) reorder-point" in fig.layout.title.text
+    assert "#F28E2B" in fig.layout.title.text
+    assert all("(s, Q) reorder-point" in fr.layout.title.text for fr in fig.frames)
+    labels = [btn["label"] for menu in fig.layout.updatemenus for btn in menu.buttons]
+    assert "Pause" in labels
+    (slider,) = fig.layout.sliders
+    assert len(slider.steps) == len(frames)
+
+
+def test_only_shops_resize_with_stock():
+    scenario, frames = _chain_frames()
+    fig = animated_dag(scenario, frames)
+    sizes = [_node_sizes(fr.data) for fr in fig.frames]
+    assert len({s["factory-1"] for s in sizes}) == 1
+    assert len({s["sink-1"] for s in sizes}) == 1
+    assert len({s["shop-1"] for s in sizes}) > 1
+
+
+def test_shipped_edges_show_their_units():
+    scenario, frames = _chain_frames()
+    frame = next(fr for fr in frames if fr["purchases"])
+    p = frame["purchases"][0]
+    fig = dag_figure(scenario, frame)
+    labels = [t.text for t in fig.data if t.mode == "text"]
+    assert any(str(p["qty_filled"]) in list(lbl) for lbl in labels)
