@@ -340,7 +340,8 @@ two-phase tick API:
 - `tick() → TickResult` — convenience composing both phases.
 
 `allocation_rng` is a new `Random` stream derived via `_derive_seed(world_seed, "allocation")`
-(ADR 0016). `build_world` deep-copies nodes for multi-call safety.
+(ADR 0016). `build_world` deep-copies nodes and Scenario-owned policies for multi-call safety
+(override objects are used as-is).
 
 **Runner** (`src/sim/runner.py`)
 Owns the simulation loop. `Runner(scenario).run() → dict` builds all subsystems via `build_world`

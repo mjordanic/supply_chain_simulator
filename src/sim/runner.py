@@ -684,7 +684,9 @@ def build_world(
     policy_overrides:
         Optional ``{node_id: NodePolicy}`` mapping.  When supplied, the
         node with the matching id receives the override policy in place of
-        ``NodeInstance.policy``.
+        ``NodeInstance.policy``.  Override objects are used as-is (not
+        copied); every Scenario-owned policy is deep-copied per call so
+        repeated builds from one Scenario never share policy state.
 
     Returns
     -------
@@ -742,7 +744,16 @@ def build_world(
         # fallback keeps scenarios that set ``node.policy = ...`` directly
         # (instead of passing ``NodeInstance(policy=...)``) working —
         # otherwise their shops would be left policy-less and never order.
-        policy = overrides.get(node.id, ni.policy if ni.policy is not None else node.policy)
+        # Scenario-owned policies are deep-copied too (``node.policy`` already
+        # is, via the node copy): policies hold RNG and history state, and
+        # sharing them would leak one run's state into the next. Overrides
+        # stay caller-owned (e.g. RLEnv drives its own override object).
+        if node.id in overrides:
+            policy = overrides[node.id]
+        elif ni.policy is not None:
+            policy = copy.deepcopy(ni.policy)
+        else:
+            policy = node.policy
         node.policy = policy
         # Assign the computed echelon level onto the node (display-only).
         node.level = levels.get(node.id)
