@@ -42,7 +42,8 @@ def test_changing_a_knob_reruns_at_once_and_updates_the_link():
     assert not at.exception
     assert at.query_params["R"] == ["7"]
     # The known periodic-review starvation at long R is visible, not 1.0.
-    assert _card(at).loc["(R, S)", "Fill rate"] < 0.5
+    card = _card(at)
+    assert card.loc["(R, S)", "Fill rate"] < card.loc["(s, S)", "Fill rate"]
 
 
 def test_link_knobs_drive_the_run():

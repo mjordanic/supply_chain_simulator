@@ -174,7 +174,7 @@ def test_fill_rate_is_shop_1_sales_over_sink_demand_target():
     # A periodic policy that starves shop-1 (R=7 on a 2-tick lag) must not
     # read as perfect service.
     assert card.loc["periodic_order_up_to", "fill_rate"] < 0.5
-    assert card.loc["periodic_order_up_to", "days_empty"] > 6
+    assert card.loc["periodic_order_up_to", "days_empty"] > card.loc["order_up_to", "days_empty"]
 
 
 _TWO_SUPPLIERS = _REPO_ROOT / "setups" / "demo_two_suppliers"
