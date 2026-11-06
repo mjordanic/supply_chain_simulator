@@ -152,6 +152,8 @@ uv run python main.py run setups/my_run --output /tmp/my_run_out
 `main.py run` needs a full topology (`nodes:` / `edges:`). A catalog-and-market-only directory
 such as `setups/fashion_retail/` is enough for RL training (`src.rl.train --setup-dir`) and for
 the tuner, but not for `main.py run` until you scaffold or hand-author the graph.
+Note that `scaffold` only writes `nodes:` / `edges:`; add the `run:`, `market:`, and `disruption:` blocks
+to the resulting `setup.yaml` (copy them from `setups/three_node_chain`) before running it.
 
 ## Determinism and A/B comparisons
 
@@ -375,3 +377,6 @@ tests/         pytest suite
 - [docs/adr/](docs/adr/) — architecture decision records (0011 graph, 0018 demand-pull, 0020 M5 replay, 0021 variable-K RL, 0022 `RLNodePolicy`, 0023 Streamlit Cloud Run demo)
 - [github.com/mjordanic/supply_chain_simulator](https://github.com/mjordanic/supply_chain_simulator) — source, issues, and the capabilities this light web demo does not expose
 
+## Licence
+
+MIT — see [LICENSE](LICENSE).

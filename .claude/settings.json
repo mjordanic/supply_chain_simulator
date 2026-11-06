@@ -43,9 +43,6 @@
       "Bash(pwd)"
     ],
     "deny": [
-      "Bash(git push*)",
-      "Bash(git pull*)",
-      "Bash(git fetch*)",
       "Bash(git remote*)",
       "Bash(git clone*)",
       "Bash(git ls-remote*)",

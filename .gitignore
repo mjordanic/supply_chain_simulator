@@ -34,3 +34,7 @@ runs/
 .env
 
 .scratch/TODO.md
+
+.scratch/
+.claude/settings.local.json
+*.local.json
