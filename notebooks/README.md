@@ -1,7 +1,9 @@
 # Notebooks
 
 A guided tour of the simulator. Every notebook runs **offline** against the committed
-setup directories or a small synthetic catalog — no API key, no GPU. Run any of them with:
+setup directories or a small synthetic catalog — no API key, no GPU. The two exceptions are
+**05a** and **06a**, which analyze results you generate locally: run notebook 05 (tuning) and 06
+(or a longer `src.rl.train`) first so `runs/` holds a study and a trained agent. Run any of them with:
 
 ```bash
 uv run jupyter lab            # then open a notebook
